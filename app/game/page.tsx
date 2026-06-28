@@ -1,14 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-// 生成5个随机骰子
+// ==================== 工具函数 ====================
 const rollDice = () => {
   return Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
 };
 
-// 计算067牌型
 const calc067 = (dice: number[]) => {
   const sorted = [...dice].sort();
   const counts = Array(7).fill(0);
@@ -31,12 +30,15 @@ const calc067 = (dice: number[]) => {
 
 const DICE_EMOJIS = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 
+// ==================== 主组件 ====================
 export default function GamePage() {
-  const [roomId, setRoomId] = useState("");
+  // --- 用户与房间 ---
   const [playerName, setPlayerName] = useState("");
-  const [roomPassword, setRoomPassword] = useState(""); // 房主设置的密码
-  const [joinPassword, setJoinPassword] = useState(""); // 加入时输入的密码
+  const [roomPassword, setRoomPassword] = useState("");
   const [joined, setJoined] = useState(false);
+  const [roomId, setRoomId] = useState("");
+
+  // --- 游戏状态 ---
   const [players, setPlayers] = useState<any[]>([]);
   const [myDice, setMyDice] = useState<number[]>([]);
   const [myHand, setMyHand] = useState<any>(null);
@@ -47,8 +49,47 @@ export default function GamePage() {
   const [lastBid, setLastBid] = useState<{ player: string; count: number; value: number } | null>(null);
   const [phase, setPhase] = useState<"waiting" | "rolling" | "bidding" | "ended">("waiting");
   const [hasRolled, setHasRolled] = useState(false);
+
+  // --- 新增功能状态 ---
+  const [diceShaking, setDiceShaking] = useState(false);
+  const [revealedPlayer, setRevealedPlayer] = useState<string | null>(null);
+  const [operationLog, setOperationLog] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
 
+  // --- 音频上下文 (用于音效) ---
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // ==================== 音效函数 ====================
+  const playShakeSound = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      for (let i = 0; i < 12; i++) {
+        setTimeout(() => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 800 + Math.random() * 400;
+          osc.type = "square";
+          gain.gain.value = 0.05 + Math.random() * 0.05;
+          osc.start();
+          osc.stop(ctx.currentTime + 0.03);
+        }, i * 60);
+      }
+    } catch (e) {
+      // 浏览器不支持 Web Audio 时静默跳过
+    }
+  };
+
+  // ==================== 操作日志 ====================
+  const addLog = (msg: string) => {
+    setOperationLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
+
+  // ==================== Supabase 实时订阅 ====================
   useEffect(() => {
     if (!roomId) return;
     const channel = supabase
@@ -83,27 +124,41 @@ export default function GamePage() {
     });
   };
 
-  // 创建房间（带密码）
+  // ==================== 创建 / 加入房间 ====================
   const createRoom = async () => {
     if (!playerName.trim()) { setErrorMsg("请输入你的名字"); return; }
     if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
     setErrorMsg("");
+
+    const { data: existing } = await supabase
+      .from("rooms")
+      .select()
+      .eq("password", roomPassword.trim())
+      .single();
+
+    if (existing) {
+      setErrorMsg("这个密码已被使用，请换一个");
+      return;
+    }
+
     const { data, error } = await supabase
       .from("rooms")
-      .insert({ 
-        game_type: "dice067", 
+      .insert({
+        game_type: "dice067",
         password: roomPassword.trim(),
         players: [playerName.trim()]
       })
       .select()
       .single();
+
     if (error) {
       setErrorMsg("创建房间失败: " + error.message);
       return;
     }
+
     setRoomId(data.id);
     setJoined(true);
-    // 广播初始玩家列表
+    addLog(`🎉 ${playerName.trim()} 创建了房间`);
     await broadcastState({
       players: [{ name: playerName.trim(), dice: [] }],
       currentPlayer: "",
@@ -116,49 +171,39 @@ export default function GamePage() {
     });
   };
 
-  // 加入房间（验证密码）
   const joinRoom = async () => {
-    if (!roomId.trim()) { setErrorMsg("请输入房间号"); return; }
     if (!playerName.trim()) { setErrorMsg("请输入你的名字"); return; }
-    if (!joinPassword.trim()) { setErrorMsg("请输入房间密码"); return; }
+    if (!roomPassword.trim()) { setErrorMsg("请输入房间密码"); return; }
     setErrorMsg("");
 
-    // 查询房间并验证密码
     const { data, error } = await supabase
       .from("rooms")
       .select()
-      .eq("id", roomId.trim())
+      .eq("password", roomPassword.trim())
       .single();
 
     if (error || !data) {
-      setErrorMsg("房间不存在，请检查房间号");
+      setErrorMsg("密码错误，未找到对应房间");
       return;
     }
 
-    // 验证密码
-    if (data.password !== joinPassword.trim()) {
-      setErrorMsg("密码错误，请重新输入");
-      return;
-    }
-
-    // 检查人数
     const currentPlayers = data.players || [];
     if (currentPlayers.length >= 6) {
       setErrorMsg("房间已满（最多6人）");
       return;
     }
 
-    // 如果玩家已在列表中，直接进入
     if (currentPlayers.includes(playerName.trim())) {
+      setRoomId(data.id);
       setJoined(true);
       return;
     }
 
-    // 添加玩家
     const newPlayers = [...currentPlayers, playerName.trim()];
-    await supabase.from("rooms").update({ players: newPlayers }).eq("id", roomId.trim());
+    await supabase.from("rooms").update({ players: newPlayers }).eq("id", data.id);
+    setRoomId(data.id);
     setJoined(true);
-    // 广播更新玩家列表
+    addLog(`👤 ${playerName.trim()} 加入了房间`);
     await broadcastState({
       players: newPlayers.map((name: string) => ({ name, dice: [] })),
       currentPlayer: "",
@@ -171,35 +216,53 @@ export default function GamePage() {
     });
   };
 
-  // 开始游戏（每人摇骰）
+  // ==================== 游戏核心逻辑 ====================
   const startGame = async () => {
     if (players.length < 2) { setErrorMsg("至少需要2人才能开始"); return; }
-    setErrorMsg("");
-    const shuffled = [...players];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+
+    if (hasRolled) {
+      setErrorMsg("⚠️ 这局已经摇过骰子了，不能重复摇！");
+      addLog("⚠️ 试图重复摇骰，已被阻止");
+      return;
     }
-    const newPlayers = shuffled.map((p) => ({ name: p.name, dice: rollDice() }));
-    const firstPlayer = newPlayers[0].name;
-    setPlayers(newPlayers);
-    setCurrentPlayer(firstPlayer);
-    setGameStarted(true);
-    setGameOver(false);
-    setResult("");
-    setLastBid(null);
-    setPhase("bidding");
-    setHasRolled(true);
-    await broadcastState({
-      players: newPlayers,
-      currentPlayer: firstPlayer,
-      gameStarted: true,
-      gameOver: false,
-      result: "",
-      lastBid: null,
-      phase: "bidding",
-      hasRolled: true,
-    });
+
+    // 播放音效 + 摇晃动画
+    playShakeSound();
+    setDiceShaking(true);
+    setErrorMsg("🎲 摇骰中...");
+
+    setTimeout(() => {
+      const shuffled = [...players];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const newPlayers = shuffled.map((p) => ({ name: p.name, dice: rollDice() }));
+      const firstPlayer = newPlayers[0].name;
+
+      setPlayers(newPlayers);
+      setCurrentPlayer(firstPlayer);
+      setGameStarted(true);
+      setGameOver(false);
+      setResult("");
+      setLastBid(null);
+      setPhase("bidding");
+      setHasRolled(true);
+      setDiceShaking(false);
+      addLog(`🎲 ${firstPlayer} 先手叫牌`);
+
+      broadcastState({
+        players: newPlayers,
+        currentPlayer: firstPlayer,
+        gameStarted: true,
+        gameOver: false,
+        result: "",
+        lastBid: null,
+        phase: "bidding",
+        hasRolled: true,
+      });
+      setErrorMsg("");
+    }, 1500);
   };
 
   const makeBid = async (count: number, value: number) => {
@@ -219,6 +282,7 @@ export default function GamePage() {
     const idx = playerNames.indexOf(currentPlayer);
     const nextIdx = (idx + 1) % playerNames.length;
     setCurrentPlayer(playerNames[nextIdx]);
+    addLog(`📢 ${playerName} 叫了 ${count}个${value}`);
     await broadcastState({
       players,
       currentPlayer: playerNames[nextIdx],
@@ -251,6 +315,7 @@ export default function GamePage() {
     setPhase("ended");
     const resultMsg = `🍺 ${loser} 输了！实际有 ${totalCount} 个${lastBid.value}`;
     setResult(resultMsg);
+    addLog(`🔓 ${caller} 开盅，${loser} 输`);
     await broadcastState({
       players,
       currentPlayer,
@@ -271,6 +336,8 @@ export default function GamePage() {
     setCurrentPlayer("");
     setPhase("waiting");
     setHasRolled(false);
+    setRevealedPlayer(null);
+    addLog("🔄 新的一局");
     await broadcastState({
       players: players.map((p) => ({ ...p, dice: [] })),
       currentPlayer: "",
@@ -283,6 +350,7 @@ export default function GamePage() {
     });
   };
 
+  // ==================== 界面渲染 ====================
   if (!joined) {
     return (
       <div style={styles.container}>
@@ -299,13 +367,7 @@ export default function GamePage() {
             style={styles.input}
           />
           <input
-            placeholder="🔑 房间号（加入时填写）"
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value)}
-            style={styles.input}
-          />
-          <input
-            placeholder="🔐 房间密码（创建或加入时填写）"
+            placeholder="🔐 房间密码（设置或加入）"
             value={roomPassword}
             onChange={(e) => setRoomPassword(e.target.value)}
             style={styles.input}
@@ -328,7 +390,7 @@ export default function GamePage() {
       <div style={styles.glowOrb2}></div>
       <div style={styles.gameCard}>
         <div style={styles.header}>
-          <span style={styles.roomBadge}>🏠 {roomId}</span>
+          <span style={styles.roomBadge}>🏠 房间号: {roomId.slice(0, 8)}</span>
           <span style={styles.playerBadge}>👤 {playerName}</span>
         </div>
 
@@ -337,6 +399,8 @@ export default function GamePage() {
             <span style={styles.statusText}>⏳ 等待开始... (至少2人)</span>
           ) : gameOver ? (
             <span style={styles.resultText}>{result}</span>
+          ) : diceShaking ? (
+            <span style={styles.statusText}>🎲 摇骰中...</span>
           ) : (
             <span style={styles.statusText}>
               🎯 <strong style={{ color: "#fbbf24" }}>{currentPlayer}</strong> 的回合
@@ -349,15 +413,27 @@ export default function GamePage() {
             const isMe = p.name === playerName;
             const isActive = p.name === currentPlayer && !gameOver;
             const hasDice = p.dice && p.dice.length === 5;
+            // 防偷窥逻辑：只有点击自己的牌才会显示
+            const shouldReveal = isMe && revealedPlayer === p.name && !diceShaking;
+
             return (
               <div
                 key={i}
+                onClick={() => {
+                  if (isMe && hasDice && !diceShaking) {
+                    setRevealedPlayer(revealedPlayer === p.name ? null : p.name);
+                    if (revealedPlayer !== p.name) {
+                      setTimeout(() => setRevealedPlayer(null), 3000); // 3秒后自动隐藏
+                    }
+                  }
+                }}
                 style={{
                   ...styles.playerCard,
                   background: isActive
                     ? "linear-gradient(135deg, rgba(251,191,36,0.15), rgba(251,191,36,0.05))"
                     : "rgba(255,255,255,0.03)",
                   borderColor: isActive ? "#fbbf24" : "rgba(255,255,255,0.06)",
+                  cursor: isMe && hasDice ? "pointer" : "default",
                 }}
               >
                 <div style={styles.playerName}>
@@ -367,12 +443,22 @@ export default function GamePage() {
                 </div>
                 {hasDice && (
                   <div style={styles.diceRow}>
-                    {p.dice.map((val: number, idx: number) => (
-                      <span key={idx} style={styles.dice}>{DICE_EMOJIS[val-1]}</span>
-                    ))}
+                    {(diceShaking && isMe) ? (
+                      // 摇骰动画中显示摇晃的骰子
+                      <span style={{ fontSize: "26px", animation: "shake 0.1s infinite alternate" }}>🎲</span>
+                    ) : (
+                      p.dice.map((val: number, idx: number) => (
+                        <span key={idx} style={styles.dice}>
+                          {shouldReveal ? DICE_EMOJIS[val - 1] : "🎲"}
+                        </span>
+                      ))
+                    )}
                   </div>
                 )}
-                {isMe && hasDice && myHand && (
+                {isMe && hasDice && !shouldReveal && !diceShaking && (
+                  <div style={styles.hintText}>👆 点击看牌（3秒后自动隐藏）</div>
+                )}
+                {isMe && hasDice && shouldReveal && myHand && (
                   <div style={styles.handInfo}>
                     <span style={styles.handEmoji}>{myHand.emoji || "🎯"}</span>
                     {myHand.label}
@@ -385,6 +471,16 @@ export default function GamePage() {
             );
           })}
         </div>
+
+        {/* 操作日志 */}
+        {operationLog.length > 0 && (
+          <div style={styles.logContainer}>
+            <div style={styles.logTitle}>📋 操作记录</div>
+            {operationLog.slice(-5).map((log, idx) => (
+              <div key={idx} style={styles.logEntry}>{log}</div>
+            ))}
+          </div>
+        )}
 
         {lastBid && !gameOver && (
           <div style={styles.bidInfo}>
@@ -399,18 +495,19 @@ export default function GamePage() {
 
         <div style={styles.actionBar}>
           {!gameStarted && players.length >= 2 && (
-            <button onClick={startGame} style={styles.btnStart}>🚀 开始游戏</button>
+            <button onClick={startGame} style={styles.btnStart} disabled={diceShaking}>
+              {diceShaking ? "摇骰中..." : "🚀 开始游戏"}
+            </button>
           )}
           {gameStarted && !gameOver && phase === "bidding" && isMyTurn && (
             <>
               <div style={styles.bidGroup}>
-                <button onClick={() => makeBid(1, 1)} style={styles.btnBid}>1⚀</button>
-                <button onClick={() => makeBid(2, 2)} style={styles.btnBid}>2⚁</button>
-                <button onClick={() => makeBid(3, 3)} style={styles.btnBid}>3⚂</button>
-                <button onClick={() => makeBid(4, 4)} style={styles.btnBid}>4⚃</button>
-                <button onClick={() => makeBid(5, 5)} style={styles.btnBid}>5⚄</button>
-                <button onClick={() => makeBid(6, 6)} style={styles.btnBid}>6⚅</button>
-                <button onClick={() => makeBid(7, 6)} style={styles.btnBid}>7⚅</button>
+                {[1,2,3,4,5,6].map(v => (
+                  <button key={v} onClick={() => makeBid(lastBid ? lastBid.count + 1 : 1, v)} style={styles.btnBid}>
+                    {lastBid ? lastBid.count + 1 : 1}个{v}
+                  </button>
+                ))}
+                <button onClick={() => makeBid(7, 6)} style={styles.btnBid}>7个6</button>
               </div>
               <div style={styles.btnRow}>
                 <button onClick={openDice} style={styles.btnOpen}>🔓 开盅</button>
@@ -441,7 +538,7 @@ export default function GamePage() {
   );
 }
 
-// 样式（沿用之前的暗黑霓虹风格，未变）
+// ==================== 样式（修复所有错误） ====================
 const styles: any = {
   container: {
     minHeight: "100vh",
@@ -582,6 +679,7 @@ const styles: any = {
   diceIcon: { color: "rgba(255,255,255,0.3)" },
   diceRow: { display: "flex", gap: "8px", marginTop: "6px" },
   dice: { fontSize: "26px", lineHeight: "1" },
+  hintText: { color: "rgba(255,255,255,0.3)", fontSize: "11px", marginTop: "4px", fontStyle: "italic" },
   handInfo: {
     color: "#fbbf24",
     fontSize: "12px",
@@ -595,6 +693,18 @@ const styles: any = {
     width: "fit-content",
   },
   handEmoji: { fontSize: "14px" },
+  logContainer: {
+    background: "rgba(0,0,0,0.3)",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    marginBottom: "12px",
+    maxHeight: "80px",
+    overflowY: "auto",
+    fontSize: "12px",
+    color: "rgba(255,255,255,0.5)",
+  },
+  logTitle: { fontWeight: "bold", color: "rgba(255,255,255,0.7)", marginBottom: "4px" },
+  logEntry: { padding: "2px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" },
   bidInfo: {
     background: "linear-gradient(135deg, rgba(251,191,36,0.06), rgba(139,92,246,0.06))",
     borderRadius: "14px",
@@ -663,3 +773,18 @@ const styles: any = {
   playerCount: { color: "rgba(255,255,255,0.3)", fontSize: "13px" },
   phaseTag: { color: "rgba(255,255,255,0.2)", fontSize: "13px" },
 };
+
+// 添加摇骰动画（在全局样式或页面内添加）
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes shake {
+      0% { transform: rotate(0deg) scale(1); }
+      25% { transform: rotate(10deg) scale(1.1); }
+      50% { transform: rotate(-10deg) scale(0.9); }
+      75% { transform: rotate(5deg) scale(1.05); }
+      100% { transform: rotate(0deg) scale(1); }
+    }
+  `;
+  document.head.appendChild(style);
+}
