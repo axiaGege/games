@@ -34,6 +34,8 @@ const DICE_EMOJIS = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 export default function GamePage() {
   const [roomId, setRoomId] = useState("");
   const [playerName, setPlayerName] = useState("");
+  const [roomPassword, setRoomPassword] = useState(""); // 房主设置的密码
+  const [joinPassword, setJoinPassword] = useState(""); // 加入时输入的密码
   const [joined, setJoined] = useState(false);
   const [players, setPlayers] = useState<any[]>([]);
   const [myDice, setMyDice] = useState<number[]>([]);
@@ -45,6 +47,7 @@ export default function GamePage() {
   const [lastBid, setLastBid] = useState<{ player: string; count: number; value: number } | null>(null);
   const [phase, setPhase] = useState<"waiting" | "rolling" | "bidding" | "ended">("waiting");
   const [hasRolled, setHasRolled] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
     if (!roomId) return;
@@ -80,31 +83,83 @@ export default function GamePage() {
     });
   };
 
+  // 创建房间（带密码）
   const createRoom = async () => {
-    if (!playerName.trim()) { alert("请输入你的名字"); return; }
-    const { data, error } = await supabase.from("rooms").insert({ game_type: "dice067" }).select().single();
-    if (error) { alert("创建房间失败: " + error.message); return; }
+    if (!playerName.trim()) { setErrorMsg("请输入你的名字"); return; }
+    if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
+    setErrorMsg("");
+    const { data, error } = await supabase
+      .from("rooms")
+      .insert({ 
+        game_type: "dice067", 
+        password: roomPassword.trim(),
+        players: [playerName.trim()]
+      })
+      .select()
+      .single();
+    if (error) {
+      setErrorMsg("创建房间失败: " + error.message);
+      return;
+    }
     setRoomId(data.id);
     setJoined(true);
-    await joinRoomDirect(data.id);
+    // 广播初始玩家列表
+    await broadcastState({
+      players: [{ name: playerName.trim(), dice: [] }],
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "waiting",
+      hasRolled: false,
+    });
   };
 
+  // 加入房间（验证密码）
   const joinRoom = async () => {
-    if (!roomId.trim()) { alert("请输入房间号"); return; }
-    if (!playerName.trim()) { alert("请输入你的名字"); return; }
-    await joinRoomDirect(roomId.trim());
-  };
+    if (!roomId.trim()) { setErrorMsg("请输入房间号"); return; }
+    if (!playerName.trim()) { setErrorMsg("请输入你的名字"); return; }
+    if (!joinPassword.trim()) { setErrorMsg("请输入房间密码"); return; }
+    setErrorMsg("");
 
-  const joinRoomDirect = async (id: string) => {
-    const { data, error } = await supabase.from("rooms").select().eq("id", id).single();
-    if (error || !data) { alert("房间不存在"); return; }
+    // 查询房间并验证密码
+    const { data, error } = await supabase
+      .from("rooms")
+      .select()
+      .eq("id", roomId.trim())
+      .single();
+
+    if (error || !data) {
+      setErrorMsg("房间不存在，请检查房间号");
+      return;
+    }
+
+    // 验证密码
+    if (data.password !== joinPassword.trim()) {
+      setErrorMsg("密码错误，请重新输入");
+      return;
+    }
+
+    // 检查人数
     const currentPlayers = data.players || [];
-    if (currentPlayers.includes(playerName)) { setJoined(true); return; }
-    if (currentPlayers.length >= 6) { alert("房间已满"); return; }
-    const newPlayers = [...currentPlayers, playerName];
-    await supabase.from("rooms").update({ players: newPlayers }).eq("id", id);
+    if (currentPlayers.length >= 6) {
+      setErrorMsg("房间已满（最多6人）");
+      return;
+    }
+
+    // 如果玩家已在列表中，直接进入
+    if (currentPlayers.includes(playerName.trim())) {
+      setJoined(true);
+      return;
+    }
+
+    // 添加玩家
+    const newPlayers = [...currentPlayers, playerName.trim()];
+    await supabase.from("rooms").update({ players: newPlayers }).eq("id", roomId.trim());
     setJoined(true);
-    const state = {
+    // 广播更新玩家列表
+    await broadcastState({
       players: newPlayers.map((name: string) => ({ name, dice: [] })),
       currentPlayer: "",
       gameStarted: false,
@@ -113,12 +168,13 @@ export default function GamePage() {
       lastBid: null,
       phase: "waiting",
       hasRolled: false,
-    };
-    await broadcastState(state);
+    });
   };
 
+  // 开始游戏（每人摇骰）
   const startGame = async () => {
-    if (players.length < 2) { alert("至少需要2人"); return; }
+    if (players.length < 2) { setErrorMsg("至少需要2人才能开始"); return; }
+    setErrorMsg("");
     const shuffled = [...players];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -147,15 +203,16 @@ export default function GamePage() {
   };
 
   const makeBid = async (count: number, value: number) => {
-    if (currentPlayer !== playerName) { alert("还没轮到你"); return; }
-    if (phase === "ended") { alert("游戏已结束"); return; }
-    if (count < 1 || count > 7 || value < 1 || value > 6) { alert("叫点 1-7，叫数字 1-6"); return; }
+    if (currentPlayer !== playerName) { setErrorMsg("还没轮到你"); return; }
+    if (phase === "ended") { setErrorMsg("游戏已结束"); return; }
+    if (count < 1 || count > 7 || value < 1 || value > 6) { setErrorMsg("叫点 1-7，叫数字 1-6"); return; }
     if (lastBid) {
       if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
-        alert(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
+        setErrorMsg(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
         return;
       }
     }
+    setErrorMsg("");
     const newBid = { player: playerName, count, value };
     setLastBid(newBid);
     const playerNames = players.map((p) => p.name);
@@ -175,8 +232,9 @@ export default function GamePage() {
   };
 
   const openDice = async () => {
-    if (currentPlayer !== playerName) { alert("还没轮到你"); return; }
-    if (!lastBid) { alert("还没人叫牌"); return; }
+    if (currentPlayer !== playerName) { setErrorMsg("还没轮到你"); return; }
+    if (!lastBid) { setErrorMsg("还没人叫牌"); return; }
+    setErrorMsg("");
     let totalCount = 0;
     for (const p of players) {
       const dice = p.dice || [];
@@ -246,10 +304,17 @@ export default function GamePage() {
             onChange={(e) => setRoomId(e.target.value)}
             style={styles.input}
           />
+          <input
+            placeholder="🔐 房间密码（创建或加入时填写）"
+            value={roomPassword}
+            onChange={(e) => setRoomPassword(e.target.value)}
+            style={styles.input}
+          />
           <div style={styles.btnGroup}>
             <button onClick={createRoom} style={styles.btnPrimary}>🆕 创建房间</button>
             <button onClick={joinRoom} style={styles.btnSecondary}>🔗 加入房间</button>
           </div>
+          {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
         </div>
       </div>
     );
@@ -360,6 +425,9 @@ export default function GamePage() {
           {gameOver && (
             <button onClick={resetGame} style={styles.btnReset}>🔄 再来一局</button>
           )}
+          {errorMsg && !gameOver && (
+            <div style={{ color: "#f87171", fontSize: 13, marginTop: 8 }}>{errorMsg}</div>
+          )}
         </div>
 
         <div style={styles.footer}>
@@ -373,6 +441,7 @@ export default function GamePage() {
   );
 }
 
+// 样式（沿用之前的暗黑霓虹风格，未变）
 const styles: any = {
   container: {
     minHeight: "100vh",
