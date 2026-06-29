@@ -181,7 +181,7 @@ export default function Page() {
             await supabase.from('rooms').insert({
               game_type: 'dice067',
               password: rid,
-              players: JSON.stringify(newPlayers.map(p => p.name)),
+              players: newPlayers.map(p => p.name).join(','),
               game_state: JSON.stringify({ players: newPlayers, phase: 'waiting' }),
             });
           } catch (e) { console.error('DB insert failed:', e); }
@@ -190,10 +190,10 @@ export default function Page() {
           try {
               const { data: roomList } = await supabase.from('rooms').select().eq('password', rid); const roomData = roomList && roomList.length > 0 ? roomList[0] : null;
             if (roomData) {
-              const existingPlayers = roomData.players ? JSON.parse(roomData.players) : [];
+              const existingPlayers = roomData.players ? roomData.players.split(',').filter(Boolean) : [];
               if (!existingPlayers.includes(name)) {
                 const newPlayers = [...existingPlayers, name];
-                await supabase.from('rooms').update({ players: JSON.stringify(newPlayers) }).eq('password', rid);
+                await supabase.from('rooms').update({ players: newPlayers.join(',') }).eq('password', rid);
                 await broadcastState({
                   type: 'join',
                   player: name,
