@@ -9,7 +9,7 @@ function rollDice() {
   return Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
 }
 
-function calcHand(dice) {
+function calcHand(dice: number[]) {
   const counts = [0,0,0,0,0,0,0];
   for (const d of dice) counts[d]++;
   const maxCount = Math.max(...counts.slice(2));
@@ -228,6 +228,7 @@ const C = {
   myDice: { background:'rgba(251,191,36,0.06)', borderRadius:16, padding:16, marginBottom:14, border:'1px solid rgba(251,191,36,0.1)', textAlign:'center' },
   log: { background:'rgba(0,0,0,0.25)', borderRadius:10, padding:'8px 12px', marginBottom:14, maxHeight:90, overflowY:'auto' },
 };
+
 
 
 
