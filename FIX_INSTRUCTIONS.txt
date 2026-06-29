@@ -1,0 +1,26 @@
+﻿========================================
+需要修改的文件:
+D:\WeChatDevTools\party-games\app\game\067\page.tsx
+========================================
+
+问题1: 第493-494行 - calc模板字符串被PowerShell吃掉了
+当前内容:
+  left: calc(50% + px),
+  top: calc(50% + px),
+修复为:
+  left: calc(50% + px),
+  top: calc(50% + px),
+
+问题2: 第72行 - 音效类型错误
+当前: osc.type = type;
+修复: osc.type = type as OscillatorType;
+
+问题3: 找到这段代码并删除:
+  ch.on('SYSTEM', (event) => {
+    if (event.event === 'presence_change') {
+      console.log('Presence change:', event);
+    }
+  });
+
+问题4: 游戏界面背景太暗，文字看不清
+需要把背景调亮，文字调亮

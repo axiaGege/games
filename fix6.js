@@ -1,0 +1,1 @@
+const fs = require("fs"); const p = "D:/WeChatDevTools/party-games/app/game/067/page.tsx"; let c = fs.readFileSync(p, "utf8"); c = c.replace(/left: `calc\(50% \+ \$\{x\}px`\),/g, "left: `calc(50% + " + "${x}px`),"); c = c.replace(/top: `calc\(50% \+ \$\{y\}px`\),/g, "top: `calc(50% + " + "${y}px`),"); fs.writeFileSync(p, c, "utf8"); console.log("Final fix!");
