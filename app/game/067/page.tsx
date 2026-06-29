@@ -188,7 +188,7 @@ export default function Page() {
         } else {
           // 加入已有房间
           try {
-            const { data: roomData } = await supabase.from('rooms').select().eq('password', rid).single();
+              const { data: roomList } = await supabase.from('rooms').select().eq('password', rid); const roomData = roomList && roomList.length > 0 ? roomList[0] : null;
             if (roomData) {
               const existingPlayers = roomData.players ? JSON.parse(roomData.players) : [];
               if (!existingPlayers.includes(name)) {
