@@ -182,8 +182,7 @@ export default function Page() {
               game_type: 'dice067',
               password: rid,
               players: newPlayers.map(p => p.name).join(','),
-              game_state: JSON.stringify({ players: newPlayers, phase: 'waiting' }),
-            });
+              });
           } catch (e) { console.error('DB insert failed:', e); }
         } else {
           // 加入已有房间
