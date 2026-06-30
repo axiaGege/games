@@ -130,6 +130,10 @@ export default function Page() {
         setPlayers(prev => prev.map((p: any) => p.name === s.player ? { ...p, dice: s.dice } : p));
         if (s.players) setPlayers(s.players);
         
+      } else if (s.type === 'prepare') {
+        setPlayers(prev => prev.map((p: any) =>
+          p.name === s.player ? { ...p, prepared: s.prepared } : p
+        ));
       } else if (s.type === 'leave') {
         setPlayers(prev => prev.filter((p: any) => p.name !== s.player));
         addLog(s.player + ' 离开了房间');
