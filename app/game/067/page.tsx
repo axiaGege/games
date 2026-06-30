@@ -58,6 +58,7 @@ export default function Page() {
   // 骰盅查看状态
   const [myDiceRevealed, setMyDiceRevealed] = useState(false);
   const [diceLocked, setDiceLocked] = useState(false);
+  const [playerPrepared, ] = useState({});
   // 违规闪烁
   const [violators, setViolators] = useState<string[]>([]);
 
@@ -243,40 +244,47 @@ export default function Page() {
   }, [playerName, roomPassword, connectToRoom]);
 
   // ==================== 开始游戏 ====================
-  const handleStart = useCallback(async () => {
-    if (players.length < 2) { setErrorMsg('至少需要2人才能开始'); return; }
+  // ==================== 准备流程 ====================
+  const handlePrepare = useCallback(() => {
+    const me = players.find((p: any) => p.name === playerName);
+    if (!me) return;
+    const newPrepared = !me.prepared;
+    setPlayers(prev => prev.map((p: any) => p.name === playerName ? { ...p, prepared: newPrepared } : p));
+    broadcastState({ type: "prepare", player: playerName, prepared: newPrepared });
+    addLog(newPrepared ? playerName + " 已准备" : playerName + " 取消准备");
+  }, [players, playerName, broadcastState, addLog]);
+
+  const handleBeginGame = useCallback(async () => {
+    const me = players.find((p: any) => p.name === playerName);
+    if (!me || !me.prepared) { setErrorMsg("你自己还没准备"); return; }
+    const prepPlayers = players.filter((p: any) => p.prepared);
+    if (prepPlayers.length < 2) { setErrorMsg("至少2人准备才能开始"); return; }
+    setPhase("rolling");
+    broadcastState({ type: "update", phase: "rolling", players });
     playShakeSound();
     setDiceShaking(true);
-    setErrorMsg('摇骰中...');
-
+    addLog("摇骰中...");
     await new Promise(r => setTimeout(r, 1500));
-
-    // 随机排序决定先手
     const shuffled = [...players].sort(() => Math.random() - 0.5);
-    const newPlayers = shuffled.map((p: any) => ({ ...p, dice: rollDice() }));
+    const newPlayers = shuffled.map((p: any) => {
+      if (p.prepared) return { ...p, dice: rollDice(), revealed: false };
+      return p;
+    });
     const firstPlayer = newPlayers[0].name;
-
     setPlayers(newPlayers);
     setCurrentPlayer(firstPlayer);
     setGameStarted(true);
-    setPhase('bidding');
+    setPhase("bidding");
     setHasRolled(true);
     setDiceShaking(false);
-    setDiceLocked(true); // 摇骰后盖盅锁定
-    setErrorMsg('');
-
-    // 同步到自己和广播
-    const me = newPlayers.find((p: any) => p.name === playerName);
-    if (me) { setMyDice(me.dice); setMyHand(calcHand(me.dice)); }
-
-    addLog(firstPlayer + ' 先手叫牌');
-    await broadcastState({
-      type: 'start',
-      players: newPlayers,
-      currentPlayer: firstPlayer,
-      phase: 'bidding',
-    });
+    setDiceLocked(true);
+    setPhase("bidding");
+    const me2 = newPlayers.find((p: any) => p.name === playerName);
+    if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
+    addLog(firstPlayer + " 先手叫牌");
+    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding" });
   }, [players, playerName, broadcastState, addLog, playShakeSound]);
+
 
   // ==================== 叫牌 ====================
   const handleBid = useCallback(async (count: number, value: number) => {
@@ -445,6 +453,7 @@ export default function Page() {
 
   // ==================== 游戏界面 ====================
   const isMyTurn = currentPlayer === playerName && !gameOver && phase === 'bidding';
+  const prepCount = players.filter((p: any) => p.prepared).length;
   const me = players.find((p: any) => p.name === playerName);
   const others = players.filter((p: any) => p.name !== playerName);
   const totalPlayers = players.length;
@@ -469,9 +478,16 @@ export default function Page() {
         <div style={S.statusBar}>
           {!gameStarted ? (
             <span style={S.statusText}>
-              👥 {players.length} 人已就绪
-              {isCreator && players.length >= 2 && (
-                <button style={S.btnStartSmall} onClick={handleStart}>🚀 开始游戏</button>
+              👥 {players.length} 人在线
+              {isCreator && (
+                <>
+                  {' '}| {' '}
+                  {players.filter((p:any) => p.prepared).length >= 2 ? (
+                    <button style={S.btnStartSmall} onClick={handleBeginGame}>🎮 开始对局</button>
+                  ) : (
+                    <span style={{fontSize:12,color:'rgba(255,255,255,0.4)'}}>等待2人准备...</span>
+                  )}
+                </>
               )}
             </span>
           ) : gameOver ? (
@@ -588,8 +604,8 @@ export default function Page() {
         {/* 操作区 */}
         <div style={S.actionBar}>
           {!gameStarted && players.length >= 2 && isCreator && (
-            <button style={S.btnStart} onClick={handleStart} disabled={diceShaking}>
-              {diceShaking ? '🎲 摇骰中...' : '🚀 开始游戏'}
+            <button style={S.btnStart} onClick={handleBeginGame} disabled={diceShaking}>
+              {diceShaking ? '🎲 摇骰中...' : '🎮 开始对局'}
             </button>
           )}
 
