@@ -59,6 +59,8 @@ export default function Page() {
   // 骰盅查看状态
   const [myDiceRevealed, setMyDiceRevealed] = useState(false);
   const [diceLocked, setDiceLocked] = useState(false);
+  const [cupOpened, setCupOpened] = useState(false); // 骰盅是否已打开看过
+  const [showingDice, setShowingDice] = useState(false); // 当前正在查看骰子
   const [playerPrepared, ] = useState({});
   // 违规闪烁
   const [violators, setViolators] = useState<string[]>([]);
@@ -84,6 +86,13 @@ export default function Page() {
       osc.stop(ctx.currentTime + dur);
     } catch {}
   }, []);
+
+  // 摇骰前检查违规
+  const canRoll = () => {
+    if (cupOpened) { setErrorMsg('骰盅已打开，禁止重新摇骰'); return false; }
+    if (!gameStarted || !hasRolled) { setErrorMsg('还没到摇骰阶段'); return false; }
+    return true;
+  };
 
   const playShakeSound = useCallback(() => {
     for (let i = 0; i < 10; i++) {
@@ -134,6 +143,9 @@ export default function Page() {
         setPlayers(prev => prev.map((p: any) =>
           p.name === s.player ? { ...p, prepared: s.prepared } : p
         ));
+      } else if (s.type === 'violation') {
+        addLog('⚠️ ' + s.player + ' 违规摇骰！');
+        playSound(200, 0.5, 'sawtooth');
       } else if (s.type === 'leave') {
         setPlayers(prev => prev.filter((p: any) => p.name !== s.player));
         addLog(s.player + ' 离开了房间');
@@ -261,6 +273,16 @@ export default function Page() {
     addLog(newPrepared ? playerName + " 已准备" : playerName + " 取消准备");
   }, [players, playerName, broadcastState, addLog]);
 
+  // 违规摇骰检测
+  const checkRollViolation = useCallback(() => {
+    if (cupOpened || (gameStarted && hasRolled)) {
+      broadcastState({ type: 'violation', player: playerName });
+      addLog('⚠️ ' + playerName + ' 违规摇骰！');
+      return false;
+    }
+    return true;
+  }, [cupOpened, gameStarted, hasRolled, playerName, broadcastState, addLog]);
+
   const handleBeginGame = useCallback(async () => {
     // 房主不需要准备，检查至少有一个其他人准备
     const otherPrepared = players.filter((p: any) => p.name !== playerName && p.prepared);
@@ -284,6 +306,7 @@ export default function Page() {
     setHasRolled(true);
     setDiceShaking(false);
     setDiceLocked(true);
+    setCupOpened(false); // 摇完盖盅，没打开过
     setPhase("bidding");
     const me2 = newPlayers.find((p: any) => p.name === playerName);
     if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
@@ -442,6 +465,7 @@ export default function Page() {
         if (state.hasRolled !== undefined) setHasRolled(state.hasRolled);
         if (state.myDice) setMyDice(state.myDice);
         if (state.myHand) setMyHand(state.myHand);
+        if (state.cupOpened !== undefined) setCupOpened(state.cupOpened);
         // 广播恢复通知给房间内其他人
         addLog('🔄 已恢复上次状态');
         broadcastState({ type: 'update', players: state.players, phase: state.phase });
@@ -464,6 +488,7 @@ export default function Page() {
       hasRolled,
       myDice,
       myHand,
+      cupOpened,
       lastUpdated: Date.now(),
     };
     sessionStorage.setItem('dice067_room_' + roomId, JSON.stringify(state));
@@ -609,11 +634,16 @@ export default function Page() {
                   borderColor: isActive ? '#fbbf24' : isMe ? 'rgba(251,191,36,0.5)' : 'rgba(255,255,255,0.06)',
                   background: isActive ? 'rgba(251,191,36,0.1)' : 'rgba(255,255,255,0.02)',
                 }}
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   if (isMe && hasDice && !diceShaking) {
-                    setMyDiceRevealed(!myDiceRevealed);
-                    if (!myDiceRevealed) {
-                      setTimeout(() => setMyDiceRevealed(false), 3000);
+                    if (!cupOpened) {
+                      // 没打开过 -> 打开查看
+                      setShowingDice(true);
+                      setCupOpened(true); // 标记已打开，禁止重摇
+                    } else {
+                      // 已经打开过 -> 盖回去
+                      setShowingDice(false);
                     }
                   }
                 }}
@@ -631,14 +661,17 @@ export default function Page() {
                     ) : (
                       p.dice.map((d: number, j: number) => (
                         <span key={j} style={S.seatDiceItem}>
-                          {shouldReveal ? DICE_EMOJIS[d - 1] : '🎲'}
+                          {(showingDice && isMe) ? DICE_EMOJIS[d - 1] : '🎲'}
                         </span>
                       ))
                     )}
                   </div>
                 )}
                 
-                {isMe && hasDice && shouldReveal && myHand && (
+                {showingDice && isMe && (
+                  <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 2 }}>🎲 查看中</div>
+                )}
+                {isMe && hasDice && showingDice && myHand && (
                   <div style={S.handInfo}>
                     {myHand.emoji} {myHand.label}
                   </div>
