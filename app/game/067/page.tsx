@@ -122,7 +122,7 @@ export default function Page() {
           const exists = prev.find((p: any) => p.name === s.player);
           if (!exists) {
             addLog(s.player + ' 加入了房间');
-            return [...prev, { name: s.player, dice: [], score: 0 }];
+            return [...prev, { name: s.player, dice: [], prepared: false, score: 0 }];
           }
           return prev;
         });
@@ -541,10 +541,10 @@ export default function Page() {
               {isCreator && (
                 <>
                   {' '}| {' '}
-                  {players.filter((p:any) => p.prepared).length >= 2 ? (
+                  {players.some((p:any) => p.name !== playerName && p.prepared) ? (
                     <button style={S.btnStartSmall} onClick={handleBeginGame}>🎮 开始对局</button>
                   ) : (
-                    <span style={{fontSize:12,color:'rgba(255,255,255,0.4)'}}>等待2人准备...</span>
+                    <span style={{fontSize:12,color:'rgba(255,255,255,0.4)'}}>等其他人准备...</span>
                   )}
                 </>
               )}
