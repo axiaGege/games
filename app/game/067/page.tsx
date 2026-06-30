@@ -118,7 +118,10 @@ export default function Page() {
       } else if (s.type === 'roll') {
         setPlayers(prev => prev.map((p: any) => p.name === s.player ? { ...p, dice: s.dice } : p));
         if (s.players) setPlayers(s.players);
-        setMyDice(s.dice || []);
+        
+      } else if (s.type === 'leave') {
+        setPlayers(prev => prev.filter((p: any) => p.name !== s.player));
+        addLog(s.player + ' 离开了房间');
         if (s.dice && s.dice.length === 5) setMyHand(calcHand(s.dice));
         setHasRolled(true);
       } else if (s.type === 'start') {
@@ -166,6 +169,9 @@ export default function Page() {
         setRoomId(rid);
         addLog(name + ' 加入房间 ' + rid);
 
+        // 广播自己加入了，让房间裡其他人看到
+        broadcastState({ type: "join", player: name });
+
         // 如果是创建者，初始化房间
         if (creator) {
           const newPlayers = [{ name, dice: [], score: 0 }];
@@ -185,7 +191,8 @@ export default function Page() {
               });
           } catch (e) { console.error('DB insert failed:', e); }
         } else {
-          // 加入已有房间
+          // 加入已有房间 - 先尝试数据库
+          let joinedViaDb = false;
           try {
               const { data: roomList } = await supabase.from('rooms').select().eq('password', rid); const roomData = roomList && roomList.length > 0 ? roomList[0] : null;
             if (roomData) {
@@ -199,9 +206,15 @@ export default function Page() {
                   players: newPlayers.map((n: string) => ({ name: n, dice: [], score: 0 })),
                 });
                 setPlayers(newPlayers.map((n: string) => ({ name: n, dice: [], score: 0 })));
+                joinedViaDb = true;
               }
             }
           } catch (e) { console.error('DB join failed:', e); }
+          
+          // 即使数据库失败，也要广播自己加入，让房间里的人看到
+          if (!joinedViaDb) {
+            await broadcastState({ type: 'join', player: name });
+          }
         }
       }
     });
@@ -344,6 +357,14 @@ export default function Page() {
 
   // ==================== 离开房间 ====================
   const handleLeave = useCallback(() => {
+    // 离开前广播
+    if (channelRef.current && playerName) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'gameState',
+        payload: { type: 'leave', player: playerName },
+      }).catch(e => console.error('Leave broadcast failed:', e));
+    }
     if (channelRef.current) { channelRef.current.unsubscribe(); channelRef.current = null; }
     setJoined(false);
     setPlayers([]);
