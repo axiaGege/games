@@ -774,6 +774,7 @@ export default function Page() {
 const S: Record<string, React.CSSProperties> = {
   container: {
     minHeight: '100vh',
+    background: 'radial-gradient(ellipse at 50% 50%, #1a1a3e 0%, #0f0f1a 60%, #0a0a12 100%)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
