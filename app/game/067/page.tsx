@@ -631,13 +631,13 @@ export default function Page() {
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (isMe && hasDice && !diceShaking) {
+                  // 自己(庄家)或其他人都可以看自己的骰子
+                  const canSee = isMe && hasDice && !diceShaking;
+                  if (canSee) {
                     if (!cupOpened) {
-                      // 没打开过 -> 打开查看
                       setShowingDice(true);
-                      setCupOpened(true); // 标记已打开，禁止重摇
+                      setCupOpened(true);
                     } else {
-                      // 已经打开过 -> 盖回去
                       setShowingDice(false);
                     }
                   }
@@ -659,7 +659,7 @@ export default function Page() {
                       <span style={{ fontSize: 28, animation: 'shakeAnim 0.15s infinite alternate' }}>
                         {'🎲'}
                       </span>
-                    ) : showingDice && isMe ? (
+                    ) : showingDice && isMe && hasDice ? (
                       // 打开骰盅 - 显示骰子
                       <div style={{
                         display: 'flex',
@@ -683,14 +683,14 @@ export default function Page() {
                   </div>
                 )}
                 
-                {showingDice && isMe && (
+                {showingDice && isMe && hasDice && (
                   <div style={{ fontSize: 9, color: '#fbbf24', marginTop: 2 }}>👁 查看中</div>
                 )}
-                {!showingDice && hasDice && isMe && !cupOpened && (
+                {!showingDice && hasDice && isMe && !cupOpened && gameStarted && !gameOver && (
                   <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>点击看骰</div>
                 )}
                 {isMe && hasDice && showingDice && myHand && (
-                  <div style={S.handInfo}>
+                  <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 2, background: 'rgba(251,191,36,0.1)', padding: '2px 6px', borderRadius: 8 }}>
                     {myHand.emoji} {myHand.label}
                   </div>
                 )}
