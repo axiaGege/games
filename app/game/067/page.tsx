@@ -120,7 +120,10 @@ export default function Page() {
       if (s.type === 'join') {
         setPlayers(prev => {
           const exists = prev.find((p: any) => p.name === s.player);
-          if (!exists) return [...prev, { name: s.player, dice: [], score: 0 }];
+          if (!exists) {
+            addLog(s.player + ' 加入了房间');
+            return [...prev, { name: s.player, dice: [], score: 0 }];
+          }
           return prev;
         });
       } else if (s.type === 'roll') {
@@ -130,8 +133,6 @@ export default function Page() {
       } else if (s.type === 'leave') {
         setPlayers(prev => prev.filter((p: any) => p.name !== s.player));
         addLog(s.player + ' 离开了房间');
-        if (s.dice && s.dice.length === 5) setMyHand(calcHand(s.dice));
-        setHasRolled(true);
       } else if (s.type === 'start') {
         setPlayers(s.players || []);
         setCurrentPlayer(s.currentTurn || '');
@@ -182,7 +183,7 @@ export default function Page() {
 
         // 如果是创建者，初始化房间
         if (creator) {
-          const newPlayers = [{ name, dice: [], score: 0 }];
+          const newPlayers = [{ name, dice: [], prepared: false, score: 0 }];
           setPlayers(newPlayers);
           await broadcastState({
             type: 'start',
@@ -190,6 +191,7 @@ export default function Page() {
             currentPlayer: '',
             phase: 'waiting',
           });
+          addLog('房间已创建');
           // 同步到数据库
           try {
             await supabase.from('rooms').insert({
@@ -405,6 +407,8 @@ export default function Page() {
     setOperationLog([]);
     setErrorMsg('');
     setRoomPassword('');
+    // 清除 sessionStorage
+    if (roomId) sessionStorage.removeItem('dice067_room_' + roomId);
   }, []);
 
   // ==================== 清理 ====================
@@ -414,16 +418,32 @@ export default function Page() {
 
   // ==================== 状态恢复：刷新/返回后自动恢复 ====================
   useEffect(() => {
-    if (!joined) return;
+    if (!joined || !roomId) return;
     const saved = sessionStorage.getItem('dice067_room_' + roomId);
     if (saved) {
       try {
         const state = JSON.parse(saved);
-        // 广播恢复通知
+        // 恢复 players
+        if (state.players && state.players.length > 0) {
+          setPlayers(state.players);
+        }
+        // 恢复游戏阶段
+        if (state.phase) setPhase(state.phase);
+        if (state.lastBid) setLastBid(state.lastBid);
+        if (state.bidHistory) setBidHistory(state.bidHistory);
+        if (state.currentPlayer) setCurrentPlayer(state.currentPlayer);
+        if (state.gameStarted !== undefined) setGameStarted(state.gameStarted);
+        if (state.gameOver !== undefined) setGameOver(state.gameOver);
+        if (state.result) setResult(state.result);
+        if (state.hasRolled !== undefined) setHasRolled(state.hasRolled);
+        if (state.myDice) setMyDice(state.myDice);
+        if (state.myHand) setMyHand(state.myHand);
+        // 广播恢复通知给房间内其他人
         addLog('🔄 已恢复上次状态');
+        broadcastState({ type: 'update', players: state.players, phase: state.phase });
       } catch (e) {}
     }
-  }, [joined, roomId, addLog]);
+  }, [joined, roomId, addLog, broadcastState]);
 
   // 保存状态到 sessionStorage（每次状态变化都保存）
   useEffect(() => {
