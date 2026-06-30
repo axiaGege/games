@@ -151,7 +151,7 @@ export default function Page() {
         addLog(s.player + ' 离开了房间');
       } else if (s.type === 'start') {
         setPlayers(s.players || []);
-        setCurrentPlayer(s.currentTurn || '');
+        setCurrentPlayer(s.currentPlayer || s.currentTurn || '');
         setGameStarted(true);
         setPhase(s.phase || 'rolling');
         setHasRolled(false);
@@ -648,15 +648,35 @@ export default function Page() {
                   {isMe && <span style={S.meBadge}>我</span>}
                 </div>
                 {hasDice && (
-                  <div style={S.seatDice}>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginTop: 4,
+                  }}>
                     {(diceShaking && isMe) ? (
-                      <span style={{ fontSize: 22, animation: 'shakeAnim 0.1s infinite alternate' }}>🎲</span>
+                      <span style={{ fontSize: 28, animation: 'shakeAnim 0.15s infinite alternate' }}>
+                        {'🎲'}
+                      </span>
+                    ) : showingDice && isMe ? (
+                      // 打开骰盅 - 显示骰子
+                      <div style={{
+                        display: 'flex',
+                        gap: 3,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                      }}>
+                        {p.dice.map((d: number, j: number) => (
+                          <span key={j} style={{ fontSize: 18 }}>{DICE_EMOJIS[d - 1]}</span>
+                        ))}
+                      </div>
                     ) : (
-                      p.dice.map((d: number, j: number) => (
-                        <span key={j} style={{ fontSize: 20 }}>
-                          {(showingDice && isMe) ? DICE_EMOJIS[d - 1] : '🎲'}
-                        </span>
-                      ))
+                      // 盖着骰盅
+                      <span style={{
+                        fontSize: 26,
+                        filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
+                      }}>
+                        {'🎲'}
+                      </span>
                     )}
                   </div>
                 )}
@@ -709,6 +729,11 @@ export default function Page() {
           </div>
         )}
 
+        {/* 调试信息 */}
+        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginBottom: 4 }}>
+          phase={phase} gameStarted={String(gameStarted)} gameOver={String(gameOver)} isMyTurn={String(isMyTurn)}
+        </div>
+
         {/* 操作区 */}
         <div style={S.actionBar}>
           {!gameStarted && players.length >= 2 && isCreator && (
@@ -754,7 +779,7 @@ export default function Page() {
                   );
                   return unique.map((b, i) => (
                     <button key={i} style={S.btnBid} onClick={() => handleBid(b.count, b.value)}>
-                      {b.count && b.value ? b.count+'个'+(b.value===1?'🎯1':b.value) : '?'}
+                      {b.count+'个'+(b.value===1?'1':b.value)}
                     </button>
                   ));
                 })()}
@@ -940,15 +965,21 @@ const S: Record<string, React.CSSProperties> = {
   centerHandInfo: { color: '#fbbf24', fontSize: 12, marginTop: 4 },
   seat: {
     position: 'absolute',
-    width: 70,
-    padding: '4px 6px',
-    borderRadius: 10,
-    border: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(255,255,255,0.03)',
+    width: 80,
+    padding: '8px 6px',
+    borderRadius: 14,
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(255,255,255,0.04)',
     textAlign: 'center',
     transition: 'all 0.3s',
     cursor: 'default',
     backdropFilter: 'blur(10px)',
+  },
+  cupIcon: {
+    fontSize: 28,
+    lineHeight: 1,
+    filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.4))',
+    transition: 'all 0.3s',
   },
   seatName: {
     color: '#e0e0e0', fontWeight: 600, fontSize: 13,
