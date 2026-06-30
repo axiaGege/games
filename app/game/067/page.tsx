@@ -256,10 +256,9 @@ export default function Page() {
   }, [players, playerName, broadcastState, addLog]);
 
   const handleBeginGame = useCallback(async () => {
-    const me = players.find((p: any) => p.name === playerName);
-    if (!me || !me.prepared) { setErrorMsg("你自己还没准备"); return; }
-    const prepPlayers = players.filter((p: any) => p.prepared);
-    if (prepPlayers.length < 2) { setErrorMsg("至少2人准备才能开始"); return; }
+    // 房主不需要准备，检查至少有一个其他人准备
+    const otherPrepared = players.filter((p: any) => p.name !== playerName && p.prepared);
+    if (otherPrepared.length < 1) { setErrorMsg("至少需要1个其他玩家准备"); return; }
     setPhase("rolling");
     broadcastState({ type: "update", phase: "rolling", players });
     playShakeSound();
@@ -662,6 +661,17 @@ export default function Page() {
           {!gameStarted && players.length >= 2 && isCreator && (
             <button style={S.btnStart} onClick={handleBeginGame} disabled={diceShaking}>
               {diceShaking ? '🎲 摇骰中...' : '🎮 开始对局'}
+            </button>
+          )}
+          {!gameStarted && players.length >= 2 && !isCreator && (
+            <button
+              style={{
+                ...S.btnStart,
+                background: me && me.prepared ? 'linear-gradient(135deg, #a78bfa, #7c3aed)' : 'linear-gradient(135deg, #22d3ee, #0891b2)',
+              }}
+              onClick={handlePrepare}
+            >
+              {me && me.prepared ? '✅ 已准备' : '⏳ 准备'}
             </button>
           )}
 
