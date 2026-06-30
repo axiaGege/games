@@ -47,6 +47,7 @@ export default function Page() {
   const [gameOver, setGameOver] = useState(false);
   const [result, setResult] = useState('');
   const [lastBid, setLastBid] = useState<any>(null);
+  const [bidHistory, setBidHistory] = useState<any[]>([]);
   const [phase, setPhase] = useState('waiting');
   const [hasRolled, setHasRolled] = useState(false);
 
@@ -301,6 +302,7 @@ export default function Page() {
     setErrorMsg('');
     const newBid = { player: playerName, count, value };
     setLastBid(newBid);
+    setBidHistory(prev => [...prev, newBid]);
     const playerNames = players.map((p: any) => p.name);
     const idx = playerNames.indexOf(currentPlayer);
     const nextPlayer = playerNames[(idx + 1) % playerNames.length];
@@ -312,6 +314,7 @@ export default function Page() {
       lastBid: newBid,
       currentPlayer: nextPlayer,
       phase: 'bidding',
+      bidHistory: [...bidHistory, newBid],
     });
   }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog]);
 
@@ -589,15 +592,35 @@ export default function Page() {
           })}
         </div>
 
-        {/* 叫牌信息 */}
+        {/* 叫牌信息 + 历史记录 */}
         {lastBid && !gameOver && (
-          <div style={S.bidInfo}>
-            <span style={S.bidIcon}>📢</span>
-            <span style={S.bidText}>
-              <strong style={{ color: '#fbbf24' }}>{lastBid.player}</strong> 叫了{' '}
-              <strong style={{ color: '#60a5fa' }}>{lastBid.count}</strong> 个{' '}
-              <strong style={{ color: '#60a5fa' }}>{lastBid.value}</strong>
-            </span>
+          <div style={{
+            background: 'linear-gradient(135deg, rgba(251,191,36,0.06), rgba(139,92,246,0.06))',
+            borderRadius: 14, padding: '14px 18px',
+            marginBottom: 16, border: '1px solid rgba(251,191,36,0.1)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 }}>
+              <span style={{ fontSize: 18 }}>📢</span>
+              <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 15 }}>
+                <strong style={{ color: '#fbbf24' }}>{lastBid.player}</strong> 叫了{' '}
+                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.count}</strong> 个{' '}
+                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.value === 1 ? '🎯1' : lastBid.value}</strong>
+              </span>
+              {isMyTurn && <span style={{ fontSize: 12, color: '#22d3ee' }}>⬅️ 轮到你!</span>}
+            </div>
+            {/* 叫牌历史 */}
+            {bidHistory.length > 0 && (
+              <div style={{
+                fontSize: 12, color: 'rgba(255,255,255,0.4)',
+                maxHeight: 50, overflowY: 'auto', paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                {bidHistory.map((b: any, i: number) => (
+                  <div key={i} style={{ padding: '2px 0' }}>
+                    {b.player}: {b.count}个{b.value}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
