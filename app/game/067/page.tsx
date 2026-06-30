@@ -363,7 +363,7 @@ export default function Page() {
         type: 'broadcast',
         event: 'gameState',
         payload: { type: 'leave', player: playerName },
-      }).catch(e => console.error('Leave broadcast failed:', e));
+      }).catch((e: any) => console.error('Leave broadcast failed:', e));
     }
     if (channelRef.current) { channelRef.current.unsubscribe(); channelRef.current = null; }
     setJoined(false);
