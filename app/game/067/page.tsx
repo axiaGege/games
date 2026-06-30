@@ -443,6 +443,16 @@ export default function Page() {
     return () => { if (channelRef.current) channelRef.current.unsubscribe(); };
   }, []);
 
+  // 注入全局动画样式
+  useEffect(() => {
+    if (document.getElementById('dice067-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'dice067-styles';
+    style.textContent = '@keyframes shakeAnim{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px) rotate(-5deg)}75%{transform:translateX(5px) rotate(5deg)}}@keyframes violationBlink{0%,100%{borderColor:rgba(255,255,255,0.06)}50%{borderColor:#f43f5e;boxShadow:0 0 15px rgba(244,63,94,0.5)}}';
+    document.head.appendChild(style);
+  }, []);
+
+
   // ==================== 状态恢复：刷新/返回后自动恢复 ====================
   useEffect(() => {
     if (!joined || !roomId) return;
@@ -589,27 +599,10 @@ export default function Page() {
         <div style={S.tableArea}>
           {/* 中间的骰子台 */}
           <div style={S.diceTable}>
-            {gameStarted && hasRolled && myDice.length > 0 && (
-              <>
-                <div style={S.centerDiceLabel}>🎲 你的骰子</div>
-                <div style={S.centerDiceRow}>
-                  {myDice.map((d: number, i: number) => (
-                    <span key={i} style={{
-                      fontSize: 40,
-                      animation: diceShaking ? 'shakeAnim 0.3s infinite' : undefined,
-                    }}>
-                      {DICE_EMOJIS[d - 1]}
-                    </span>
-                  ))}
-                </div>
-                {myHand && (
-                  <div style={S.centerHandInfo}>
-                    {myHand.emoji} {myHand.label}
-                  </div>
-                )}
-              </>
-            )}
-            {!gameStarted && <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 14 }}>等待开始...</div>}
+            {diceShaking && <div style={{ fontSize: 32, animation: 'shakeAnim 0.3s infinite' }}>🎲</div>}
+            {!diceShaking && !gameStarted && <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>等待开始...</div>}
+            {!diceShaking && gameStarted && hasRolled && !gameOver && <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>🎲 叫牌阶段</div>}
+            {!diceShaking && gameStarted && gameOver && <div style={{ color: '#fbbf24', fontSize: 13 }}>{result}</div>}
           </div>
 
           {/* 周围玩家 */}
@@ -657,10 +650,10 @@ export default function Page() {
                 {hasDice && (
                   <div style={S.seatDice}>
                     {(diceShaking && isMe) ? (
-                      <span style={{ fontSize: 26, animation: 'shakeAnim 0.1s infinite alternate' }}>🎲</span>
+                      <span style={{ fontSize: 22, animation: 'shakeAnim 0.1s infinite alternate' }}>🎲</span>
                     ) : (
                       p.dice.map((d: number, j: number) => (
-                        <span key={j} style={S.seatDiceItem}>
+                        <span key={j} style={{ fontSize: 20 }}>
                           {(showingDice && isMe) ? DICE_EMOJIS[d - 1] : '🎲'}
                         </span>
                       ))
@@ -669,7 +662,10 @@ export default function Page() {
                 )}
                 
                 {showingDice && isMe && (
-                  <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 2 }}>🎲 查看中</div>
+                  <div style={{ fontSize: 9, color: '#fbbf24', marginTop: 2 }}>👁 查看中</div>
+                )}
+                {!showingDice && hasDice && isMe && !cupOpened && (
+                  <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>点击看骰</div>
                 )}
                 {isMe && hasDice && showingDice && myHand && (
                   <div style={S.handInfo}>
@@ -692,8 +688,8 @@ export default function Page() {
               <span style={{ fontSize: 18 }}>📢</span>
               <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 15 }}>
                 <strong style={{ color: '#fbbf24' }}>{lastBid.player}</strong> 叫了{' '}
-                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.count}</strong> 个{' '}
-                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.value === 1 ? '🎯1' : lastBid.value}</strong>
+                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.count || '-'}</strong> 个{' '}
+                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.value === 1 ? '🎯1' : (lastBid.value || '-')}</strong>
               </span>
               {isMyTurn && <span style={{ fontSize: 12, color: '#22d3ee' }}>⬅️ 轮到你!</span>}
             </div>
@@ -758,7 +754,7 @@ export default function Page() {
                   );
                   return unique.map((b, i) => (
                     <button key={i} style={S.btnBid} onClick={() => handleBid(b.count, b.value)}>
-                      {b.count}个{b.value}
+                      {b.count && b.value ? b.count+'个'+(b.value===1?'🎯1':b.value) : '?'}
                     </button>
                   ));
                 })()}
@@ -1026,7 +1022,30 @@ const S: Record<string, React.CSSProperties> = {
   },
   playerCount: { color: 'rgba(255,255,255,0.3)', fontSize: 13 },
   phaseTag: { color: 'rgba(255,255,255,0.2)', fontSize: 13 },
+  seatViolation: {
+    borderColor: '#f43f5e',
+    animation: 'violationBlink 0.5s ease-in-out infinite',
+  },
 };
+
+// 添加全局动画样式
+const styleTag = typeof document !== 'undefined' && !document.getElementById('dice067-styles');
+if (styleTag) {
+  const style = document.createElement('style');
+  style.id = 'dice067-styles';
+  style.textContent = `
+    @keyframes shakeAnim {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-5px) rotate(-5deg); }
+      75% { transform: translateX(5px) rotate(5deg); }
+    }
+    @keyframes violationBlink {
+      0%, 100% { borderColor: 'rgba(255,255,255,0.06)'; }
+      50% { borderColor: '#f43f5e'; boxShadow: '0 0 15px rgba(244,63,94,0.5)'; }
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 
 
