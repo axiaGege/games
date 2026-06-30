@@ -413,6 +413,39 @@ export default function Page() {
     return () => { if (channelRef.current) channelRef.current.unsubscribe(); };
   }, []);
 
+  // ==================== 状态恢复：刷新/返回后自动恢复 ====================
+  useEffect(() => {
+    if (!joined) return;
+    const saved = sessionStorage.getItem('dice067_room_' + roomId);
+    if (saved) {
+      try {
+        const state = JSON.parse(saved);
+        // 广播恢复通知
+        addLog('🔄 已恢复上次状态');
+      } catch (e) {}
+    }
+  }, [joined, roomId, addLog]);
+
+  // 保存状态到 sessionStorage（每次状态变化都保存）
+  useEffect(() => {
+    if (!joined || !roomId) return;
+    const state = {
+      players,
+      phase,
+      lastBid,
+      bidHistory,
+      currentPlayer,
+      gameStarted,
+      gameOver,
+      result,
+      hasRolled,
+      myDice,
+      myHand,
+      lastUpdated: Date.now(),
+    };
+    sessionStorage.setItem('dice067_room_' + roomId, JSON.stringify(state));
+  }, [joined, roomId, players, phase, lastBid, bidHistory, currentPlayer, gameStarted, gameOver, result, hasRolled, myDice, myHand]);
+
   // 刷新提醒
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
