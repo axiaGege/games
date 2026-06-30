@@ -156,17 +156,24 @@ export default function Page() {
         setCurrentPlayer(s.currentPlayer || s.currentTurn || '');
         setGameStarted(true);
         setPhase(s.phase || 'rolling');
-        setHasRolled(false);
+        setHasRolled(true); // 已经摇过了
         setGameOver(false);
         setResult('');
         setLastBid(null);
-        setMyDice([]);
-        setMyHand(null);
+        // 不要清空 myDice，从 players 里恢复
+        const me2 = (s.players || []).find((p: any) => p.name === playerName);
+        if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
         setRevealedPlayer(null);
+        if (s.cupOpened !== undefined) setCupOpened(s.cupOpened);
       } else if (s.type === 'bid') {
         setLastBid(s.lastBid);
         setCurrentPlayer(s.currentPlayer);
         setPhase(s.phase);
+        if (s.players) {
+          setPlayers(s.players);
+          const me3 = s.players.find((p: any) => p.name === playerName);
+          if (me3) { setMyDice(me3.dice || []); setMyHand(me3.dice ? calcHand(me3.dice) : null); }
+        }
       } else if (s.type === 'open') {
         setGameOver(true);
         setPhase('ended');
@@ -313,7 +320,7 @@ export default function Page() {
     const me2 = newPlayers.find((p: any) => p.name === playerName);
     if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
     addLog(firstPlayer + " 先手叫牌");
-    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding" });
+    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding", cupOpened: false });
   }, [players, playerName, broadcastState, addLog, playShakeSound]);
 
 
@@ -339,12 +346,14 @@ export default function Page() {
 
     setCurrentPlayer(nextPlayer);
     addLog(playerName + ' 叫了 ' + count + '个' + value);
+    const updatedPlayers = players.map((p: any) => p.name === playerName ? { ...p, dice: p.dice } : p);
     await broadcastState({
       type: 'bid',
       lastBid: newBid,
       currentPlayer: nextPlayer,
       phase: 'bidding',
       bidHistory: [...bidHistory, newBid],
+      players: updatedPlayers,
     });
   }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog]);
 
