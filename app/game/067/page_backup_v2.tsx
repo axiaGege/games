@@ -55,12 +55,6 @@ export default function Page() {
   const [operationLog, setOperationLog] = useState<string[]>([]);
   const [showConfirmReload, setShowConfirmReload] = useState(false);
 
-  // 骰盅查看状态
-  const [myDiceRevealed, setMyDiceRevealed] = useState(false);
-  const [diceLocked, setDiceLocked] = useState(false);
-  // 违规闪烁
-  const [violators, setViolators] = useState<string[]>([]);
-
   const channelRef = useRef<any>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const nameRef = useRef(playerName);
@@ -262,7 +256,6 @@ export default function Page() {
     setPhase('bidding');
     setHasRolled(true);
     setDiceShaking(false);
-    setDiceLocked(true); // 摇骰后盖盅锁定
     setErrorMsg('');
 
     // 同步到自己和广播
@@ -280,7 +273,6 @@ export default function Page() {
 
   // ==================== 叫牌 ====================
   const handleBid = useCallback(async (count: number, value: number) => {
-    if (diceLocked && !gameStarted) { /* 等待摇骰 */ }
     if (currentPlayer !== playerName) { setErrorMsg('还没轮到你'); return; }
     if (gameOver) { setErrorMsg('游戏已结束'); return; }
     if (count < 1 || count > 7 || value < 1 || value > 6) { setErrorMsg('叫点 1-7，数字 1-6'); return; }
@@ -308,17 +300,10 @@ export default function Page() {
   }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog]);
 
   // ==================== 开盅 ====================
-  // 支持的抢开：任何人都可以随时开任何人
-  const handleOpen = useCallback(async (targetName?: string) => {
-    if (gameOver) { setErrorMsg('游戏已结束'); return; }
+  const handleOpen = useCallback(async () => {
+    if (currentPlayer !== playerName) { setErrorMsg('还没轮到你'); return; }
     if (!lastBid) { setErrorMsg('还没人叫牌'); return; }
-    // 任何人都可以在叫牌阶段随时开任何人（无限制抢开）
 
-    // 如果没有传 targetName，就是当前玩家自己开（传统开盅）
-    const opener = playerName;
-    const target = targetName || lastBid.player;
-
-    // 计算总数
     let totalCount = 0;
     for (const p of players) {
       const dice = p.dice || [];
@@ -329,26 +314,25 @@ export default function Page() {
     }
 
     const bidder = lastBid.player;
-    const winner = totalCount >= lastBid.count ? bidder : opener;
-    const loser = winner === bidder ? opener : target;
-    const resultMsg = '🔓 ' + opener + ' 开 ' + target + '！实际有 ' + totalCount + ' 个' + (lastBid.value === 1 ? '1' : lastBid.value);
+    const caller = playerName;
+    const winner = totalCount >= lastBid.count ? bidder : caller;
+    const loser = winner === bidder ? caller : bidder;
+    const resultMsg = '🍺 ' + loser + ' 输了！实际有 ' + totalCount + ' 个' + lastBid.value;
 
     setGameOver(true);
     setPhase('ended');
     setResult(resultMsg);
-    addLog(resultMsg);
+    addLog(caller + ' 开盅，' + loser + ' 输');
 
     await broadcastState({
       type: 'open',
       players,
       gameOver: true,
       result: resultMsg,
-      opener,
-      target: target,
       lastBid,
       phase: 'ended',
     });
-  }, [currentPlayer, playerName, lastBid, players, broadcastState, addLog, gameOver]);
+  }, [currentPlayer, playerName, lastBid, players, broadcastState, addLog]);
 
   // ==================== 重置游戏 ====================
   const handleReset = useCallback(async () => {
@@ -534,9 +518,9 @@ export default function Page() {
                 }}
                 onClick={() => {
                   if (isMe && hasDice && !diceShaking) {
-                    setMyDiceRevealed(!myDiceRevealed);
-                    if (!myDiceRevealed) {
-                      setTimeout(() => setMyDiceRevealed(false), 3000);
+                    setRevealedPlayer(revealedPlayer === p.name ? null : p.name);
+                    if (revealedPlayer !== p.name) {
+                      setTimeout(() => setRevealedPlayer(null), 3000);
                     }
                   }
                 }}
@@ -553,14 +537,14 @@ export default function Page() {
                     ) : (
                       p.dice.map((d: number, j: number) => (
                         <span key={j} style={S.seatDiceItem}>
-                          {(myDiceRevealed && isMe) ? DICE_EMOJIS[d - 1] : '🎲'}
+                          {shouldReveal ? DICE_EMOJIS[d - 1] : '🎲'}
                         </span>
                       ))
                     )}
                   </div>
                 )}
                 {isMe && hasDice && !shouldReveal && !diceShaking && (
-                  <div style={S.hintText}>👆 点击看骰子</div>
+                  <div style={S.hintText}>👆 点击看牌</div>
                 )}
                 {isMe && hasDice && shouldReveal && myHand && (
                   <div style={S.handInfo}>
@@ -624,7 +608,7 @@ export default function Page() {
                 })()}
               </div>
               <div style={S.btnRow}>
-                <button style={S.btnOpen} onClick={() => handleOpen()}>🔓 开盅</button>
+                <button style={S.btnOpen} onClick={handleOpen}>🔓 开盅</button>
               </div>
             </>
           )}
