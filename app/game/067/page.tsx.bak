@@ -1,8 +1,5 @@
 ﻿'use client';
 
-export const dynamic = 'force-dynamic';
-
-
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -75,9 +72,6 @@ const DICE_EMOJIS = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 
 // ==================== 主组件 ====================
 export default function Page() {
-
-  // SSR guard
-  if (typeof window === "undefined") { return null; }
   const [playerName, setPlayerName] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [joined, setJoined] = useState(false);
@@ -110,7 +104,7 @@ export default function Page() {
   const [tempBidFace, setTempBidFace] = useState(0); // 叫牌临时选的数字
   const [tempBidCount, setTempBidCount] = useState(0); // 叫牌临时选的数量
   const [oneSealed, setOneSealed] = useState(false); // 1号是否被封（第一次叫人后封1）
-  const [playerPrepared, setPlayerPrepared] = useState(false);
+  const [playerPrepared, ] = useState({});
   // 违规闪烁
   const [violators, setViolators] = useState<string[]>([]);
 
@@ -216,15 +210,12 @@ export default function Page() {
         setLastBid(s.lastBid);
         setCurrentPlayer(s.currentPlayer);
         setPhase(s.phase);
-        if (s.bidHistory) setBidHistory(s.bidHistory);
-        if (s.oneSealed !== undefined) setOneSealed(s.oneSealed);
         if (s.players) {
           setPlayers(s.players);
           const me3 = s.players.find((p: any) => p.name === playerName);
           if (me3) { setMyDice(me3.dice || []); setMyHand(me3.dice ? calcHand(me3.dice, oneSealed) : null); }
         }
-      }
-     else if (s.type === 'open') {
+      } else if (s.type === 'open') {
         setGameOver(true);
         setPhase('ended');
         setResult(s.result);
@@ -324,7 +315,6 @@ export default function Page() {
   // ==================== 开始游戏 ====================
   // ==================== 准备流程 ====================
   const handlePrepare = useCallback(() => {
-    if (!playerName) return;
     const me = players.find((p: any) => p.name === playerName);
     if (!me) return;
     const newPrepared = !me.prepared;
@@ -362,24 +352,26 @@ export default function Page() {
     setPlayers(newPlayers);
     setCurrentPlayer(firstPlayer);
     setGameStarted(true);
+    setPhase("bidding");
     setHasRolled(true);
     setDiceShaking(false);
     setDiceLocked(true);
-    setCupOpened(false);
+    setCupOpened(false); // 摇完盖盅，没打开过
     setPhase("bidding");
     const me2 = newPlayers.find((p: any) => p.name === playerName);
     if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice, oneSealed) : null); }
     addLog(firstPlayer + " 先手叫牌");
-    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding", cupOpened: false, oneSealed: false });
+    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding", cupOpened: false });
   }, [players, playerName, broadcastState, addLog, playShakeSound]);
 
 
   // ==================== 叫牌 ====================
   
   const handleBid = useCallback(async (count: number, value: number) => {
+    if (diceLocked && !gameStarted) { /* 等待摇骰 */ }
+    const wasFirstCall = !lastBid;
     if (currentPlayer !== playerName) { setErrorMsg('还没轮到你'); return; }
     if (gameOver) { setErrorMsg('游戏已结束'); return; }
-    if (oneSealed && value === 1) { setErrorMsg('1号已被封印，只能叫2-6'); return; }
     if (count < 1 || count > 7 || value < 1 || value > 6) { setErrorMsg('叫点 1-7，数字 1-6'); return; }
     if (lastBid) {
       if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
@@ -394,11 +386,10 @@ export default function Page() {
     const playerNames = players.map((p: any) => p.name);
     const idx = playerNames.indexOf(currentPlayer);
     const nextPlayer = playerNames[(idx + 1) % playerNames.length];
+
     setCurrentPlayer(nextPlayer);
     addLog(playerName + ' 叫了 ' + count + '个' + value);
     const updatedPlayers = players.map((p: any) => p.name === playerName ? { ...p, dice: p.dice } : p);
-    const newOneSealed = !oneSealed;
-    setOneSealed(newOneSealed);
     await broadcastState({
       type: 'bid',
       lastBid: newBid,
@@ -406,9 +397,8 @@ export default function Page() {
       phase: 'bidding',
       bidHistory: [...bidHistory, newBid],
       players: updatedPlayers,
-      oneSealed: newOneSealed,
     });
-  }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog, oneSealed, bidHistory]);
+  }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog]);
 
   // ==================== 开盅 ====================
   // 支持的抢开：任何人都可以随时开任何人
@@ -741,8 +731,10 @@ export default function Page() {
                   </div>
                 )}
                 
-                {showingDice && isMe && hasDice && (<div style={{ fontSize: 9, color: "#fbbf24", marginTop: 2 }}>👁 查看中 (3秒后自动盖)</div>)}
-                {!showingDice && hasDice && isMe && gameStarted && !gameOver && (
+                {showingDice && isMe && hasDice && (
+                  <div style={{ fontSize: 9, color: '#fbbf24', marginTop: 2 }}>👁 查看中</div>
+                )}
+                {!showingDice && hasDice && isMe && !cupOpened && gameStarted && !gameOver && (
                   <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>点击看骰</div>
                 )}
                 {isMe && hasDice && showingDice && myHand && (
@@ -1175,7 +1167,6 @@ if (styleTag) {
   `;
   document.head.appendChild(style);
 }
-
 
 
 
