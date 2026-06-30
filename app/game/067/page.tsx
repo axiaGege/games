@@ -61,6 +61,8 @@ export default function Page() {
   const [diceLocked, setDiceLocked] = useState(false);
   const [cupOpened, setCupOpened] = useState(false); // 骰盅是否已打开看过
   const [showingDice, setShowingDice] = useState(false); // 当前正在查看骰子
+  const [tempBidFace, setTempBidFace] = useState(0); // 叫牌临时选的数字
+  const [tempBidCount, setTempBidCount] = useState(0); // 叫牌临时选的数量
   const [playerPrepared, ] = useState({});
   // 违规闪烁
   const [violators, setViolators] = useState<string[]>([]);
@@ -666,7 +668,7 @@ export default function Page() {
                         alignItems: 'center',
                       }}>
                         {p.dice.map((d: number, j: number) => (
-                          <span key={j} style={{ fontSize: 18 }}>{DICE_EMOJIS[d - 1]}</span>
+                          <span key={j} style={{ fontSize: 24, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' }}>{DICE_EMOJIS[d - 1]}</span>
                         ))}
                       </div>
                     ) : (
@@ -729,11 +731,6 @@ export default function Page() {
           </div>
         )}
 
-        {/* 调试信息 */}
-        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginBottom: 4 }}>
-          phase={phase} gameStarted={String(gameStarted)} gameOver={String(gameOver)} isMyTurn={String(isMyTurn)}
-        </div>
-
         {/* 操作区 */}
         <div style={S.actionBar}>
           {!gameStarted && players.length >= 2 && isCreator && (
@@ -755,35 +752,80 @@ export default function Page() {
 
           {gameStarted && !gameOver && phase === 'bidding' && isMyTurn && (
             <>
-              <div style={S.bidGroup}>
-                {(() => {
-                  const bids: any[] = [];
-                  const startCount = lastBid ? lastBid.count : 0;
-                  const startVal = lastBid ? lastBid.value : 0;
-                  for (let v = 1; v <= 6; v++) {
-                    if (v > startVal || startCount === 0) {
-                      bids.push({ count: startCount + 1, value: v });
-                    }
-                  }
-                  if (startCount < 6) {
-                    for (let v = 1; v <= 6; v++) {
-                      bids.push({ count: startCount + 2, value: v });
-                    }
-                  }
-                  if (startCount < 6) {
-                    bids.push({ count: 7, value: 6 });
-                  }
-                  // 去重
-                  const unique = bids.filter((b, i, arr) =>
-                    arr.findIndex(x => x.count === b.count && x.value === b.value) === i
-                  );
-                  return unique.map((b, i) => (
-                    <button key={i} style={S.btnBid} onClick={() => handleBid(b.count, b.value)}>
-                      {b.count+'个'+(b.value===1?'1':b.value)}
-                    </button>
-                  ));
-                })()}
+              {/* 第一层：选数字 1-6 */}
+              <div style={{ marginBottom: 8, display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginRight: 4, alignSelf: 'center' }}>数字:</div>
+                {[1,2,3,4,5,6].map(v => (
+                  <button
+                    key={v}
+                    style={{
+                      ...S.btnBid,
+                      padding: '6px 14px',
+                      fontSize: 16,
+                      fontWeight: 'bold',
+                      background: tempBidFace === v ? '#fbbf24' : 'rgba(255,255,255,0.06)',
+                      color: tempBidFace === v ? '#0f0f1a' : '#fff',
+                    }}
+                    onClick={() => {
+                      setTempBidFace(v);
+                      const startCount = lastBid ? lastBid.count : 0;
+                      const startVal = lastBid ? lastBid.value : 0;
+                      if (v === startVal) setTempBidCount(startCount + 1);
+                      else setTempBidCount(1);
+                    }}
+                  >
+                    {v === 1 ? '1🎯' : v}
+                  </button>
+                ))}
               </div>
+              {/* 第二层：选数量 */}
+              <div style={{ display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginRight: 4, alignSelf: 'center' }}>数量:</div>
+                {[1,2,3,4,5,6,7].map(cnt => {
+                  // 根据已叫牌判断最小数量
+                  const minCount = lastBid ? (
+                    (tempBidFace === lastBid.value) ? lastBid.count + 1 : 1
+                  ) : 1;
+                  if (cnt < minCount) return null;
+                  // 如果数字和上次一样，数量最多到7
+                  if (tempBidFace === (lastBid ? lastBid.value : 0) && cnt > 7) return null;
+                  return (
+                    <button
+                      key={cnt}
+                      style={{
+                        ...S.btnBid,
+                        padding: '6px 14px',
+                        fontSize: 14,
+                        background: tempBidCount === cnt ? '#22d3ee' : 'rgba(255,255,255,0.06)',
+                        color: tempBidCount === cnt ? '#0f0f1a' : '#fff',
+                      }}
+                      onClick={() => setTempBidCount(cnt)}
+                    >
+                      {cnt}个
+                    </button>
+                  );
+                })}
+              </div>
+              {/* 确认叫牌 */}
+              <button
+                style={{
+                  padding: '10px 40px',
+                  borderRadius: 14,
+                  border: 'none',
+                  background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
+                  color: '#0f0f1a',
+                  fontSize: 16,
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  marginBottom: 8,
+                }}
+                onClick={() => {
+                  if (tempBidFace === 0 || tempBidCount === 0) { setErrorMsg('请先选数字和数量'); return; }
+                  handleBid(tempBidCount, tempBidFace);
+                }}
+              >
+                📢 叫牌 {tempBidCount}个{tempBidFace === 1 ? '1🎯' : tempBidFace}
+              </button>
               <div style={S.btnRow}>
                 <button style={S.btnOpen} onClick={() => handleOpen()}>🔓 开盅</button>
               </div>
