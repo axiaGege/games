@@ -449,10 +449,12 @@ export default function Page() {
   const others = players.filter((p: any) => p.name !== playerName);
   const totalPlayers = players.length;
 
-  // 计算座位角度（圆桌布局）
-  const getSeatAngle = (index: number, total: number) => {
-    return (index / total) * 2 * Math.PI - Math.PI / 2;
-  };
+    // 计算座位角度（最多12人圆桌）
+    const getSeatAngle = (index: number, total: number) => {
+      // 座位数最少2人，最多12人
+      const n = Math.max(2, Math.min(total, 12));
+      return (index / n) * 2 * Math.PI - Math.PI / 2;
+    };
 
   return (
     <div style={S.container}>
@@ -513,7 +515,7 @@ export default function Page() {
           {/* 周围玩家 */}
           {players.map((p: any, i: number) => {
             const angle = getSeatAngle(i, totalPlayers);
-            const radius = 200;
+            const radius = 170;
             const x = Math.cos(angle) * radius;
             const y = Math.sin(angle) * radius;
             const isMe = p.name === playerName;
@@ -542,6 +544,7 @@ export default function Page() {
                 }}
               >
                 <div style={S.seatName}>
+                  <div style={{width:28,height:28,borderRadius:'50%',background:'linear-gradient(135deg,#a78bfa,#22d3ee)',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:'bold',color:'#fff',marginBottom:3}}>{p.name.charAt(0).toUpperCase()}</div>
                   {isMe && '👤 '}{p.name}
                   {isActive && <span style={S.crown}>👑</span>}
                   {isMe && <span style={S.meBadge}>我</span>}
@@ -553,15 +556,13 @@ export default function Page() {
                     ) : (
                       p.dice.map((d: number, j: number) => (
                         <span key={j} style={S.seatDiceItem}>
-                          {(myDiceRevealed && isMe) ? DICE_EMOJIS[d - 1] : '🎲'}
+                          {shouldReveal ? DICE_EMOJIS[d - 1] : '🎲'}
                         </span>
                       ))
                     )}
                   </div>
                 )}
-                {isMe && hasDice && !shouldReveal && !diceShaking && (
-                  <div style={S.hintText}>👆 点击看骰子</div>
-                )}
+                
                 {isMe && hasDice && shouldReveal && myHand && (
                   <div style={S.handInfo}>
                     {myHand.emoji} {myHand.label}
@@ -657,7 +658,7 @@ export default function Page() {
 
         {/* 底部信息 */}
         <div style={S.footer}>
-          <span style={S.playerCount}>👥 {players.length}/6 人</span>
+          <span style={S.playerCount}>👥 {players.length}/12 人</span>
           {gameStarted && !gameOver && (
             <span style={S.phaseTag}>{phase === 'bidding' ? '🎯 叫牌阶段' : '⏳ 准备中'}</span>
           )}
@@ -772,42 +773,45 @@ const S: Record<string, React.CSSProperties> = {
   },
   tableArea: {
     position: 'relative',
-    width: 400,
-    height: 400,
+    width: 420,
+    height: 420,
     margin: '0 auto 20px',
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(34,211,238,0.05) 0%, transparent 70%)',
-    border: '2px solid rgba(255,255,255,0.04)',
+    background: 'radial-gradient(circle, rgba(34,211,238,0.03) 0%, rgba(34,211,238,0.01) 40%, transparent 70%)',
+    border: '2px solid rgba(34,211,238,0.1)',
+    boxShadow: 'inset 0 0 60px rgba(34,211,238,0.03)',
   },
   diceTable: {
     position: 'absolute',
     left: '50%',
     top: '50%',
     transform: 'translate(-50%, -50%)',
-    width: 160,
-    height: 160,
+    width: 150,
+    height: 150,
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(251,191,36,0.1) 0%, rgba(251,191,36,0.03) 70%, transparent 100%)',
-    border: '2px solid rgba(251,191,36,0.15)',
+    background: 'radial-gradient(circle, rgba(251,191,36,0.12) 0%, rgba(251,191,36,0.04) 60%, transparent 100%)',
+    border: '2px solid rgba(251,191,36,0.2)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 4,
+    boxShadow: '0 0 30px rgba(251,191,36,0.05)',
   },
   centerDiceLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginBottom: 4 },
   centerDiceRow: { display: 'flex', gap: 8 },
   centerHandInfo: { color: '#fbbf24', fontSize: 12, marginTop: 4 },
   seat: {
     position: 'absolute',
-    width: 100,
-    padding: '8px 10px',
-    borderRadius: 14,
-    border: '1px solid rgba(255,255,255,0.06)',
-    background: 'rgba(255,255,255,0.02)',
+    width: 80,
+    padding: '6px 8px',
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(255,255,255,0.03)',
     textAlign: 'center',
     transition: 'all 0.3s',
     cursor: 'default',
+    backdropFilter: 'blur(10px)',
   },
   seatName: {
     color: '#e0e0e0', fontWeight: 600, fontSize: 13,
