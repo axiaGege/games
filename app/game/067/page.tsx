@@ -99,17 +99,13 @@ export default function Page() {
     const ch = supabase.channel(roomPassword);
     channelRef.current = ch;
 
+
     ch.on('broadcast', { event: 'state' }, (payload) => {
       const data = payload.payload;
-      if (data.players) {
-        let playersList = data.players;
-        // If a new player is joining, add them
-        if (data.playerEntry && !playersList.find((p: any) => p.name === data.playerEntry.name)) {
-          playersList = [...playersList, data.playerEntry];
-        }
-        setPlayers(playersList);
-        // Compute MY dice and hand from the players array
-        const me = playersList.find((p: any) => p.name === playerName.trim());
+      // Merge players from broadcast
+      if (data.players && data.players.length > 0) {
+        setPlayers(data.players);
+        const me = data.players.find((p: any) => p.name === playerName.trim());
         if (me) {
           if (me.dice && me.dice.length === 5) {
             setMyDice(me.dice);
@@ -120,6 +116,10 @@ export default function Page() {
           if (me.prepared !== undefined) setMyPrepared(me.prepared);
           if (me.revealed !== undefined) setMyDiceRevealed(me.revealed);
         }
+      } else if (data.type === 'join' && data.playerName) {
+        // First join - create initial players list
+        const newPlayer = { name: data.playerName, prepared: false, dice: [], hand: null, revealed: false };
+        setPlayers([newPlayer]);
       }
       if (data.gameStarted !== undefined) setGameStarted(data.gameStarted);
       if (data.gameOver !== undefined) setGameOver(data.gameOver);
@@ -139,10 +139,22 @@ export default function Page() {
       }
     });
 
+    ch.on('broadcast', { event: 'join' }, (payload) => {
+      const data = payload.payload;
+      if (data.playerName && !playersRef.current.find((p: any) => p.name === data.playerName)) {
+        const newPlayer = { name: data.playerName, prepared: false, dice: [], hand: null, revealed: false };
+        setPlayers([...playersRef.current, newPlayer]);
+        // Ack: broadcast back the updated players list so the new player receives it
+        if (channelRef.current) {
+          channelRef.current.send({ type: 'broadcast', event: 'state', payload: { players: [...playersRef.current, newPlayer] } }).catch(() => {});
+        }
+      }
+    });
+
     ch.subscribe(async (status) => {
       if (status !== 'SUBSCRIBED') { setErrorMsg('连接失败: ' + status); return; }
       try {
-        await ch.send({ type: 'broadcast', event: 'state', payload: { type: 'join', playerName: playerName.trim(), isCreator, playerEntry: { name: playerName.trim(), prepared: false, dice: [], hand: null, revealed: false } } });
+        await ch.send({ type: 'broadcast', event: 'join', payload: { playerName: playerName.trim(), isCreator } });
         setJoined(true);
         setScreen('game');
       } catch(e) { console.warn('send join failed', e); setErrorMsg('加入房间失败'); }
