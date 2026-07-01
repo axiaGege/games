@@ -11,19 +11,19 @@ const calcHand = (dice: number[], oneSealed: boolean) => {
   for (const d of dice) counts[d]++;
   const sorted = [...dice].sort();
   const isStraight = (sorted.join(',') === '1,2,3,4,5' || sorted.join(',') === '2,3,4,5,6');
-  if (isStraight) return { count: 0, value: 0, type: 'straight', emoji: '\ud83c\udfb2', label: '顺子', score: 0 };
+  if (isStraight) return { count: 0, value: 0, type: 'straight', emoji: String.fromCodePoint(0x1F3B2), label: '顺子', score: 0 };
   for (let v = 1; v <= 6; v++) {
-    if (counts[v] === 5) return { count: 7, value: v, type: 'seven', emoji: '\ud83d\udd25', label: v + '纯豹', score: 7 };
+    if (counts[v] === 5) return { count: 7, value: v, type: 'seven', emoji: String.fromCodePoint(0x1F525), label: v + '纯豹', score: 7 };
   }
   for (let v = 2; v <= 6; v++) {
-    if (counts[v] === 4 && counts[1] >= 1) return { count: 6, value: v, type: 'six', emoji: '\ud83d\udc36', label: v + '品豹', score: 6 };
+    if (counts[v] === 4 && counts[1] >= 1) return { count: 6, value: v, type: 'six', emoji: String.fromCodePoint(0x1F436), label: v + '品豹', score: 6 };
   }
   let bestVal = 2, bestCount = 0;
   for (let v = 2; v <= 6; v++) {
     if (counts[v] > bestCount) { bestCount = counts[v]; bestVal = v; }
   }
   if (!oneSealed && counts[1] > 0) bestCount += counts[1];
-  return { count: bestCount, value: bestVal, type: 'normal', emoji: '\ud83c\udfaf', label: bestCount + '个' + bestVal, score: bestCount };
+  return { count: bestCount, value: bestVal, type: 'normal', emoji: String.fromCodePoint(0x1F3AF), label: bestCount + '个' + bestVal, score: bestCount };
 };
 
 const countFace = (dice: number[], face: number, oneSealed: boolean) => {
@@ -39,7 +39,7 @@ const SEAT_ANGLES: number[] = [];
 for (let i = 0; i < 12; i++) SEAT_ANGLES.push((i * 30 - 90) * Math.PI / 180);
 
 export default function Page() {
-  const [screen, setScreen] = useState('login');
+  const [screen, setScreen] = useState<'login'|'lobby'|'game'>('login');
   const [playerName, setPlayerName] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [joined, setJoined] = useState(false);
@@ -87,12 +87,13 @@ export default function Page() {
   useEffect(() => { myHandRef.current = myHand; }, [myHand]);
   useEffect(() => { hasRolledRef.current = hasRolled; }, [hasRolled]);
 
-
-  const connectToRoom = useCallback(() => {
-    if (!supabase || !playerName.trim() || !roomPassword.trim()) {
-      setErrorMsg('请输入玩家名和房间密码');
-      return;
+  const connectToRoom = () => {
+    if (!supabase) { setErrorMsg('Supabase未配置'); return; }
+    if (!playerName.trim() || !roomPassword.trim()) {
+      setErrorMsg('请输入玩家名和房间密码'); return;
     }
+    if (channelRef.current) { channelRef.current.unsubscribe(); channelRef.current = null; }
+
     const ch = supabase.channel(roomPassword);
     channelRef.current = ch;
 
@@ -122,28 +123,21 @@ export default function Page() {
     });
 
     ch.subscribe(async (status) => {
-      if (status !== 'SUBSCRIBED') return;
+      if (status !== 'SUBSCRIBED') { setErrorMsg('连接失败: ' + status); return; }
       try {
         await ch.send({ type: 'broadcast', event: 'state', payload: { type: 'join', playerName: playerName.trim(), isCreator, myPrepared: false } });
-      } catch(e) { console.warn('send join failed', e); }
-      if (mountedRef.current) setJoined(true);
+        setJoined(true);
+        setScreen('game');
+      } catch(e) { console.warn('send join failed', e); setErrorMsg('加入房间失败'); }
     });
-  }, [playerName, roomPassword, isCreator]);
+  };
 
-  const disconnectFromRoom = useCallback(() => {
+  const disconnectFromRoom = () => {
     if (channelRef.current) {
       channelRef.current.unsubscribe();
       channelRef.current = null;
     }
-  }, []);
-
-  useEffect(() => {
-    if (joined && !gameStarted) {
-      disconnectFromRoom();
-      setTimeout(() => connectToRoom(), 100);
-    }
-    return () => disconnectFromRoom();
-  }, [joined, gameStarted, connectToRoom, disconnectFromRoom]);
+  };
 
   const addLog = (msg: string) => setOperationLog(prev => [...prev.slice(-50), msg]);
 
@@ -210,9 +204,9 @@ export default function Page() {
     setScreen('lobby');
   };
 
-  const mySeatIndex = players.findIndex(p => p.name === playerName);
   const otherPlayers = players.filter(p => p.name !== playerName);
   const preparedCount = players.filter(p => p.prepared).length;
+
 
   // LOGIN SCREEN
   if (screen === 'login') {
@@ -253,7 +247,7 @@ export default function Page() {
       <div style={styles.header}>
         <span>{playerName}</span>
         <span style={styles.badge}>{players.length}/12</span>
-        <button style={styles.btnSmall} onClick={() => setScreen('lobby')}>退出</button>
+        <button style={styles.btnSmall} onClick={() => { disconnectFromRoom(); setScreen('lobby'); }}>退出</button>
       </div>
 
       <div style={styles.tableContainer}>
@@ -269,7 +263,7 @@ export default function Page() {
           {gameStarted && phase === 'bidding' && <div style={styles.centerHint}>叫牌阶段</div>}
         </div>
 
-        {players.map((p, i) => {
+        {players.map((p: any, i: number) => {
           const angle = SEAT_ANGLES[i % 12];
           const radius = 42;
           const x = 50 + radius * Math.cos(angle);
@@ -311,7 +305,7 @@ export default function Page() {
       <div style={styles.actionBar}>
         {!gameStarted && isCreator && (
           <button style={styles.btnStart} onClick={handleStart}>
-            {preparedCount >= 1 ? '开始游戏' : '等待玩家准备...'}
+            {preparedCount >= 1 ? '开始游戏' : '等待玩家准备... (' + preparedCount + '/2)'}
           </button>
         )}
         {!gameStarted && !isCreator && (
@@ -338,7 +332,7 @@ export default function Page() {
 
         {gameStarted && phase === 'bidding' && !oneSealed && (
           <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center'}}>
-            {otherPlayers.map(op => (
+            {otherPlayers.map((op: any) => (
               <button key={op.name} style={styles.btnOpen} onClick={() => handleOpen(op.name)}>{op.name}</button>
             ))}
           </div>
@@ -350,7 +344,7 @@ export default function Page() {
 
         {operationLog.length > 0 && (
           <div style={styles.logContainer}>
-            {operationLog.slice(-5).map((log, i) => (
+            {operationLog.slice(-5).map((log: string, i: number) => (
               <div key={i} style={styles.logEntry}>{log}</div>
             ))}
           </div>
