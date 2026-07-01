@@ -11,19 +11,19 @@ const calcHand = (dice: number[], oneSealed: boolean) => {
   for (const d of dice) counts[d]++;
   const sorted = [...dice].sort();
   const isStraight = (sorted.join(',') === '1,2,3,4,5' || sorted.join(',') === '2,3,4,5,6');
-  if (isStraight) return { count: 0, value: 0, type: 'straight', emoji: '\ud83c\udfb2', label: '\u987a\u5b50', score: 0 };
+  if (isStraight) return { count: 0, value: 0, type: 'straight', emoji: '\ud83c\udfb2', label: '顺子', score: 0 };
   for (let v = 1; v <= 6; v++) {
-    if (counts[v] === 5) return { count: 7, value: v, type: 'seven', emoji: '\ud83d\udd25', label: v + '\u7eaf\u8c69', score: 7 };
+    if (counts[v] === 5) return { count: 7, value: v, type: 'seven', emoji: '\ud83d\udd25', label: v + '纯豹', score: 7 };
   }
   for (let v = 2; v <= 6; v++) {
-    if (counts[v] === 4 && counts[1] >= 1) return { count: 6, value: v, type: 'six', emoji: '\ud83d\udc36', label: v + '\u54c1\u8c69', score: 6 };
+    if (counts[v] === 4 && counts[1] >= 1) return { count: 6, value: v, type: 'six', emoji: '\ud83d\udc36', label: v + '品豹', score: 6 };
   }
   let bestVal = 2, bestCount = 0;
   for (let v = 2; v <= 6; v++) {
     if (counts[v] > bestCount) { bestCount = counts[v]; bestVal = v; }
   }
   if (!oneSealed && counts[1] > 0) bestCount += counts[1];
-  return { count: bestCount, value: bestVal, type: 'normal', emoji: '\ud83c\udfaf', label: bestCount + '\u4e2a' + bestVal, score: bestCount };
+  return { count: bestCount, value: bestVal, type: 'normal', emoji: '\ud83c\udfaf', label: bestCount + '个' + bestVal, score: bestCount };
 };
 
 const countFace = (dice: number[], face: number, oneSealed: boolean) => {
@@ -71,7 +71,7 @@ export default function Page() {
   const lastBidRef = useRef<any>(null);
   const phaseRef = useRef<string>('waiting');
   const myPreparedRef = useRef<boolean>(false);
-  const myDiceRef = useRef<any[]>([]);
+  const myDiceRef = useRef<number[]>([]);
   const myHandRef = useRef<any>(null);
   const hasRolledRef = useRef<boolean>(false);
 
@@ -87,9 +87,10 @@ export default function Page() {
   useEffect(() => { myHandRef.current = myHand; }, [myHand]);
   useEffect(() => { hasRolledRef.current = hasRolled; }, [hasRolled]);
 
+
   const connectToRoom = useCallback(() => {
     if (!supabase || !playerName.trim() || !roomPassword.trim()) {
-      setErrorMsg('???????????');
+      setErrorMsg('请输入玩家名和房间密码');
       return;
     }
     const ch = supabase.channel(roomPassword);
@@ -158,7 +159,7 @@ export default function Page() {
     setMyPrepared(newState);
     myPreparedRef.current = newState;
     await sendAction('prepare', { prepared: newState });
-    addLog(newState ? playerName + ' ????' : playerName + ' ????');
+    addLog(newState ? playerName + ' 准备好了' : playerName + ' 取消准备');
   };
 
   const handleRoll = async () => {
@@ -166,7 +167,7 @@ export default function Page() {
     const dice = rollDice();
     setMyDice(dice); myDiceRef.current = dice;
     await sendAction('roll', { dice });
-    addLog(playerName + ' ????');
+    addLog(playerName + ' 摇了骰子');
   };
 
   const handleReveal = () => {
@@ -186,20 +187,20 @@ export default function Page() {
     setBidHistory(newHist);
     bidHistoryRef.current = newHist;
     await sendAction('bid', { face, count, playerName });
-    addLog(playerName + ' ? ' + count + ' ? ' + face);
+    addLog(playerName + ' 叫 ' + count + ' 个 ' + face);
   };
 
   const handleStart = async () => {
     setPhase('rolling');
     phaseRef.current = 'rolling';
     await sendAction('start_game', {});
-    addLog('??????');
+    addLog('房主开始游戏');
   };
 
   const handleOpen = async (targetPlayer: string) => {
     if (!gameStarted || gameOverRef.current) return;
     await sendAction('open', { targetPlayer, playerName });
-    addLog(playerName + ' ?? ' + targetPlayer);
+    addLog(playerName + ' 开了 ' + targetPlayer);
   };
 
   const handleLeave = async () => {
@@ -218,12 +219,12 @@ export default function Page() {
     return (
       <div style={styles.page}>
         <div style={styles.card}>
-          <h1 style={styles.title}>\ud83c\udfb2 067 ????</h1>
-          <p style={styles.subtitle}>???? ?????</p>
-          <input style={styles.input} placeholder='????' value={playerName} onChange={e => setPlayerName(e.target.value)} />
-          <input style={styles.input} placeholder='????' value={roomPassword} onChange={e => setRoomPassword(e.target.value)} />
-          <button style={styles.btnPrimary} onClick={() => { setIsCreator(true); setScreen('lobby'); }}>????</button>
-          <button style={styles.btnSecondary} onClick={() => { setIsCreator(false); setScreen('lobby'); }}>????</button>
+          <h1 style={styles.title}>{String.fromCodePoint(0x1F3B2)} 067 骰子游戏</h1>
+          <p style={styles.subtitle}>朋友聚会 喝酒小游戏</p>
+          <input style={styles.input} placeholder='玩家姓名' value={playerName} onChange={e => setPlayerName(e.target.value)} />
+          <input style={styles.input} placeholder='房间密码' value={roomPassword} onChange={e => setRoomPassword(e.target.value)} />
+          <button style={styles.btnPrimary} onClick={() => { setIsCreator(true); setScreen('lobby'); }}>创建房间</button>
+          <button style={styles.btnSecondary} onClick={() => { setIsCreator(false); setScreen('lobby'); }}>加入房间</button>
           {errorMsg && <p style={styles.error}>{errorMsg}</p>}
         </div>
       </div>
@@ -235,12 +236,12 @@ export default function Page() {
     return (
       <div style={styles.page}>
         <div style={styles.card}>
-          <h2 style={styles.cardTitle}>???</h2>
-          <p style={styles.roomInfo}>????: <strong>{roomPassword}</strong></p>
-          <p style={styles.roomInfo}>?????????????</p>
-          <p style={styles.roomInfo}>????????: <a href={'https://games-sigma-eight.vercel.app/game/067?room=' + encodeURIComponent(roomPassword) + '&name=' + encodeURIComponent(playerName)} target='_blank' rel='noreferrer' style={{color: '#8b5cf6', wordBreak: 'break-all'}}>{'https://games-sigma-eight.vercel.app/game/067?room=' + roomPassword}</a></p>
-          <button style={styles.btnPrimary} onClick={connectToRoom}>????</button>
-          <button style={styles.btnLeave} onClick={() => { disconnectFromRoom(); setScreen('login'); }}>??</button>
+          <h2 style={styles.cardTitle}>房间室</h2>
+          <p style={styles.roomInfo}>房间密码: <strong>{roomPassword}</strong></p>
+          <p style={styles.roomInfo}>请其他玩家输入相同密码加入</p>
+          <p style={styles.roomInfo}>分享给朋友的链接: <a href={'https://games-sigma-eight.vercel.app/game/067?room=' + encodeURIComponent(roomPassword)} target='_blank' rel='noreferrer' style={{color: '#8b5cf6', wordBreak: 'break-all'}}>{'https://games-sigma-eight.vercel.app/game/067?room=' + roomPassword}</a></p>
+          <button style={styles.btnPrimary} onClick={connectToRoom}>进入房间</button>
+          <button style={styles.btnLeave} onClick={() => { disconnectFromRoom(); setScreen('login'); }}>返回</button>
         </div>
       </div>
     );
@@ -252,20 +253,20 @@ export default function Page() {
       <div style={styles.header}>
         <span>{playerName}</span>
         <span style={styles.badge}>{players.length}/12</span>
-        <button style={styles.btnSmall} onClick={() => setScreen('lobby')}>??</button>
+        <button style={styles.btnSmall} onClick={() => setScreen('lobby')}>退出</button>
       </div>
 
       <div style={styles.tableContainer}>
         <div style={styles.tableCenter}>
-          <div style={{fontSize: 40}}>\ud83c\udfb2</div>
+          <div style={{fontSize: 40}}>{String.fromCodePoint(0x1F3B2)}</div>
           {lastBid && (
             <div style={styles.centerBid}>
-              <span>{lastBid.count}?{lastBid.face}!</span>
+              <span>{lastBid.count}个{lastBid.face}!</span>
             </div>
           )}
-          {!gameStarted && <div style={styles.centerHint}>?????????</div>}
-          {gameStarted && phase === 'rolling' && <div style={styles.centerHint}>?????...</div>}
-          {gameStarted && phase === 'bidding' && <div style={styles.centerHint}>????</div>}
+          {!gameStarted && <div style={styles.centerHint}>房主请点击开始游戏</div>}
+          {gameStarted && phase === 'rolling' && <div style={styles.centerHint}>正在摇骰子...</div>}
+          {gameStarted && phase === 'bidding' && <div style={styles.centerHint}>叫牌阶段</div>}
         </div>
 
         {players.map((p, i) => {
@@ -289,18 +290,18 @@ export default function Page() {
               borderColor: isViolator ? '#f43f5e' : isCurrent ? '#22d3ee' : isMe ? '#a78bfa' : 'rgba(255,255,255,0.1)',
               boxShadow: isViolator ? '0 0 20px rgba(244,63,94,0.6)' : isCurrent ? '0 0 15px rgba(34,211,238,0.4)' : 'none',
             }}>
-              {isMe && <span style={styles.meBadge}>?</span>}
-              {isCurrent && <span style={styles.crown}>\ud83d\udc51</span>}
+              {isMe && <span style={styles.meBadge}>我</span>}
+              {isCurrent && <span style={styles.crown}>{String.fromCodePoint(0x1F451)}</span>}
               <div style={styles.seatName}>{p.name}</div>
               <div style={{fontSize: 22, margin: '2px 0'}}>
                 {gameStarted && hasRolled ? (
                   (isMe && myDiceRevealed) || (!isMe && p.revealed) ?
                     pDice.map((d: number, j: number) => <span key={j} style={{margin: '0 2px'}}>{DICE_EMOJIS[d]}</span>) :
-                    <span>{"\ud83c\udf71"}</span>
+                    <span>{String.fromCodePoint(0x1F371)}</span>
                 ) : <span style={{color: 'rgba(255,255,255,0.3)'}}>?</span>}
               </div>
               <div style={{fontSize: 11, color: isPrepared ? '#4ade80' : '#f87171'}}>
-                {isPrepared ? '\u2705' : '\u23f3'}
+                {isPrepared ? String.fromCodePoint(0x2705) : String.fromCodePoint(0x23F3)}
               </div>
             </div>
           );
@@ -310,28 +311,28 @@ export default function Page() {
       <div style={styles.actionBar}>
         {!gameStarted && isCreator && (
           <button style={styles.btnStart} onClick={handleStart}>
-            {preparedCount >= 1 ? '????' : '??????...'}
+            {preparedCount >= 1 ? '开始游戏' : '等待玩家准备...'}
           </button>
         )}
         {!gameStarted && !isCreator && (
           <button style={myPrepared ? styles.btnLeave : styles.btnStart} onClick={handlePrepare}>
-            {myPrepared ? '????' : '?????'}
+            {myPrepared ? '取消准备' : '我准备好了'}
           </button>
         )}
 
         {gameStarted && phase === 'rolling' && hasRolled && !myDiceRevealed && (
-          <button style={styles.btnSecondary} onClick={handleReveal}>????</button>
+          <button style={styles.btnSecondary} onClick={handleReveal}>打开骰子</button>
         )}
         {gameStarted && hasRolled && myDiceRevealed && (
-          <button style={styles.btnSecondary} onClick={handleReveal}>????</button>
+          <button style={styles.btnSecondary} onClick={handleReveal}>盖住骰子</button>
         )}
 
         {gameStarted && phase === 'bidding' && !oneSealed && (
           <div style={styles.bidGroup}>
             {[2,3,4,5,6].map(f => [4,5,6,7].map(c => (
-              <button key={f+'-'+c} style={styles.btnBid} onClick={() => handleBid(f, c)}>{c}?{f}</button>
+              <button key={f+'-'+c} style={styles.btnBid} onClick={() => handleBid(f, c)}>{c}个{f}</button>
             )))}
-            <button style={{...styles.btnBid, borderColor: '#fbbf24'}} onClick={() => handleBid(1, 4)}>4?1???</button>
+            <button style={{...styles.btnBid, borderColor: '#fbbf24'}} onClick={() => handleBid(1, 4)}>4个1（封）</button>
           </div>
         )}
 
@@ -357,8 +358,8 @@ export default function Page() {
       </div>
 
       <div style={styles.footer}>
-        <span style={styles.playerCount}>??: {players.length}</span>
-        <span style={styles.phaseTag}>??: {phase}</span>
+        <span style={styles.playerCount}>在线: {players.length}</span>
+        <span style={styles.phaseTag}>状态: {phase}</span>
       </div>
     </div>
   );
@@ -366,7 +367,7 @@ export default function Page() {
 
 
 const styles: Record<string, React.CSSProperties> = {
-  page: { minHeight: '100vh', background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%)', color: '#fff', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box' },
+  page: { minHeight: '100vh', background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%)', color: '#fff', fontFamily: '-apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box' },
   card: { background: 'rgba(255,255,255,0.06)', borderRadius: 20, padding: '32px 24px', maxWidth: 380, width: '100%', textAlign: 'center', border: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(20px)' },
   title: { fontSize: 32, margin: '0 0 8px' },
   subtitle: { color: 'rgba(255,255,255,0.5)', margin: '0 0 24px', fontSize: 14 },
