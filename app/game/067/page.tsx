@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
 const rollDice = () => Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
@@ -74,6 +74,7 @@ export default function Page() {
   const myDiceRef = useRef<number[]>([]);
   const myHandRef = useRef<any>(null);
   const hasRolledRef = useRef<boolean>(false);
+  const operationLogRef = useRef<string[]>([]);
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   useEffect(() => { playersRef.current = players; }, [players]);
@@ -86,6 +87,7 @@ export default function Page() {
   useEffect(() => { myDiceRef.current = myDice; }, [myDice]);
   useEffect(() => { myHandRef.current = myHand; }, [myHand]);
   useEffect(() => { hasRolledRef.current = hasRolled; }, [hasRolled]);
+  useEffect(() => { operationLogRef.current = operationLog; }, [operationLog]);
 
   const connectToRoom = () => {
     if (!supabase) { setErrorMsg('Supabase未配置'); return; }
@@ -99,20 +101,35 @@ export default function Page() {
 
     ch.on('broadcast', { event: 'state' }, (payload) => {
       const data = payload.payload;
-      if (data.players) setPlayers(data.players);
-      if (data.myDice !== undefined) { setMyDice(data.myDice); myDiceRef.current = data.myDice; }
-      if (data.myHand) { setMyHand(data.myHand); myHandRef.current = data.myHand; }
+      if (data.players) {
+        let playersList = data.players;
+        // If a new player is joining, add them
+        if (data.playerEntry && !playersList.find((p: any) => p.name === data.playerEntry.name)) {
+          playersList = [...playersList, data.playerEntry];
+        }
+        setPlayers(playersList);
+        // Compute MY dice and hand from the players array
+        const me = playersList.find((p: any) => p.name === playerName.trim());
+        if (me) {
+          if (me.dice && me.dice.length === 5) {
+            setMyDice(me.dice);
+            myDiceRef.current = me.dice;
+            setMyHand(calcHand(me.dice, oneSealedRef.current));
+            myHandRef.current = calcHand(me.dice, oneSealedRef.current);
+          }
+          if (me.prepared !== undefined) setMyPrepared(me.prepared);
+          if (me.revealed !== undefined) setMyDiceRevealed(me.revealed);
+        }
+      }
       if (data.gameStarted !== undefined) setGameStarted(data.gameStarted);
       if (data.gameOver !== undefined) setGameOver(data.gameOver);
       if (data.phase) { setPhase(data.phase); phaseRef.current = data.phase; }
-      if (data.hasRolled !== undefined) { setHasRolled(data.hasRolled); hasRolledRef.current = data.hasRolled; }
       if (data.lastBid) { setLastBid(data.lastBid); lastBidRef.current = data.lastBid; }
       if (data.bidHistory) { setBidHistory(data.bidHistory); bidHistoryRef.current = data.bidHistory; }
       if (data.currentPlayer !== undefined) setCurrentPlayer(data.currentPlayer);
       if (data.oneSealed !== undefined) { setOneSealed(data.oneSealed); oneSealedRef.current = data.oneSealed; }
       if (data.violators) setViolators(data.violators);
       if (data.operationLog) setOperationLog(data.operationLog);
-      if (data.myPrepared !== undefined) setMyPrepared(data.myPrepared);
     });
 
     ch.on('broadcast', { event: 'action' }, (payload) => {
@@ -125,7 +142,7 @@ export default function Page() {
     ch.subscribe(async (status) => {
       if (status !== 'SUBSCRIBED') { setErrorMsg('连接失败: ' + status); return; }
       try {
-        await ch.send({ type: 'broadcast', event: 'state', payload: { type: 'join', playerName: playerName.trim(), isCreator, myPrepared: false } });
+        await ch.send({ type: 'broadcast', event: 'state', payload: { type: 'join', playerName: playerName.trim(), isCreator, playerEntry: { name: playerName.trim(), prepared: false, dice: [], hand: null, revealed: false } } });
         setJoined(true);
         setScreen('game');
       } catch(e) { console.warn('send join failed', e); setErrorMsg('加入房间失败'); }
@@ -152,6 +169,17 @@ export default function Page() {
     const newState = !myPrepared;
     setMyPrepared(newState);
     myPreparedRef.current = newState;
+    // Update players list with prepared state
+    const updatedPlayers = players.map((p: any) =>
+      p.name === playerName.trim() ? { ...p, prepared: newState } : p
+    );
+    if (channelRef.current && !newState) {
+      // On unprepare, remove from players
+      const filtered = updatedPlayers.filter((p: any) => p.name !== playerName.trim());
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { players: filtered } });
+    } else if (channelRef.current) {
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { players: updatedPlayers } });
+    }
     await sendAction('prepare', { prepared: newState });
     addLog(newState ? playerName + ' 准备好了' : playerName + ' 取消准备');
   };
@@ -160,7 +188,19 @@ export default function Page() {
     if (hasRolledRef.current || gameOverRef.current || phaseRef.current !== 'rolling') return;
     const dice = rollDice();
     setMyDice(dice); myDiceRef.current = dice;
-    await sendAction('roll', { dice });
+    setMyHand(calcHand(dice, oneSealed));
+    myHandRef.current = calcHand(dice, oneSealed);
+    // Broadcast updated player state with dice
+    const updatedPlayers = players.map((p: any) =>
+      p.name === playerName.trim() ? { ...p, dice, revealed: false } : p
+    );
+    if (channelRef.current) {
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { players: updatedPlayers, hasRolled: true, phase: 'bidding' } });
+    }
+    hasRolledRef.current = true;
+    setHasRolled(true);
+    phaseRef.current = 'bidding';
+    setPhase('bidding');
     addLog(playerName + ' 摇了骰子');
   };
 
@@ -180,6 +220,9 @@ export default function Page() {
     const newHist = [...bidHistoryRef.current, { ...newBid, prev: lastBidRef.current }];
     setBidHistory(newHist);
     bidHistoryRef.current = newHist;
+    if (channelRef.current) {
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { oneSealed: true, lastBid: newBid, bidHistory: newHist } });
+    }
     await sendAction('bid', { face, count, playerName });
     addLog(playerName + ' 叫 ' + count + ' 个 ' + face);
   };
@@ -187,14 +230,47 @@ export default function Page() {
   const handleStart = async () => {
     setPhase('rolling');
     phaseRef.current = 'rolling';
-    await sendAction('start_game', {});
+    setHasRolled(false);
+    hasRolledRef.current = false;
+    // Reset all players dice
+    const resetPlayers = players.map((p: any) => ({ ...p, dice: [], hand: null, revealed: false }));
+    if (channelRef.current) {
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { players: resetPlayers, gameStarted: true, hasRolled: false, phase: 'rolling' } });
+    }
     addLog('房主开始游戏');
   };
 
   const handleOpen = async (targetPlayer: string) => {
-    if (!gameStarted || gameOverRef.current) return;
-    await sendAction('open', { targetPlayer, playerName });
-    addLog(playerName + ' 开了 ' + targetPlayer);
+    if (!gameStarted || gameOverRef.current || oneSealed) return;
+    const target = players.find((p: any) => p.name === targetPlayer);
+    if (!target || !target.dice || target.dice.length === 0) return;
+    
+    // Settlement: compare caller hand vs target hand
+    const caller = players.find((p: any) => p.name === playerName.trim());
+    if (!caller) return;
+    
+    const callerHand = calcHand(caller.dice || [1,1,1,1,1], oneSealed);
+    const targetHand = calcHand(target.dice, oneSealed);
+    
+    let result = '';
+    if (callerHand.score > targetHand.score) {
+      result = targetPlayer + ' 输了！(' + targetHand.label + ' vs ' + callerHand.label + ')';
+    } else if (callerHand.score < targetHand.score) {
+      result = playerName.trim() + ' 输了！(' + callerHand.label + ' vs ' + targetHand.label + ')';
+    } else {
+      result = '平局！';
+    }
+    
+    setGameOver(true);
+    gameOverRef.current = true;
+    setPhase('settled');
+    phaseRef.current = 'settled';
+    addLog(result);
+    
+    if (channelRef.current) {
+      await channelRef.current.send({ type: 'broadcast', event: 'state', payload: { gameOver: true, phase: 'settled', result } });
+    }
+    await sendAction('open', { targetPlayer, playerName, result });
   };
 
   const handleLeave = async () => {
@@ -351,6 +427,16 @@ export default function Page() {
         )}
       </div>
 
+      {gameOver && (
+        <div style={{textAlign: 'center', marginTop: 8}}>
+          <button style={{...styles.btnStart, fontSize: 14, padding: '10px 24px'}} onClick={() => {
+            setGameOver(false); setGameStarted(false); setPhase('waiting'); setHasRolled(false);
+            setMyDice([]); setMyHand(null); setMyDiceRevealed(false); setOneSealed(false);
+            setLastBid(null); setBidHistory([]); setOperationLog([]);
+            disconnectFromRoom(); setTimeout(() => connectToRoom(), 200);
+          }}>重新开始</button>
+        </div>
+      )}
       <div style={styles.footer}>
         <span style={styles.playerCount}>在线: {players.length}</span>
         <span style={styles.phaseTag}>状态: {phase}</span>
