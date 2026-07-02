@@ -1584,7 +1584,7 @@ const styles: any = {
     marginTop: '8px',
     justifyContent: 'center',
   },
-  llidBtn: {
+  lidBtn: {
   padding: '4px 14px',
   borderRadius: '16px',
   border: 'none',
