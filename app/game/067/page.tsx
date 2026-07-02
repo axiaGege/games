@@ -76,7 +76,7 @@ const parsePlayers = (raw: any): any[] => {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
     if (typeof parsed === 'object') {
-      const arr = Object.values(parsed);
+      const arr = Object.values(parsed) as any[];
       if (arr.length > 0 && arr[0]?.name) return arr;
     }
   } catch {
