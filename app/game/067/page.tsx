@@ -34,7 +34,7 @@ const isStraight = (dice: number[]): boolean => {
   return sorted.every((v, i) => i === 0 || v !== sorted[i - 1]);
 };
 
-// ✅ 修复 calc067：封印1后围骰不再加成
+// 计算067规则（修正封印1后围骰不加成）
 const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
   if (isStraight(dice)) {
     return { count: 0, value: targetValue, isStraight: true };
@@ -77,7 +77,7 @@ const parsePlayers = (raw: any): any[] => {
     if (Array.isArray(parsed)) return parsed;
     if (typeof parsed === 'object') {
       const arr = Object.values(parsed);
-      if (arr.length > 0 && (arr[0] as any)?.name) return arr;
+      if (arr.length > 0 && arr[0]?.name) return arr;
     }
   } catch {
     try {
@@ -162,7 +162,7 @@ export default function GamePage() {
     } catch (e) {}
   };
 
-  // ==================== Supabase 订阅 ====================
+  // ==================== Supabase 订阅（同步 diceShaking） ====================
   useEffect(() => {
     if (!roomId) return;
     console.log('🔄 订阅房间:', roomId);
@@ -187,7 +187,6 @@ export default function GamePage() {
         setSelectedTarget(state.selectedTarget || null);
         setNextStarter(state.nextStarter || null);
         setDiceShaking(state.diceShaking || false);
-        // 更新上家叫牌显示
         if (state.lastBid) {
           setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
         } else {
@@ -594,7 +593,7 @@ export default function GamePage() {
     }
   };
 
-  // ==================== 快捷加叫功能 ====================
+  // 快捷加叫
   const handleQuickBid = (add: number) => {
     if (!lastBidDisplay) {
       setErrorMsg("还没有上家叫牌");
@@ -617,13 +616,17 @@ export default function GamePage() {
     makeBidDirect(newCount, lastBidDisplay.value);
   };
 
-  // 直接叫牌（供快捷加叫使用）
   const makeBidDirect = async (count: number, value: number) => {
     if (oneSealed && value === 1) {
       setErrorMsg("1已被封印，不能再叫1");
       return;
     }
-    // 校验是否比上家大（已经由调用方保证）
+    if (lastBid) {
+      if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
+        setErrorMsg(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
+        return;
+      }
+    }
     setErrorMsg("");
 
     let newOneSealed = oneSealed;
@@ -663,7 +666,6 @@ export default function GamePage() {
     });
   };
 
-  // ==================== 叫牌 ====================
   const handleCallBid = async () => {
     if (selectedCount === null || selectedValue === null) {
       setErrorMsg("请先选择数量和点数");
@@ -683,11 +685,10 @@ export default function GamePage() {
         return;
       }
     }
-    // 调用直接叫牌
     await makeBidDirect(selectedCount, selectedValue);
   };
 
-  // ==================== 开骰 ====================
+  // ==================== 开骰（最终版顺子规则） ====================
   const openDice = async (targetPlayer?: string, isSnapOpen: boolean = false) => {
     if (phase !== "bidding") {
       setErrorMsg("当前不是叫牌阶段");
@@ -737,7 +738,6 @@ export default function GamePage() {
     } 
     // 情况2：被开者是顺子，开牌者不是顺子 → 只统计开牌者
     else if (targetIsStraight) {
-      // 统计开牌者自己的骰子（直接计算）
       if (callerData && callerData.dice && callerData.dice.length > 0) {
         const counts = Array(7).fill(0);
         for (const d of callerData.dice) counts[d]++;
@@ -752,14 +752,13 @@ export default function GamePage() {
         loser = bidder;
       }
     }
-    // 情况3：被开者不是顺子 → 统计所有玩家（直接用面值统计，不用 calc067）
+    // 情况3：被开者不是顺子 → 统计所有玩家（直接用面值统计）
     else {
       let total = 0;
       for (const p of players) {
         if (p.dice && p.dice.length > 0) {
           const counts = Array(7).fill(0);
           for (const d of p.dice) counts[d]++;
-          // 直接统计面值，不应用豹子加成
           let count = counts[lastBid.value] + (oneSealed ? 0 : counts[1]);
           total += count;
         }
@@ -883,7 +882,7 @@ export default function GamePage() {
     setIsLidOpen(false);
   };
 
-  // ==================== 座位渲染（调整大小和间距） ====================
+  // ==================== 座位渲染（椭圆桌） ====================
   const renderSeats = () => {
     const topSeats = [];
     for (let i = 0; i < 6; i++) {
@@ -982,7 +981,6 @@ export default function GamePage() {
     );
   }
 
-  // ==================== 游戏主界面 ====================
   return (
     <div style={styles.container}>
       <div style={styles.glowOrb}></div>
@@ -1077,7 +1075,6 @@ export default function GamePage() {
             )}
           </div>
 
-          {/* 顶部信息栏重新布局 */}
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <span>🏠 {roomId.slice(0, 8)}</span>
@@ -1181,9 +1178,7 @@ export default function GamePage() {
             <>
               {currentPlayer === playerName ? (
                 <>
-                  {/* 叫牌面板 */}
                   <div style={styles.bidPanel}>
-                    {/* 快捷加叫行 */}
                     {lastBidDisplay && (
                       <div style={styles.quickAddRow}>
                         <span style={{ color: '#aaa', fontSize: '13px', marginRight: '6px' }}>上家: {lastBidDisplay.count}个{lastBidDisplay.value}</span>
@@ -1198,7 +1193,6 @@ export default function GamePage() {
                         ))}
                       </div>
                     )}
-                    {/* 点数行 */}
                     <div style={styles.bidValueRow}>
                       {values.map(v => (
                         <button
@@ -1216,7 +1210,6 @@ export default function GamePage() {
                         </button>
                       ))}
                     </div>
-                    {/* 数量行 */}
                     <div style={styles.bidCountRow}>
                       {bidPages[bidPage].map(num => (
                         <button
@@ -1360,7 +1353,6 @@ export default function GamePage() {
   );
 }
 
-// ==================== 样式（布局优化） ====================
 const styles: any = {
   container: {
     minHeight: "100vh",
