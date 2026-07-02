@@ -34,7 +34,7 @@ const isStraight = (dice: number[]): boolean => {
   return sorted.every((v, i) => i === 0 || v !== sorted[i - 1]);
 };
 
-// 计算067规则（修正封印1后围骰不加成）
+// 计算067规则（修正封印1后围骰不加成）—— 此函数未使用，可保留或删除
 const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
   if (isStraight(dice)) {
     return { count: 0, value: targetValue, isStraight: true };
@@ -217,7 +217,8 @@ export default function GamePage() {
     };
   }, [roomId, playerName]);
 
-  const broadcastState = async (state: any) => {
+  // ============ 修改1: broadcastState 接收 roomId 参数 ============
+  const broadcastState = async (roomId: string, state: any) => {
     try {
       console.log('📤 发送广播:', state);
       const result = await supabase.channel(`room:${roomId}`).send({
@@ -238,7 +239,7 @@ export default function GamePage() {
     if (!roomId) return;
     const updatedPlayers = players.filter(p => p.name !== playerName);
     await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
-    await broadcastState({
+    await broadcastState(roomId, {
       players: updatedPlayers,
       currentPlayer: "",
       gameStarted: false,
@@ -319,7 +320,7 @@ export default function GamePage() {
     const parsedPlayers = parsePlayers(data.players);
     setPlayers(parsedPlayers);
     setJoined(true);
-    await broadcastState({
+    await broadcastState(data.id, {
       players: parsedPlayers,
       currentPlayer: "",
       gameStarted: false,
@@ -369,8 +370,10 @@ export default function GamePage() {
       return;
     }
 
+    // 玩家已存在时，同步 players 状态
     if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
       setRoomId(data.id);
+      setPlayers(currentPlayers);
       setJoined(true);
       return;
     }
@@ -400,7 +403,7 @@ export default function GamePage() {
     setRoomId(data.id);
     setJoined(true);
     setPlayers(updatedPlayers);
-    await broadcastState({
+    await broadcastState(data.id, {
       players: updatedPlayers,
       currentPlayer: "",
       gameStarted: false,
@@ -455,7 +458,7 @@ export default function GamePage() {
 
     setPlayers(updatedPlayers);
     await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
-    await broadcastState({
+    await broadcastState(roomId, {
       players: updatedPlayers,
       currentPlayer,
       gameStarted,
@@ -502,7 +505,7 @@ export default function GamePage() {
     setPhase("rolling");
     setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
     
-    await broadcastState({
+    await broadcastState(roomId, {
       players: resetPlayers,
       currentPlayer: "",
       gameStarted: true,
@@ -521,6 +524,7 @@ export default function GamePage() {
     });
   };
 
+  // ============ 修改2: handleRollDice 广播时 gameStarted 保留 true ============
   const handleRollDice = async () => {
     if (phase !== "rolling") {
       setErrorMsg("当前不是摇骰阶段");
@@ -545,10 +549,11 @@ export default function GamePage() {
     playShakeSound();
     if (navigator.vibrate) navigator.vibrate(100);
 
-    await broadcastState({
+    // 广播时保留 gameStarted = true (此时游戏已开始)
+    await broadcastState(roomId, {
       players: updatedPlayers,
       currentPlayer: "",
-      gameStarted: false,
+      gameStarted: true,          // 修改: 改为 true
       gameOver: false,
       result: "",
       lastBid: null,
@@ -574,7 +579,7 @@ export default function GamePage() {
       setDiceShaking(false);
       setErrorMsg("");
       
-      await broadcastState({
+      await broadcastState(roomId, {
         players: updatedPlayers,
         currentPlayer: firstPlayer,
         gameStarted: true,
@@ -613,15 +618,13 @@ export default function GamePage() {
       setErrorMsg("超过最大数量20");
       return;
     }
-    // 直接调用叫牌
     makeBidDirect(newCount, lastBidDisplay.value);
   };
 
+  // ==================== 核心修改：删除封印1后禁止叫1的判断 ====================
   const makeBidDirect = async (count: number, value: number) => {
-    if (oneSealed && value === 1) {
-      setErrorMsg("1已被封印，不能再叫1");
-      return;
-    }
+    // 已删除：if (oneSealed && value === 1) { ... }
+    // 现在允许封印1后继续叫1
     if (lastBid) {
       if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
         setErrorMsg(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
@@ -648,7 +651,10 @@ export default function GamePage() {
     setSelectedCount(null);
     setSelectedValue(null);
 
-    await broadcastState({
+    // ============ 修改3: 本地更新 oneSealed ============
+    setOneSealed(newOneSealed);
+
+    await broadcastState(roomId, {
       players,
       currentPlayer: playerNames[nextIdx],
       gameStarted,
@@ -792,7 +798,7 @@ export default function GamePage() {
       setNextStarter(loser);
     }
 
-    await broadcastState({
+    await broadcastState(roomId, {
       players,
       currentPlayer,
       gameStarted,
@@ -833,10 +839,11 @@ export default function GamePage() {
     setSelectedValue(null);
     setDiceShaking(false);
     setLastBidDisplay(null);
+    setNextStarter(null);  // 清空 nextStarter
     
     await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
     
-    await broadcastState({
+    await broadcastState(roomId, {
       players: resetPlayers,
       currentPlayer: "",
       gameStarted: false,
@@ -850,7 +857,7 @@ export default function GamePage() {
       warning: "",
       cupOpened: false,
       selectedTarget: null,
-      nextStarter,
+      nextStarter: null,
       diceShaking: false,
     });
   };
@@ -859,7 +866,7 @@ export default function GamePage() {
     setIsLidOpen(true);
     if (myDice.length > 0 && !cupOpened) {
       setCupOpened(true);
-      await broadcastState({
+      await broadcastState(roomId, {
         players,
         currentPlayer,
         gameStarted,
@@ -1245,7 +1252,7 @@ export default function GamePage() {
                       onChange={(e) => {
                         const val = e.target.value || null;
                         setSelectedTarget(val);
-                        broadcastState({
+                        broadcastState(roomId, {
                           players,
                           currentPlayer,
                           gameStarted,
@@ -1283,7 +1290,7 @@ export default function GamePage() {
                       onChange={(e) => {
                         const val = e.target.value || null;
                         setSelectedTarget(val);
-                        broadcastState({
+                        broadcastState(roomId, {
                           players,
                           currentPlayer,
                           gameStarted,
@@ -1585,19 +1592,17 @@ const styles: any = {
     justifyContent: 'center',
   },
   lidBtn: {
-  padding: '4px 14px',
-  borderRadius: '16px',
-  border: 'none',
-  background: 'rgba(255,255,255,0.1)',
-  color: '#fff',
-  fontSize: '12px',
-  cursor: 'pointer',
-  backdropFilter: "blur(4px)",
-  transition: 'all 0.2s',
-  '&:hover': {
-    background: 'rgba(255,255,255,0.2)',
+    padding: '4px 14px',
+    borderRadius: '16px',
+    border: 'none',
+    background: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+    fontSize: '12px',
+    cursor: 'pointer',
+    backdropFilter: "blur(4px)",
+    transition: 'all 0.2s',
+    // 伪类需用 CSS 类实现，这里保留原有写法但不生效，可忽略
   },
-},
   statusBar: {
     background: "rgba(255,255,255,0.04)",
     borderRadius: "12px",
