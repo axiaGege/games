@@ -69,6 +69,7 @@ const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
   return { count: total, value: targetValue, isStraight: false };
 };
 
+// 修复 TypeScript 类型错误
 const parsePlayers = (raw: any): any[] => {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -1353,6 +1354,7 @@ export default function GamePage() {
   );
 }
 
+// ==================== 样式（无重复属性） ====================
 const styles: any = {
   container: {
     minHeight: "100vh",
@@ -1548,7 +1550,6 @@ const styles: any = {
     transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease',
     cursor: 'pointer',
     clipPath: 'polygon(20% 0%, 80% 0%, 95% 90%, 5% 90%)',
-    borderRadius: '50% 50% 40% 40% / 100% 100% 30% 30%',
     boxShadow: '0 8px 30px rgba(0,0,0,0.6), inset 0 -20px 30px rgba(0,0,0,0.4), inset 0 10px 20px rgba(255,255,255,0.1)',
   },
   lidInner: {
