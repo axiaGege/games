@@ -77,7 +77,7 @@ const parsePlayers = (raw: any): any[] => {
     if (Array.isArray(parsed)) return parsed;
     if (typeof parsed === 'object') {
       const arr = Object.values(parsed);
-      if (arr.length > 0 && arr[0]?.name) return arr;
+      if (arr.length > 0 && (arr[0] as any)?.name) return arr;
     }
   } catch {
     try {
