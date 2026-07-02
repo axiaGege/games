@@ -1,1137 +1,1855 @@
-﻿'use client';
+﻿"use client";
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
 // ==================== 工具函数 ====================
 const rollDice = () => Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
 
-const calcHand = (dice: number[]): { label: string; score: number; emoji: string } => {
-  const counts = [0, 0, 0, 0, 0, 0, 0];
-  for (const d of dice) counts[d]++;
+// 骰子 SVG，41px，1和4红色，其余蓝色
+const DiceSVG = ({ value, size = 41 }: { value: number; size?: number }) => {
+  const dotPositions: Record<number, [number, number][]> = {
+    1: [[50, 50]],
+    2: [[30, 30], [70, 70]],
+    3: [[30, 30], [50, 50], [70, 70]],
+    4: [[30, 30], [70, 30], [30, 70], [70, 70]],
+    5: [[30, 30], [70, 30], [50, 50], [30, 70], [70, 70]],
+    6: [[30, 30], [70, 30], [30, 50], [70, 50], [30, 70], [70, 70]],
+  };
+  const dots = dotPositions[value] || [];
+  const dotColor = (value === 1 || value === 4) ? "#e53e3e" : "#3182ce";
 
-  const sorted = [...dice].sort();
-  const isStraight = sorted.join(',') === '1,2,3,4,5' || sorted.join(',') === '2,3,4,5,6';
-  if (isStraight) return { label: '✨ 顺子', score: 0, emoji: '🌈' };
-
-  const ones = counts[1];
-  let maxCount = 0;
-  let maxVal = 2;
-  for (let i = 2; i <= 6; i++) {
-    if (counts[i] > maxCount) { maxCount = counts[i]; maxVal = i; }
-  }
-
-  if (maxCount === 5) return { label: '🔥 纯豹 (' + maxVal + ')', score: 7, emoji: '👑' };
-  if (maxCount === 4 && ones > 0) return { label: '💫 围骰 (6个' + maxVal + ')', score: 6, emoji: '⭐' };
-  const total = ones + maxCount;
-  if (total >= 4 && maxCount >= 3) return { label: '💫 围骰 (6个' + maxVal + ')', score: 6, emoji: '⭐' };
-  return { label: total + '个' + maxVal, score: total, emoji: '🎯' };
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100">
+      <rect x="2" y="2" width="96" height="96" rx="12" fill="white" stroke="#ccc" strokeWidth="2" />
+      {dots.map((pos, idx) => (
+        <circle key={idx} cx={pos[0]} cy={pos[1]} r="8" fill={dotColor} />
+      ))}
+    </svg>
+  );
 };
 
-const DICE_EMOJIS = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+const isStraight = (dice: number[]): boolean => {
+  const sorted = [...dice].sort();
+  return sorted.every((v, i) => i === 0 || v !== sorted[i - 1]);
+};
+
+// ✅ 修复 calc067：封印1后围骰不再加成
+const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
+  if (isStraight(dice)) {
+    return { count: 0, value: targetValue, isStraight: true };
+  }
+  const counts = Array(7).fill(0);
+  for (const d of dice) counts[d]++;
+  // 纯豹
+  for (let v = 1; v <= 6; v++) {
+    if (counts[v] === 5) {
+      return { count: 7, value: v, isStraight: false };
+    }
+  }
+  // 含1豹子（围骰）：只有未封印1时才有效
+  const ones = counts[1];
+  if (!oneSealed && ones > 0) {
+    const nonOneValues: number[] = [];
+    for (let v = 2; v <= 6; v++) {
+      if (counts[v] > 0) nonOneValues.push(v);
+    }
+    if (nonOneValues.length === 1) {
+      const val = nonOneValues[0];
+      return { count: 6, value: val, isStraight: false };
+    }
+  }
+  // 普通计算
+  let total = 0;
+  if (!oneSealed) {
+    total = counts[targetValue] + counts[1];
+  } else {
+    total = counts[targetValue];
+  }
+  return { count: total, value: targetValue, isStraight: false };
+};
+
+const parsePlayers = (raw: any): any[] => {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed === 'object') {
+      const arr = Object.values(parsed);
+      if (arr.length > 0 && arr[0]?.name) return arr;
+    }
+  } catch {
+    try {
+      const matches = raw.match(/"name":"([^"]+)"/g);
+      if (matches) {
+        return matches.map((m: string) => {
+          const name = m.match(/"name":"([^"]+)"/)?.[1] || '未知';
+          return { name, dice: [], ready: false, seatId: 0 };
+        });
+      }
+    } catch {}
+  }
+  return [];
+};
 
 // ==================== 主组件 ====================
-export default function Page() {
-  const [playerName, setPlayerName] = useState('');
-  const [roomPassword, setRoomPassword] = useState('');
+export default function GamePage() {
+  const [playerName, setPlayerName] = useState("");
+  const [roomPassword, setRoomPassword] = useState("");
   const [joined, setJoined] = useState(false);
-  const [roomId, setRoomId] = useState('');
-  const [isCreator, setIsCreator] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [roomId, setRoomId] = useState("");
 
   const [players, setPlayers] = useState<any[]>([]);
-  const [myDice, setMyDice] = useState<number[]>([]);
-  const [myHand, setMyHand] = useState<any>(null);
-  const [currentPlayer, setCurrentPlayer] = useState('');
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
-  const [result, setResult] = useState('');
-  const [lastBid, setLastBid] = useState<any>(null);
-  const [bidHistory, setBidHistory] = useState<any[]>([]);
-  const [phase, setPhase] = useState('waiting');
+  const [result, setResult] = useState("");
+  const [currentPlayer, setCurrentPlayer] = useState("");
+  const [lastBid, setLastBid] = useState<{ player: string; count: number; value: number } | null>(null);
+  const [phase, setPhase] = useState<"waiting" | "rolling" | "bidding" | "ended">("waiting");
   const [hasRolled, setHasRolled] = useState(false);
-
+  const [myDice, setMyDice] = useState<number[]>([]);
   const [diceShaking, setDiceShaking] = useState(false);
-  const [revealedPlayer, setRevealedPlayer] = useState<string | null>(null);
-  const [operationLog, setOperationLog] = useState<string[]>([]);
-  const [showConfirmReload, setShowConfirmReload] = useState(false);
+  const [isLidOpen, setIsLidOpen] = useState(false);
+  const [cupOpened, setCupOpened] = useState(false);
+  const [oneSealed, setOneSealed] = useState(false);
+  const [bidHistory, setBidHistory] = useState<string[]>([]);
+  const [warning, setWarning] = useState("");
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+  const [nextStarter, setNextStarter] = useState<string | null>(null);
+  const [mySeatId, setMySeatId] = useState<number | null>(null);
+  const [hasRolledLocal, setHasRolledLocal] = useState(false);
+  const [disconnected, setDisconnected] = useState(false);
 
-  // 骰盅查看状态
-  const [myDiceRevealed, setMyDiceRevealed] = useState(false);
-  const [diceLocked, setDiceLocked] = useState(false);
-  const [cupOpened, setCupOpened] = useState(false); // 骰盅是否已打开看过
-  const [showingDice, setShowingDice] = useState(false); // 当前正在查看骰子
-  const [tempBidFace, setTempBidFace] = useState(0); // 叫牌临时选的数字
-  const [tempBidCount, setTempBidCount] = useState(0); // 叫牌临时选的数量
-  const [playerPrepared, ] = useState({});
-  // 违规闪烁
-  const [violators, setViolators] = useState<string[]>([]);
+  // 叫牌面板
+  const [bidPage, setBidPage] = useState(0);
+  const [selectedCount, setSelectedCount] = useState<number | null>(null);
+  const [selectedValue, setSelectedValue] = useState<number | null>(null);
+  // 快捷加叫
+  const [lastBidDisplay, setLastBidDisplay] = useState<{ count: number; value: number } | null>(null);
 
-  const channelRef = useRef<any>(null);
+  const [errorMsg, setErrorMsg] = useState("");
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const nameRef = useRef(playerName);
-  nameRef.current = playerName;
+  const channelRef = useRef<any>(null);
 
-  // ==================== 音效 ====================
-  const playSound = useCallback((freq: number, dur: number, type = 'sine') => {
+  const bidPages = [
+    [1,2,3,4,5,6,7],
+    [8,9,10,11,12,13,14],
+    [15,16,17,18,19,20]
+  ];
+  const values = [1,2,3,4,5,6];
+  const quickAdds = [1,2,3,4];
+
+  const playShakeSound = () => {
     try {
-      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
       const ctx = audioCtxRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      osc.type = type as OscillatorType;
-      gain.gain.value = 0.08;
-      osc.start();
-      osc.stop(ctx.currentTime + dur);
-    } catch {}
-  }, []);
-
-  // 摇骰前检查违规
-  const canRoll = () => {
-    if (cupOpened) { setErrorMsg('骰盅已打开，禁止重新摇骰'); return false; }
-    if (!gameStarted || !hasRolled) { setErrorMsg('还没到摇骰阶段'); return false; }
-    return true;
+      for (let i = 0; i < 12; i++) {
+        setTimeout(() => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 800 + Math.random() * 400;
+          osc.type = "square";
+          gain.gain.value = 0.05 + Math.random() * 0.05;
+          osc.start();
+          osc.stop(ctx.currentTime + 0.03);
+        }, i * 60);
+      }
+    } catch (e) {}
   };
 
-  const playShakeSound = useCallback(() => {
-    for (let i = 0; i < 10; i++) {
-      setTimeout(() => playSound(600 + Math.random() * 400, 0.04, 'square'), i * 50);
-    }
-  }, [playSound]);
+  // ==================== Supabase 订阅 ====================
+  useEffect(() => {
+    if (!roomId) return;
+    console.log('🔄 订阅房间:', roomId);
+    const channel = supabase
+      .channel(`room:${roomId}`, { config: { broadcast: { ack: true } } })
+      .on('broadcast', { event: 'gameState' }, (payload) => {
+        console.log('📩 收到广播:', payload);
+        const state = payload.payload;
+        const parsedPlayers = parsePlayers(state.players);
+        setPlayers(parsedPlayers);
+        setGameStarted(state.gameStarted || false);
+        setGameOver(state.gameOver || false);
+        setResult(state.result || "");
+        setCurrentPlayer(state.currentPlayer || "");
+        setLastBid(state.lastBid || null);
+        setPhase(state.phase || "waiting");
+        setHasRolled(state.hasRolled || false);
+        setOneSealed(state.oneSealed || false);
+        setBidHistory(state.bidHistory || []);
+        setWarning(state.warning || "");
+        setCupOpened(state.cupOpened || false);
+        setSelectedTarget(state.selectedTarget || null);
+        setNextStarter(state.nextStarter || null);
+        setDiceShaking(state.diceShaking || false);
+        // 更新上家叫牌显示
+        if (state.lastBid) {
+          setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
+        } else {
+          setLastBidDisplay(null);
+        }
+        if (state.phase === "waiting" || state.phase === "ended") {
+          setSelectedCount(null);
+          setSelectedValue(null);
+        }
+        const me = parsedPlayers.find((p: any) => p.name === playerName);
+        if (me) {
+          setMyDice(me.dice || []);
+          setMySeatId(me.seatId !== undefined ? me.seatId : null);
+          setHasRolledLocal(me.dice && me.dice.length > 0);
+        }
+        setDisconnected(false);
+      })
+      .subscribe((status) => {
+        console.log('📡 订阅状态:', status);
+        if (status === 'SUBSCRIBED') setDisconnected(false);
+      });
 
-  // ==================== 日志 ====================
-  const addLog = useCallback((msg: string) => {
-    setOperationLog(prev => [...prev.slice(-30), msg]);
-  }, []);
+    channelRef.current = channel;
+    return () => {
+      console.log('🔌 取消订阅');
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [roomId, playerName]);
 
-  // ==================== 广播状态 ====================
-  const broadcastState = useCallback(async (state: any) => {
-    if (!channelRef.current) return;
+  const broadcastState = async (state: any) => {
     try {
-      await channelRef.current.send({
+      console.log('📤 发送广播:', state);
+      const result = await supabase.channel(`room:${roomId}`).send({
         type: 'broadcast',
         event: 'gameState',
         payload: state,
       });
-    } catch (e) { console.error('Broadcast failed:', e); }
-  }, []);
-
-  // ==================== 连接房间 ====================
-  const connectToRoom = useCallback((rid: string, name: string, creator: boolean) => {
-    if (channelRef.current) { channelRef.current.unsubscribe(); channelRef.current = null; }
-
-    const ch = supabase.channel(rid);
-    channelRef.current = ch;
-
-    ch.on('broadcast', { event: 'gameState' }, (payload) => {
-      const s = payload.payload;
-      if (s.type === 'join') {
-        setPlayers(prev => {
-          const exists = prev.find((p: any) => p.name === s.player);
-          if (!exists) {
-            addLog(s.player + ' 加入了房间');
-            return [...prev, { name: s.player, dice: [], prepared: false, score: 0 }];
-          }
-          return prev;
-        });
-      } else if (s.type === 'roll') {
-        setPlayers(prev => prev.map((p: any) => p.name === s.player ? { ...p, dice: s.dice } : p));
-        if (s.players) setPlayers(s.players);
-        
-      } else if (s.type === 'prepare') {
-        setPlayers(prev => prev.map((p: any) =>
-          p.name === s.player ? { ...p, prepared: s.prepared } : p
-        ));
-      } else if (s.type === 'violation') {
-        addLog('⚠️ ' + s.player + ' 违规摇骰！');
-        playSound(200, 0.5, 'sawtooth');
-      } else if (s.type === 'leave') {
-        setPlayers(prev => prev.filter((p: any) => p.name !== s.player));
-        addLog(s.player + ' 离开了房间');
-      } else if (s.type === 'start') {
-        setPlayers(s.players || []);
-        setCurrentPlayer(s.currentPlayer || s.currentTurn || '');
-        setGameStarted(true);
-        setPhase(s.phase || 'rolling');
-        setHasRolled(true); // 已经摇过了
-        setGameOver(false);
-        setResult('');
-        setLastBid(null);
-        // 不要清空 myDice，从 players 里恢复
-        const me2 = (s.players || []).find((p: any) => p.name === playerName);
-        if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
-        setRevealedPlayer(null);
-        if (s.cupOpened !== undefined) setCupOpened(s.cupOpened);
-      } else if (s.type === 'bid') {
-        setLastBid(s.lastBid);
-        setCurrentPlayer(s.currentPlayer);
-        setPhase(s.phase);
-        if (s.players) {
-          setPlayers(s.players);
-          const me3 = s.players.find((p: any) => p.name === playerName);
-          if (me3) { setMyDice(me3.dice || []); setMyHand(me3.dice ? calcHand(me3.dice) : null); }
-        }
-      } else if (s.type === 'open') {
-        setGameOver(true);
-        setPhase('ended');
-        setResult(s.result);
-        setPlayers(s.players || []);
-      } else if (s.type === 'reset') {
-        setGameStarted(false);
-        setGameOver(false);
-        setResult('');
-        setLastBid(null);
-        setCurrentPlayer('');
-        setPhase('waiting');
-        setHasRolled(false);
-        setMyDice([]);
-        setMyHand(null);
-        setRevealedPlayer(null);
-      }
-    });
-
-
-
-    ch.subscribe(async (status) => {
-      console.log('Subscribe status:', status);
-      if (status === 'SUBSCRIBED') {
-        setJoined(true);
-        setIsCreator(creator);
-        setRoomId(rid);
-        addLog(name + ' 加入房间 ' + rid);
-
-        // 广播自己加入了，让房间裡其他人看到
-        broadcastState({ type: "join", player: name });
-
-        // 如果是创建者，初始化房间
-        if (creator) {
-          const newPlayers = [{ name, dice: [], prepared: false, score: 0 }];
-          setPlayers(newPlayers);
-          await broadcastState({
-            type: 'start',
-            players: newPlayers,
-            currentPlayer: '',
-            phase: 'waiting',
-          });
-          addLog('房间已创建');
-          // 同步到数据库
-          try {
-            await supabase.from('rooms').insert({
-              game_type: 'dice067',
-              password: rid,
-              players: newPlayers.map(p => p.name).join(','),
-              });
-          } catch (e) { console.error('DB insert failed:', e); }
-        } else {
-          // 加入已有房间 - 先尝试数据库
-          let joinedViaDb = false;
-          try {
-              const { data: roomList } = await supabase.from('rooms').select().eq('password', rid); const roomData = roomList && roomList.length > 0 ? roomList[0] : null;
-            if (roomData) {
-              const existingPlayers = roomData.players ? roomData.players.split(',').filter(Boolean) : [];
-              if (!existingPlayers.includes(name)) {
-                const newPlayers = [...existingPlayers, name];
-                await supabase.from('rooms').update({ players: newPlayers.join(',') }).eq('password', rid);
-                await broadcastState({
-                  type: 'join',
-                  player: name,
-                  players: newPlayers.map((n: string) => ({ name: n, dice: [], score: 0 })),
-                });
-                setPlayers(newPlayers.map((n: string) => ({ name: n, dice: [], score: 0 })));
-                joinedViaDb = true;
-              }
-            }
-          } catch (e) { console.error('DB join failed:', e); }
-          
-          // 即使数据库失败，也要广播自己加入，让房间里的人看到
-          if (!joinedViaDb) {
-            await broadcastState({ type: 'join', player: name });
-          }
-        }
-      }
-    });
-  }, [broadcastState, addLog]);
-
-  // ==================== 创建房间 ====================
-  const createRoom = useCallback(() => {
-    if (!playerName.trim()) { setErrorMsg('请输入你的名字'); return; }
-    if (!roomPassword.trim()) { setErrorMsg('请设置房间密码'); return; }
-    setErrorMsg('');
-    connectToRoom(roomPassword.trim(), playerName.trim(), true);
-  }, [playerName, roomPassword, connectToRoom]);
-
-  // ==================== 加入房间 ====================
-  const joinRoom = useCallback(() => {
-    if (!playerName.trim()) { setErrorMsg('请输入你的名字'); return; }
-    if (!roomPassword.trim()) { setErrorMsg('请输入房间密码'); return; }
-    setErrorMsg('');
-    connectToRoom(roomPassword.trim(), playerName.trim(), false);
-  }, [playerName, roomPassword, connectToRoom]);
-
-  // ==================== 开始游戏 ====================
-  // ==================== 准备流程 ====================
-  const handlePrepare = useCallback(() => {
-    const me = players.find((p: any) => p.name === playerName);
-    if (!me) return;
-    const newPrepared = !me.prepared;
-    setPlayers(prev => prev.map((p: any) => p.name === playerName ? { ...p, prepared: newPrepared } : p));
-    broadcastState({ type: "prepare", player: playerName, prepared: newPrepared });
-    addLog(newPrepared ? playerName + " 已准备" : playerName + " 取消准备");
-  }, [players, playerName, broadcastState, addLog]);
-
-  // 违规摇骰检测
-  const checkRollViolation = useCallback(() => {
-    if (cupOpened || (gameStarted && hasRolled)) {
-      broadcastState({ type: 'violation', player: playerName });
-      addLog('⚠️ ' + playerName + ' 违规摇骰！');
-      return false;
+      console.log('📤 广播结果:', result);
+      setDisconnected(false);
+    } catch (error) {
+      console.error('❌ 广播失败:', error);
+      setDisconnected(true);
+      setErrorMsg('⚠️ 连接断开，请检查网络后重试');
     }
-    return true;
-  }, [cupOpened, gameStarted, hasRolled, playerName, broadcastState, addLog]);
+  };
 
-  const handleBeginGame = useCallback(async () => {
-    // 房主不需要准备，检查至少有一个其他人准备
-    const otherPrepared = players.filter((p: any) => p.name !== playerName && p.prepared);
-    if (otherPrepared.length < 1) { setErrorMsg("至少需要1个其他玩家准备"); return; }
-    setPhase("rolling");
-    broadcastState({ type: "update", phase: "rolling", players });
-    playShakeSound();
-    setDiceShaking(true);
-    addLog("摇骰中...");
-    await new Promise(r => setTimeout(r, 1500));
-    const shuffled = [...players].sort(() => Math.random() - 0.5);
-    const newPlayers = shuffled.map((p: any) => {
-      if (p.prepared) return { ...p, dice: rollDice(), revealed: false };
-      return p;
-    });
-    const firstPlayer = newPlayers[0].name;
-    setPlayers(newPlayers);
-    setCurrentPlayer(firstPlayer);
-    setGameStarted(true);
-    setPhase("bidding");
-    setHasRolled(true);
-    setDiceShaking(false);
-    setDiceLocked(true);
-    setCupOpened(false); // 摇完盖盅，没打开过
-    setPhase("bidding");
-    const me2 = newPlayers.find((p: any) => p.name === playerName);
-    if (me2) { setMyDice(me2.dice || []); setMyHand(me2.dice ? calcHand(me2.dice) : null); }
-    addLog(firstPlayer + " 先手叫牌");
-    broadcastState({ type: "start", players: newPlayers, currentPlayer: firstPlayer, phase: "bidding", cupOpened: false });
-  }, [players, playerName, broadcastState, addLog, playShakeSound]);
-
-
-  // ==================== 叫牌 ====================
-  const handleBid = useCallback(async (count: number, value: number) => {
-    if (diceLocked && !gameStarted) { /* 等待摇骰 */ }
-    if (currentPlayer !== playerName) { setErrorMsg('还没轮到你'); return; }
-    if (gameOver) { setErrorMsg('游戏已结束'); return; }
-    if (count < 1 || count > 7 || value < 1 || value > 6) { setErrorMsg('叫点 1-7，数字 1-6'); return; }
-    if (lastBid) {
-      if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
-        setErrorMsg('必须比 ' + lastBid.count + '个' + lastBid.value + ' 更大');
-        return;
-      }
-    }
-    setErrorMsg('');
-    const newBid = { player: playerName, count, value };
-    setLastBid(newBid);
-    setBidHistory(prev => [...prev, newBid]);
-    const playerNames = players.map((p: any) => p.name);
-    const idx = playerNames.indexOf(currentPlayer);
-    const nextPlayer = playerNames[(idx + 1) % playerNames.length];
-
-    setCurrentPlayer(nextPlayer);
-    addLog(playerName + ' 叫了 ' + count + '个' + value);
-    const updatedPlayers = players.map((p: any) => p.name === playerName ? { ...p, dice: p.dice } : p);
+  const leaveRoom = async () => {
+    if (!roomId) return;
+    const updatedPlayers = players.filter(p => p.name !== playerName);
+    await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
     await broadcastState({
-      type: 'bid',
-      lastBid: newBid,
-      currentPlayer: nextPlayer,
-      phase: 'bidding',
-      bidHistory: [...bidHistory, newBid],
       players: updatedPlayers,
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "waiting",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter: null,
+      diceShaking: false,
     });
-  }, [currentPlayer, playerName, gameOver, lastBid, players, broadcastState, addLog]);
-
-  // ==================== 开盅 ====================
-  // 支持的抢开：任何人都可以随时开任何人
-  const handleOpen = useCallback(async (targetName?: string) => {
-    if (gameOver) { setErrorMsg('游戏已结束'); return; }
-    if (!lastBid) { setErrorMsg('还没人叫牌'); return; }
-    // 任何人都可以在叫牌阶段随时开任何人（无限制抢开）
-
-    // 如果没有传 targetName，就是当前玩家自己开（传统开盅）
-    const opener = playerName;
-    const target = targetName || lastBid.player;
-
-    // 计算总数
-    let totalCount = 0;
-    for (const p of players) {
-      const dice = p.dice || [];
-      const counts = [0, 0, 0, 0, 0, 0, 0];
-      for (const d of dice) counts[d]++;
-      if (lastBid.value === 1) totalCount += counts[1];
-      else totalCount += counts[1] + counts[lastBid.value];
-    }
-
-    const bidder = lastBid.player;
-    const winner = totalCount >= lastBid.count ? bidder : opener;
-    const loser = winner === bidder ? opener : target;
-    const resultMsg = '🔓 ' + opener + ' 开 ' + target + '！实际有 ' + totalCount + ' 个' + (lastBid.value === 1 ? '1' : lastBid.value);
-
-    setGameOver(true);
-    setPhase('ended');
-    setResult(resultMsg);
-    addLog(resultMsg);
-
-    await broadcastState({
-      type: 'open',
-      players,
-      gameOver: true,
-      result: resultMsg,
-      opener,
-      target: target,
-      lastBid,
-      phase: 'ended',
-    });
-  }, [currentPlayer, playerName, lastBid, players, broadcastState, addLog, gameOver]);
-
-  // ==================== 重置游戏 ====================
-  const handleReset = useCallback(async () => {
-    if (!isCreator) { setErrorMsg('只有房主可以重置'); return; }
-    setGameStarted(false);
-    setGameOver(false);
-    setResult('');
-    setLastBid(null);
-    setCurrentPlayer('');
-    setPhase('waiting');
-    setHasRolled(false);
-    setMyDice([]);
-    setMyHand(null);
-    setRevealedPlayer(null);
-    addLog('🔄 房主重置游戏');
-    await broadcastState({
-      type: 'reset',
-      players: players.map((p: any) => ({ ...p, dice: [] })),
-      phase: 'waiting',
-    });
-  }, [isCreator, players, broadcastState, addLog]);
-
-  // ==================== 离开房间 ====================
-  const handleLeave = useCallback(() => {
-    // 离开前广播
-    if (channelRef.current && playerName) {
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'gameState',
-        payload: { type: 'leave', player: playerName },
-      }).catch((e: any) => console.error('Leave broadcast failed:', e));
-    }
-    if (channelRef.current) { channelRef.current.unsubscribe(); channelRef.current = null; }
     setJoined(false);
+    setRoomId("");
     setPlayers([]);
-    setMyDice([]);
-    setMyHand(null);
-    setHasRolled(false);
-    setPhase('waiting');
     setGameStarted(false);
     setGameOver(false);
-    setResult('');
+    setResult("");
+    setCurrentPlayer("");
     setLastBid(null);
-    setOperationLog([]);
-    setErrorMsg('');
-    setRoomPassword('');
-    // 清除 sessionStorage
-    if (roomId) sessionStorage.removeItem('dice067_room_' + roomId);
-  }, []);
-
-  // ==================== 清理 ====================
-  useEffect(() => {
-    return () => { if (channelRef.current) channelRef.current.unsubscribe(); };
-  }, []);
-
-  // 注入全局动画样式
-  useEffect(() => {
-    if (document.getElementById('dice067-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'dice067-styles';
-    style.textContent = '@keyframes shakeAnim{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px) rotate(-5deg)}75%{transform:translateX(5px) rotate(5deg)}}@keyframes violationBlink{0%,100%{borderColor:rgba(255,255,255,0.06)}50%{borderColor:#f43f5e;boxShadow:0 0 15px rgba(244,63,94,0.5)}}';
-    document.head.appendChild(style);
-  }, []);
-
-
-  // ==================== 状态恢复：刷新/返回后自动恢复 ====================
-  useEffect(() => {
-    if (!joined || !roomId) return;
-    const saved = sessionStorage.getItem('dice067_room_' + roomId);
-    if (saved) {
-      try {
-        const state = JSON.parse(saved);
-        // 恢复 players
-        if (state.players && state.players.length > 0) {
-          setPlayers(state.players);
-        }
-        // 恢复游戏阶段
-        if (state.phase) setPhase(state.phase);
-        if (state.lastBid) setLastBid(state.lastBid);
-        if (state.bidHistory) setBidHistory(state.bidHistory);
-        if (state.currentPlayer) setCurrentPlayer(state.currentPlayer);
-        if (state.gameStarted !== undefined) setGameStarted(state.gameStarted);
-        if (state.gameOver !== undefined) setGameOver(state.gameOver);
-        if (state.result) setResult(state.result);
-        if (state.hasRolled !== undefined) setHasRolled(state.hasRolled);
-        if (state.myDice) setMyDice(state.myDice);
-        if (state.myHand) setMyHand(state.myHand);
-        if (state.cupOpened !== undefined) setCupOpened(state.cupOpened);
-        // 广播恢复通知给房间内其他人
-        addLog('🔄 已恢复上次状态');
-        broadcastState({ type: 'update', players: state.players, phase: state.phase });
-      } catch (e) {}
+    setPhase("waiting");
+    setHasRolled(false);
+    setMyDice([]);
+    setDiceShaking(false);
+    setIsLidOpen(false);
+    setCupOpened(false);
+    setOneSealed(false);
+    setBidHistory([]);
+    setWarning("");
+    setSelectedTarget(null);
+    setNextStarter(null);
+    setMySeatId(null);
+    setHasRolledLocal(false);
+    setDisconnected(false);
+    setErrorMsg("");
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
     }
-  }, [joined, roomId, addLog, broadcastState]);
+  };
 
-  // 保存状态到 sessionStorage（每次状态变化都保存）
-  useEffect(() => {
-    if (!joined || !roomId) return;
-    const state = {
-      players,
-      phase,
-      lastBid,
-      bidHistory,
+  const createRoom = async () => {
+    if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
+    if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
+    setErrorMsg("");
+
+    const { data: existing } = await supabase
+      .from("rooms")
+      .select("password")
+      .eq("password", roomPassword.trim())
+      .maybeSingle();
+
+    if (existing) {
+      setErrorMsg("这个密码已被使用，请换一个");
+      return;
+    }
+
+    const newPlayer = { name: playerName.trim(), dice: [], ready: true, seatId: 0 };
+    const { data, error } = await supabase
+      .from("rooms")
+      .insert({
+        game_type: "dice067",
+        password: roomPassword.trim(),
+        players: [newPlayer],
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setErrorMsg("创建失败: " + error.message);
+      return;
+    }
+
+    setRoomId(data.id);
+    const parsedPlayers = parsePlayers(data.players);
+    setPlayers(parsedPlayers);
+    setJoined(true);
+    await broadcastState({
+      players: parsedPlayers,
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "waiting",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter: null,
+      diceShaking: false,
+    });
+  };
+
+  const joinRoom = async () => {
+    if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
+    if (!roomPassword.trim()) { setErrorMsg("请输入房间密码"); return; }
+    setErrorMsg("");
+
+    console.log('📥 开始加入房间，密码:', roomPassword.trim());
+
+    const { data, error } = await supabase
+      .from("rooms")
+      .select()
+      .eq("password", roomPassword.trim())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) {
+      console.error('❌ 查询房间失败:', error);
+      setErrorMsg("密码错误，未找到对应房间");
+      return;
+    }
+
+    console.log('📥 查询到的房间数据:', data);
+
+    const currentPlayers = parsePlayers(data.players);
+    console.log('📥 解析后的 currentPlayers:', currentPlayers);
+
+    if (currentPlayers.length >= 12) {
+      setErrorMsg("房间已满（最多12人）");
+      return;
+    }
+
+    if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
+      setRoomId(data.id);
+      setJoined(true);
+      return;
+    }
+
+    const occupiedSeats = currentPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+    let seatId = 0;
+    for (let i = 0; i < 12; i++) {
+      if (!occupiedSeats.includes(i)) { seatId = i; break; }
+    }
+
+    const newPlayer = { name: playerName.trim(), dice: [], ready: false, seatId };
+    const updatedPlayers = [...currentPlayers, newPlayer];
+    console.log('📤 准备更新的 players:', updatedPlayers);
+
+    const { error: updateError } = await supabase
+      .from("rooms")
+      .update({ players: updatedPlayers })
+      .eq("id", data.id);
+
+    if (updateError) {
+      console.error('❌ 更新房间失败:', updateError);
+      setErrorMsg("加入失败: " + updateError.message);
+      return;
+    }
+
+    console.log('✅ 更新成功，准备广播');
+    setRoomId(data.id);
+    setJoined(true);
+    setPlayers(updatedPlayers);
+    await broadcastState({
+      players: updatedPlayers,
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "waiting",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter: null,
+      diceShaking: false,
+    });
+  };
+
+  const toggleReady = async () => {
+    console.log('🔄 toggleReady 被点击');
+    console.log('   playerName:', playerName);
+    console.log('   players:', players);
+    console.log('   roomId:', roomId);
+
+    if (gameStarted) {
+      setErrorMsg("游戏已开始，不能准备");
+      console.warn('游戏已开始，不能准备');
+      return;
+    }
+
+    const me = players.find(p => p.name === playerName);
+    if (!me) {
+      console.error('❌ 未找到玩家:', playerName, '在 players 列表中:', players);
+      setErrorMsg("未找到你的信息，请刷新页面重试");
+      return;
+    }
+
+    console.log('找到玩家:', me);
+
+    if (me.seatId === 0) {
+      setErrorMsg("房主无需准备");
+      console.warn('房主无需准备');
+      return;
+    }
+
+    const newReady = !me.ready;
+    console.log('🔄 准备状态切换:', me.ready, '->', newReady);
+
+    const updatedPlayers = players.map(p =>
+      p.name === playerName ? { ...p, ready: newReady } : p
+    );
+
+    setPlayers(updatedPlayers);
+    await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
+    await broadcastState({
+      players: updatedPlayers,
       currentPlayer,
       gameStarted,
       gameOver,
       result,
+      lastBid,
+      phase,
       hasRolled,
-      myDice,
-      myHand,
+      oneSealed,
+      bidHistory,
+      warning,
       cupOpened,
-      lastUpdated: Date.now(),
-    };
-    sessionStorage.setItem('dice067_room_' + roomId, JSON.stringify(state));
-  }, [joined, roomId, players, phase, lastBid, bidHistory, currentPlayer, gameStarted, gameOver, result, hasRolled, myDice, myHand]);
+      selectedTarget,
+      nextStarter,
+      diceShaking,
+    });
 
-  // 刷新提醒
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (gameStarted && !gameOver) {
-        e.preventDefault();
-        e.returnValue = '';
+    console.log('✅ 准备状态更新完成');
+    setErrorMsg("");
+  };
+
+  const startGame = async () => {
+    if (players.length < 2) { setErrorMsg("至少2人"); return; }
+    
+    setHasRolled(false);
+    setHasRolledLocal(false);
+    setCupOpened(false);
+    setMyDice([]);
+    setIsLidOpen(false);
+    
+    const allReady = players.every(p => p.seatId === 0 || p.ready === true);
+    if (!allReady) {
+      setErrorMsg("还有玩家未准备");
+      return;
+    }
+
+    const resetPlayers = players.map(p => ({
+      ...p,
+      dice: [],
+      ready: p.seatId === 0 ? true : false
+    }));
+    setPlayers(resetPlayers);
+    setDiceShaking(true);
+    setPhase("rolling");
+    setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
+    
+    await broadcastState({
+      players: resetPlayers,
+      currentPlayer: "",
+      gameStarted: true,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "rolling",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter,
+      diceShaking: true,
+    });
+  };
+
+  const handleRollDice = async () => {
+    if (phase !== "rolling") {
+      setErrorMsg("当前不是摇骰阶段");
+      return;
+    }
+    if (players.find(p => p.name === playerName)?.dice?.length > 0) {
+      setErrorMsg("你已经摇过骰子了");
+      return;
+    }
+    if (cupOpened) {
+      setErrorMsg("已查看过骰子，不能摇骰！");
+      return;
+    }
+
+    const myDice = rollDice();
+    const updatedPlayers = players.map(p =>
+      p.name === playerName ? { ...p, dice: myDice } : p
+    );
+    setPlayers(updatedPlayers);
+    setMyDice(myDice);
+    setHasRolledLocal(true);
+    playShakeSound();
+    if (navigator.vibrate) navigator.vibrate(100);
+
+    await broadcastState({
+      players: updatedPlayers,
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "rolling",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened,
+      selectedTarget,
+      nextStarter,
+      diceShaking: true,
+    });
+
+    const rolledCount = updatedPlayers.filter(p => p.dice && p.dice.length > 0).length;
+    if (rolledCount === updatedPlayers.length && updatedPlayers.length >= 2) {
+      const firstPlayer = nextStarter || updatedPlayers[0].name;
+      setNextStarter(null);
+      setCurrentPlayer(firstPlayer);
+      setGameStarted(true);
+      setPhase("bidding");
+      setHasRolled(true);
+      setDiceShaking(false);
+      setErrorMsg("");
+      
+      await broadcastState({
+        players: updatedPlayers,
+        currentPlayer: firstPlayer,
+        gameStarted: true,
+        gameOver: false,
+        result: "",
+        lastBid: null,
+        phase: "bidding",
+        hasRolled: true,
+        oneSealed: false,
+        bidHistory: [],
+        warning: "",
+        cupOpened: false,
+        selectedTarget: null,
+        nextStarter: null,
+        diceShaking: false,
+      });
+    }
+  };
+
+  // ==================== 快捷加叫功能 ====================
+  const handleQuickBid = (add: number) => {
+    if (!lastBidDisplay) {
+      setErrorMsg("还没有上家叫牌");
+      return;
+    }
+    if (currentPlayer !== playerName) {
+      setErrorMsg("还没轮到你");
+      return;
+    }
+    if (phase !== "bidding") {
+      setErrorMsg("当前不是叫牌阶段");
+      return;
+    }
+    const newCount = lastBidDisplay.count + add;
+    if (newCount > 20) {
+      setErrorMsg("超过最大数量20");
+      return;
+    }
+    // 直接调用叫牌
+    makeBidDirect(newCount, lastBidDisplay.value);
+  };
+
+  // 直接叫牌（供快捷加叫使用）
+  const makeBidDirect = async (count: number, value: number) => {
+    if (oneSealed && value === 1) {
+      setErrorMsg("1已被封印，不能再叫1");
+      return;
+    }
+    // 校验是否比上家大（已经由调用方保证）
+    setErrorMsg("");
+
+    let newOneSealed = oneSealed;
+    if (value === 1) {
+      newOneSealed = true;
+    }
+
+    const newBid = { player: playerName, count, value };
+    setLastBid(newBid);
+    const newHistory = [...bidHistory, `${playerName} 叫了 ${count}个${value}`];
+    setBidHistory(newHistory);
+
+    const playerNames = players.map((p) => p.name);
+    const idx = playerNames.indexOf(currentPlayer);
+    const nextIdx = (idx + 1) % playerNames.length;
+    setCurrentPlayer(playerNames[nextIdx]);
+
+    setSelectedCount(null);
+    setSelectedValue(null);
+
+    await broadcastState({
+      players,
+      currentPlayer: playerNames[nextIdx],
+      gameStarted,
+      gameOver,
+      result,
+      lastBid: newBid,
+      phase,
+      hasRolled,
+      oneSealed: newOneSealed,
+      bidHistory: newHistory,
+      warning: "",
+      cupOpened,
+      selectedTarget,
+      nextStarter,
+      diceShaking,
+    });
+  };
+
+  // ==================== 叫牌 ====================
+  const handleCallBid = async () => {
+    if (selectedCount === null || selectedValue === null) {
+      setErrorMsg("请先选择数量和点数");
+      return;
+    }
+    if (currentPlayer !== playerName) {
+      setErrorMsg("还没轮到你");
+      return;
+    }
+    if (phase !== "bidding") {
+      setErrorMsg("当前不是叫牌阶段");
+      return;
+    }
+    if (lastBid) {
+      if (selectedCount < lastBid.count || (selectedCount === lastBid.count && selectedValue <= lastBid.value)) {
+        setErrorMsg(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
+        return;
       }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [gameStarted, gameOver]);
+    }
+    // 调用直接叫牌
+    await makeBidDirect(selectedCount, selectedValue);
+  };
 
-  // ==================== 登录界面 ====================
+  // ==================== 开骰 ====================
+  const openDice = async (targetPlayer?: string, isSnapOpen: boolean = false) => {
+    if (phase !== "bidding") {
+      setErrorMsg("当前不是叫牌阶段");
+      return;
+    }
+    if (!lastBid) {
+      setErrorMsg("没人叫牌，无法开");
+      return;
+    }
+
+    const target = targetPlayer || selectedTarget || lastBid.player;
+    if (!target) {
+      setErrorMsg("请选择要开的玩家");
+      return;
+    }
+
+    const hasCalled = bidHistory.some(entry => entry.includes(target));
+    if (!hasCalled) {
+      setErrorMsg(`${target} 本轮尚未叫牌，不能开`);
+      return;
+    }
+
+    const targetData = players.find(p => p.name === target);
+    if (!targetData || !targetData.dice || targetData.dice.length === 0) {
+      setErrorMsg("目标玩家没有骰子");
+      return;
+    }
+
+    setErrorMsg("");
+    setSelectedTarget(null);
+
+    const targetIsStraight = isStraight(targetData.dice);
+    const caller = playerName;
+    const bidder = lastBid.player;
+    const calledCount = lastBid.count;
+    const callerData = players.find(p => p.name === caller);
+    const callerIsStraight = callerData ? isStraight(callerData.dice) : false;
+
+    let totalCount = 0;
+    let winner = "";
+    let loser = "";
+
+    // 情况1：双方都是顺子 → 开牌者输
+    if (targetIsStraight && callerIsStraight) {
+      loser = caller;
+      winner = bidder;
+    } 
+    // 情况2：被开者是顺子，开牌者不是顺子 → 只统计开牌者
+    else if (targetIsStraight) {
+      // 统计开牌者自己的骰子（直接计算）
+      if (callerData && callerData.dice && callerData.dice.length > 0) {
+        const counts = Array(7).fill(0);
+        for (const d of callerData.dice) counts[d]++;
+        let count = counts[lastBid.value] + (oneSealed ? 0 : counts[1]);
+        totalCount = count;
+      }
+      if (totalCount >= calledCount) {
+        winner = bidder;
+        loser = caller;
+      } else {
+        winner = caller;
+        loser = bidder;
+      }
+    }
+    // 情况3：被开者不是顺子 → 统计所有玩家（直接用面值统计，不用 calc067）
+    else {
+      let total = 0;
+      for (const p of players) {
+        if (p.dice && p.dice.length > 0) {
+          const counts = Array(7).fill(0);
+          for (const d of p.dice) counts[d]++;
+          // 直接统计面值，不应用豹子加成
+          let count = counts[lastBid.value] + (oneSealed ? 0 : counts[1]);
+          total += count;
+        }
+      }
+      totalCount = total;
+      if (totalCount >= calledCount) {
+        winner = bidder;
+        loser = caller;
+      } else {
+        winner = caller;
+        loser = bidder;
+      }
+    }
+
+    setGameOver(true);
+    setPhase("ended");
+    let resultMsg = "";
+    if (targetIsStraight && callerIsStraight) {
+      resultMsg = `🍺 ${loser} 输了！（双方都是顺子，谁开谁喝）`;
+    } else if (targetIsStraight) {
+      resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，${caller}的骰子实际有 ${totalCount} 个${lastBid.value}`;
+    } else {
+      resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，全场实际有 ${totalCount} 个${lastBid.value}`;
+    }
+    setResult(resultMsg);
+
+    if (isSnapOpen) {
+      setNextStarter(caller);
+    } else {
+      setNextStarter(loser);
+    }
+
+    await broadcastState({
+      players,
+      currentPlayer,
+      gameStarted,
+      gameOver: true,
+      result: resultMsg,
+      lastBid,
+      phase: "ended",
+      hasRolled,
+      oneSealed,
+      bidHistory,
+      warning: "",
+      cupOpened,
+      selectedTarget: null,
+      nextStarter: isSnapOpen ? caller : loser,
+      diceShaking: false,
+    });
+  };
+
+  const resetGame = async () => {
+    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: p.seatId === 0 ? true : false }));
+    setPlayers(resetPlayers);
+    setGameStarted(false);
+    setGameOver(false);
+    setResult("");
+    setLastBid(null);
+    setCurrentPlayer("");
+    setPhase("waiting");
+    setHasRolled(false);
+    setOneSealed(false);
+    setBidHistory([]);
+    setWarning("");
+    setSelectedTarget(null);
+    setIsLidOpen(false);
+    setCupOpened(false);
+    setHasRolledLocal(false);
+    setMyDice([]);
+    setSelectedCount(null);
+    setSelectedValue(null);
+    setDiceShaking(false);
+    setLastBidDisplay(null);
+    
+    await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
+    
+    await broadcastState({
+      players: resetPlayers,
+      currentPlayer: "",
+      gameStarted: false,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "waiting",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter,
+      diceShaking: false,
+    });
+  };
+
+  const handleLidOpen = async () => {
+    setIsLidOpen(true);
+    if (myDice.length > 0 && !cupOpened) {
+      setCupOpened(true);
+      await broadcastState({
+        players,
+        currentPlayer,
+        gameStarted,
+        gameOver,
+        result,
+        lastBid,
+        phase,
+        hasRolled,
+        oneSealed,
+        bidHistory,
+        warning,
+        cupOpened: true,
+        selectedTarget,
+        nextStarter,
+        diceShaking,
+      });
+    }
+  };
+
+  const handleLidClose = () => {
+    setIsLidOpen(false);
+  };
+
+  // ==================== 座位渲染（调整大小和间距） ====================
+  const renderSeats = () => {
+    const topSeats = [];
+    for (let i = 0; i < 6; i++) {
+      const left = 5 + i * 16;
+      topSeats.push({ seatId: i, row: 'top', left });
+    }
+    const bottomSeats = [];
+    for (let i = 0; i < 6; i++) {
+      const left = 5 + i * 16;
+      bottomSeats.push({ seatId: i + 6, row: 'bottom', left });
+    }
+    const allSeats = [...topSeats, ...bottomSeats];
+
+    return allSeats.map((seat) => {
+      const player = players.find(p => p.seatId === seat.seatId) || null;
+      const isMe = player?.name === playerName;
+      const isActive = player?.name === currentPlayer && gameStarted && !gameOver;
+      const isReady = player?.ready || false;
+      const isHost = player?.seatId === 0;
+      const isTarget = player?.name === selectedTarget;
+
+      return (
+        <div
+          key={seat.seatId}
+          style={{
+            position: 'absolute',
+            left: `${seat.left}%`,
+            top: seat.row === 'top' ? '4%' : '56%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '60px',
+            height: '60px',
+            background: isActive ? 'rgba(251,191,36,0.25)' : (isTarget ? 'rgba(251,191,36,0.15)' : (player ? 'rgba(139,92,246,0.2)' : 'rgba(255,255,255,0.05)')),
+            borderRadius: '50%',
+            border: isActive ? '3px solid #fbbf24' : (isTarget ? '2px solid #fbbf24' : (player ? '2px solid #8b5cf6' : '2px dashed rgba(255,255,255,0.2)')),
+            boxShadow: isActive ? '0 0 20px rgba(251,191,36,0.5)' : (isReady ? '0 0 10px rgba(34,211,238,0.3)' : 'none'),
+            transition: 'all 0.3s',
+            cursor: 'default',
+            fontSize: '11px',
+            color: '#ddd',
+            textAlign: 'center',
+          }}
+        >
+          {player ? (
+            <>
+              <span style={{ fontSize: '24px' }}>👤</span>
+              <span style={{ fontSize: '11px', color: isMe ? '#fbbf24' : '#ddd', marginTop: '2px', maxWidth: '56px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {isMe ? `你` : player.name}
+              </span>
+              {isHost && <span style={{ fontSize: '12px', color: '#fbbf24', marginTop: '1px' }}>👑</span>}
+              {isReady && <span style={{ fontSize: '10px', color: '#22d3ee', marginLeft: '2px' }}>✅</span>}
+              {cupOpened && player.dice && player.dice.length > 0 && (
+                <span style={{ fontSize: '10px', color: '#fbbf24', marginLeft: '2px' }}>👁️</span>
+              )}
+            </>
+          ) : (
+            <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>+</span>
+          )}
+        </div>
+      );
+    });
+  };
+
   if (!joined) {
     return (
-      <div style={S.container}>
-        <div style={S.card}>
-          <div style={{ textAlign: 'center', marginBottom: 32 }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>🎲</div>
-            <h1 style={S.title}>零六七</h1>
-            <p style={S.subtitle}>酒桌吹牛 · 经典骰子</p>
+      <div style={styles.container}>
+        <div style={styles.glowOrb}></div>
+        <div style={styles.glowOrb2}></div>
+        <div style={styles.card}>
+          <div style={styles.logo}>🎲</div>
+          <h1 style={styles.title}>零六七</h1>
+          <p style={styles.subtitle}>酒桌吹牛 · 经典骰子</p>
+          <input
+            placeholder="👤 输入你的名字"
+            value={playerName}
+            onChange={(e) => setPlayerName(e.target.value)}
+            style={styles.input}
+          />
+          <input
+            placeholder="🔐 房间密码（设置或加入）"
+            value={roomPassword}
+            onChange={(e) => setRoomPassword(e.target.value)}
+            style={styles.input}
+          />
+          <div style={styles.btnGroup}>
+            <button onClick={createRoom} style={styles.btnPrimary}>🆕 创建房间</button>
+            <button onClick={joinRoom} style={styles.btnSecondary}>🔗 加入房间</button>
           </div>
-
-          <input style={S.input} placeholder='👤 输入你的名字' value={playerName} onChange={e => setPlayerName(e.target.value)} />
-          <input style={S.input} placeholder='🔐 房间密码（设置或加入）' value={roomPassword} onChange={e => setRoomPassword(e.target.value)} />
-
-          <div style={S.btnRow}>
-            <button style={S.btnCreate} onClick={createRoom}>🆕 创建房间</button>
-            <button style={S.btnJoin} onClick={joinRoom}>🔗 加入房间</button>
-          </div>
-
-          {errorMsg && <p style={S.error}>{errorMsg}</p>}
-
-          <p style={{ color: 'rgba(255,255,255,0.25)', fontSize: 12, textAlign: 'center', marginTop: 16 }}>
-            💡 创建房间后把密码发给朋友
-          </p>
+          {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
+          {disconnected && <div style={{ color: "#f87171", marginTop: 8, fontSize: 14 }}>⚠️ 网络连接断开，请检查网络</div>}
         </div>
       </div>
     );
   }
 
-  // ==================== 游戏界面 ====================
-  const isMyTurn = currentPlayer === playerName && !gameOver && phase === 'bidding';
-  const prepCount = players.filter((p: any) => p.prepared).length;
-  const me = players.find((p: any) => p.name === playerName);
-  const others = players.filter((p: any) => p.name !== playerName);
-  const totalPlayers = players.length;
-
-    // 计算座位角度（最多12人圆桌）
-    const getSeatAngle = (index: number, total: number) => {
-      // 座位数最少2人，最多12人
-      const n = Math.max(2, Math.min(total, 12));
-      return (index / n) * 2 * Math.PI - Math.PI / 2;
-    };
-
+  // ==================== 游戏主界面 ====================
   return (
-    <div style={S.container}>
-      <div style={S.gameCard}>
-        {/* 顶部信息 */}
-        <div style={S.header}>
-          <span style={S.roomBadge}>🏠 密码: {roomId}</span>
-          <span style={S.playerBadge}>👤 {playerName}</span>
-        </div>
+    <div style={styles.container}>
+      <div style={styles.glowOrb}></div>
+      <div style={styles.glowOrb2}></div>
 
-        {/* 状态栏 */}
-        <div style={S.statusBar}>
-          {!gameStarted ? (
-            <span style={S.statusText}>
-              👥 {players.length} 人在线
-              {isCreator && (
+      <div style={styles.tableContainer} className="table-container">
+        <div style={styles.table}>
+          {renderSeats()}
+
+          <div style={styles.diceCenter}>
+            <div style={styles.diceBase}>
+              <div style={styles.diceDisplay}>
+                {diceShaking ? (
+                  <div style={styles.diceRow}>
+                    {[1,2,3,4,5].map((_, idx) => (
+                      <span key={idx} style={{ ...styles.diceShaking, animationDelay: `${idx * 0.1}s` }}>
+                        🎲
+                      </span>
+                    ))}
+                  </div>
+                ) : isLidOpen && myDice.length > 0 ? (
+                  <div style={styles.diceRow}>
+                    {myDice.map((val, idx) => (
+                      <DiceSVG key={idx} value={val} size={41} />
+                    ))}
+                  </div>
+                ) : myDice.length > 0 && !isLidOpen ? (
+                  <div style={styles.diceRow}>
+                    {myDice.map((_, idx) => (
+                      <span key={idx} style={{ fontSize: '36px', color: '#888' }}>❓</span>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>🎲</span>
+                )}
+              </div>
+
+              <div
+                style={{
+                  ...styles.diceLid,
+                  transform: isLidOpen ? 'translateY(-60px) rotateX(-10deg) scale(0.9)' : 'translateY(0) rotateX(0) scale(1)',
+                  opacity: isLidOpen ? 0.5 : 1,
+                  transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease',
+                }}
+              >
+                <div style={styles.lidInner}>
+                  <span style={styles.lidHandle}>🎲</span>
+                  <span style={styles.lidLabel}>骰盅</span>
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.lidControls}>
+              {!gameStarted ? (
+                <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '13px' }}>等待开始...</span>
+              ) : diceShaking ? (
+                <span style={{ color: '#fbbf24', fontSize: '15px' }}>🎲 摇骰中...</span>
+              ) : (
                 <>
-                  {' '}| {' '}
-                  {players.some((p:any) => p.name !== playerName && p.prepared) ? (
-                    <button style={S.btnStartSmall} onClick={handleBeginGame}>🎮 开始对局</button>
-                  ) : (
-                    <span style={{fontSize:12,color:'rgba(255,255,255,0.4)'}}>等其他人准备...</span>
-                  )}
+                  <button onClick={handleLidOpen} style={styles.lidBtn}>👆 开盅</button>
+                  <button onClick={handleLidClose} style={styles.lidBtn}>👇 关盅</button>
                 </>
               )}
+            </div>
+
+            {isLidOpen && myDice.length > 0 && (
+              <div style={styles.diceStats}>
+                {(() => {
+                  const hasStraight = isStraight(myDice);
+                  const counts = Array(7).fill(0);
+                  for (const d of myDice) counts[d]++;
+                  const ones = counts[1];
+                  const maxCount = Math.max(...counts);
+                  const maxVal = counts.indexOf(maxCount);
+                  let label = '';
+                  if (hasStraight) label = '🌈 顺子 (0)';
+                  else if (maxCount === 5) label = `🔥 纯豹 (7个${maxVal})`;
+                  else if (!oneSealed && ones > 0 && counts.slice(2).filter(c => c > 0).length === 1) {
+                    const val = counts.indexOf(Math.max(...counts.slice(2)));
+                    if (val > 0) label = `💫 围骰 (6个${val})`;
+                  }
+                  if (!label) label = `${myDice.length}颗骰子`;
+                  return <span style={{ color: '#fbbf24', fontSize: '14px' }}>{label}</span>;
+                })()}
+              </div>
+            )}
+
+            {cupOpened && (
+              <div style={{ color: '#ef4444', fontSize: '13px', marginTop: '4px' }}>
+                ⚠️ 已查看，本局不能再摇骰
+              </div>
+            )}
+          </div>
+
+          {/* 顶部信息栏重新布局 */}
+          <div style={styles.roomInfo}>
+            <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <span>🏠 {roomId.slice(0, 8)}</span>
+              <span>👥 {players.length}/12</span>
+            </span>
+            <button
+              onClick={leaveRoom}
+              style={{
+                background: 'rgba(239,68,68,0.2)',
+                border: '1px solid #ef4444',
+                color: '#f87171',
+                padding: '2px 10px',
+                borderRadius: '12px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                marginLeft: 'auto',
+              }}
+            >
+              🚪 离开
+            </button>
+          </div>
+        </div>
+
+        <div style={styles.statusBar}>
+          {!gameStarted && phase !== "rolling" ? (
+            <span style={styles.statusText}>
+              ⏳ 等待开始 {players.length >= 2 ? '（房主点击"开始游戏"）' : '（至少2人）'}
             </span>
           ) : gameOver ? (
-            <span style={S.resultText}>{result}</span>
-          ) : diceShaking ? (
-            <span style={S.statusText}>🎲 摇骰中...</span>
+            <span style={styles.resultText}>{result}</span>
+          ) : phase === "rolling" ? (
+            <span style={styles.statusText}>
+              🎲 摇骰中... ({players.filter(p => p.dice && p.dice.length > 0).length}/{players.length} 已摇)
+            </span>
           ) : (
-            <span style={S.statusText}>
-              🎯 <strong style={{ color: '#fbbf24' }}>{currentPlayer}</strong> 的回合
+            <span style={styles.statusText}>
+              🎯 {currentPlayer} 的回合 {oneSealed && '🔒 1已封印'}
             </span>
           )}
         </div>
 
-        {/* 圆桌布局 */}
-        <div style={S.tableArea}>
-          {/* 中间的骰子台 */}
-          <div style={S.diceTable}>
-            {diceShaking && <div style={{ fontSize: 32, animation: 'shakeAnim 0.3s infinite' }}>🎲</div>}
-            {!diceShaking && !gameStarted && <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>等待开始...</div>}
-            {!diceShaking && gameStarted && hasRolled && !gameOver && <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>🎲 叫牌阶段</div>}
-            {!diceShaking && gameStarted && gameOver && <div style={{ color: '#fbbf24', fontSize: 13 }}>{result}</div>}
-          </div>
-
-          {/* 周围玩家 */}
-          {players.map((p: any, i: number) => {
-            const angle = getSeatAngle(i, totalPlayers);
-            const radius = 170;
-            const x = Math.cos(angle) * radius;
-            const y = Math.sin(angle) * radius;
-            const isMe = p.name === playerName;
-            const isActive = p.name === currentPlayer && !gameOver;
-            const hasDice = p.dice && p.dice.length === 5;
-            const shouldReveal = isMe && revealedPlayer === p.name && !diceShaking;
-
-            return (
-              <div
-                key={i}
-                style={{
-                  ...S.seat,
-                  left: `calc(50% + ${x}px)`,
-                  top: `calc(50% + ${y}px)`,
-                  transform: 'translate(-50%, -50%)',
-                  borderColor: isActive ? '#fbbf24' : isMe ? 'rgba(251,191,36,0.5)' : 'rgba(255,255,255,0.06)',
-                  background: isActive ? 'rgba(251,191,36,0.1)' : 'rgba(255,255,255,0.02)',
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // 自己(庄家)或其他人都可以看自己的骰子
-                  const canSee = isMe && hasDice && !diceShaking;
-                  if (canSee) {
-                    if (!cupOpened) {
-                      setShowingDice(true);
-                      setCupOpened(true);
-                    } else {
-                      setShowingDice(false);
-                    }
-                  }
-                }}
-              >
-                <div style={S.seatName}>
-                  <div style={{width:28,height:28,borderRadius:'50%',background:'linear-gradient(135deg,#a78bfa,#22d3ee)',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:'bold',color:'#fff',marginBottom:3}}>{p.name.charAt(0).toUpperCase()}</div>
-                  {isMe && '👤 '}{p.name}
-                  {isActive && <span style={S.crown}>👑</span>}
-                  {isMe && <span style={S.meBadge}>我</span>}
-                </div>
-                {hasDice && (
-                  <div style={{
-                    display: 'flex',
-                    justifyContent: 'center',
-                    marginTop: 4,
-                  }}>
-                    {(diceShaking && isMe) ? (
-                      <span style={{ fontSize: 28, animation: 'shakeAnim 0.15s infinite alternate' }}>
-                        {'🎲'}
-                      </span>
-                    ) : showingDice && isMe && hasDice ? (
-                      // 打开骰盅 - 显示骰子
-                      <div style={{
-                        display: 'flex',
-                        gap: 3,
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                      }}>
-                        {p.dice.map((d: number, j: number) => (
-                          <span key={j} style={{ fontSize: 24, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' }}>{DICE_EMOJIS[d - 1]}</span>
-                        ))}
-                      </div>
-                    ) : (
-                      // 盖着骰盅
-                      <span style={{
-                        fontSize: 26,
-                        filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
-                      }}>
-                        {'🎲'}
-                      </span>
-                    )}
-                  </div>
-                )}
-                
-                {showingDice && isMe && hasDice && (
-                  <div style={{ fontSize: 9, color: '#fbbf24', marginTop: 2 }}>👁 查看中</div>
-                )}
-                {!showingDice && hasDice && isMe && !cupOpened && gameStarted && !gameOver && (
-                  <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>点击看骰</div>
-                )}
-                {isMe && hasDice && showingDice && myHand && (
-                  <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 2, background: 'rgba(251,191,36,0.1)', padding: '2px 6px', borderRadius: 8 }}>
-                    {myHand.emoji} {myHand.label}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* 叫牌信息 + 历史记录 */}
-        {lastBid && !gameOver && (
-          <div style={{
-            background: 'linear-gradient(135deg, rgba(251,191,36,0.06), rgba(139,92,246,0.06))',
-            borderRadius: 14, padding: '14px 18px',
-            marginBottom: 16, border: '1px solid rgba(251,191,36,0.1)',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 }}>
-              <span style={{ fontSize: 18 }}>📢</span>
-              <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 15 }}>
-                <strong style={{ color: '#fbbf24' }}>{lastBid.player}</strong> 叫了{' '}
-                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.count || '-'}</strong> 个{' '}
-                <strong style={{ color: '#60a5fa', fontSize: 18 }}>{lastBid.value === 1 ? '🎯1' : (lastBid.value || '-')}</strong>
+        {!gameStarted && phase !== "rolling" && (
+          <div style={styles.readySummary}>
+            ✅ 已准备：{players.filter(p => p.ready).length}/{players.length} 人
+            {players.filter(p => p.ready).length > 0 && (
+              <span style={{ marginLeft: '8px', color: 'rgba(255,255,255,0.5)', fontSize: '12px' }}>
+                （{players.filter(p => p.ready).map(p => p.name).join('、')}）
               </span>
-              {isMyTurn && <span style={{ fontSize: 12, color: '#22d3ee' }}>⬅️ 轮到你!</span>}
-            </div>
-            {/* 叫牌历史 */}
-            {bidHistory.length > 0 && (
-              <div style={{
-                fontSize: 12, color: 'rgba(255,255,255,0.4)',
-                maxHeight: 50, overflowY: 'auto', paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.06)',
-              }}>
-                {bidHistory.map((b: any, i: number) => (
-                  <div key={i} style={{ padding: '2px 0' }}>
-                    {b.player}: {b.count}个{b.value}
-                  </div>
-                ))}
-              </div>
             )}
           </div>
         )}
 
-        {/* 操作区 */}
-        <div style={S.actionBar}>
-          {!gameStarted && players.length >= 2 && isCreator && (
-            <button style={S.btnStart} onClick={handleBeginGame} disabled={diceShaking}>
-              {diceShaking ? '🎲 摇骰中...' : '🎮 开始对局'}
-            </button>
-          )}
-          {!gameStarted && players.length >= 2 && !isCreator && (
-            <button
-              style={{
-                ...S.btnStart,
-                background: me && me.prepared ? 'linear-gradient(135deg, #a78bfa, #7c3aed)' : 'linear-gradient(135deg, #22d3ee, #0891b2)',
-              }}
-              onClick={handlePrepare}
-            >
-              {me && me.prepared ? '✅ 已准备' : '⏳ 准备'}
-            </button>
-          )}
+        {phase === "rolling" && (
+          <div style={{ textAlign: 'center', marginBottom: '12px', fontSize: '13px', color: 'rgba(255,255,255,0.6)' }}>
+            未摇骰: {players.filter(p => !p.dice || p.dice.length === 0).map(p => p.name).join('、') || '全部已摇'}
+          </div>
+        )}
 
-          {gameStarted && !gameOver && phase === 'bidding' && isMyTurn && (
-            <>
-              {/* 第一层：选数字 1-6 */}
-              <div style={{ marginBottom: 8, display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginRight: 4, alignSelf: 'center' }}>数字:</div>
-                {[1,2,3,4,5,6].map(v => (
-                  <button
-                    key={v}
-                    style={{
-                      ...S.btnBid,
-                      padding: '6px 14px',
-                      fontSize: 16,
-                      fontWeight: 'bold',
-                      background: tempBidFace === v ? '#fbbf24' : 'rgba(255,255,255,0.06)',
-                      color: tempBidFace === v ? '#0f0f1a' : '#fff',
-                    }}
-                    onClick={() => {
-                      setTempBidFace(v);
-                      const startCount = lastBid ? lastBid.count : 0;
-                      const startVal = lastBid ? lastBid.value : 0;
-                      if (v === startVal) setTempBidCount(startCount + 1);
-                      else setTempBidCount(1);
-                    }}
-                  >
-                    {v === 1 ? '1🎯' : v}
-                  </button>
-                ))}
-              </div>
-              {/* 第二层：选数量 */}
-              <div style={{ display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginRight: 4, alignSelf: 'center' }}>数量:</div>
-                {[1,2,3,4,5,6,7].map(cnt => {
-                  // 根据已叫牌判断最小数量
-                  const minCount = lastBid ? (
-                    (tempBidFace === lastBid.value) ? lastBid.count + 1 : 1
-                  ) : 1;
-                  if (cnt < minCount) return null;
-                  // 如果数字和上次一样，数量最多到7
-                  if (tempBidFace === (lastBid ? lastBid.value : 0) && cnt > 7) return null;
-                  return (
-                    <button
-                      key={cnt}
-                      style={{
-                        ...S.btnBid,
-                        padding: '6px 14px',
-                        fontSize: 14,
-                        background: tempBidCount === cnt ? '#22d3ee' : 'rgba(255,255,255,0.06)',
-                        color: tempBidCount === cnt ? '#0f0f1a' : '#fff',
-                      }}
-                      onClick={() => setTempBidCount(cnt)}
-                    >
-                      {cnt}个
-                    </button>
-                  );
-                })}
-              </div>
-              {/* 确认叫牌 */}
-              <button
-                style={{
-                  padding: '10px 40px',
-                  borderRadius: 14,
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
-                  color: '#0f0f1a',
-                  fontSize: 16,
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  marginBottom: 8,
-                }}
-                onClick={() => {
-                  if (tempBidFace === 0 || tempBidCount === 0) { setErrorMsg('请先选数字和数量'); return; }
-                  handleBid(tempBidCount, tempBidFace);
-                }}
-              >
-                📢 叫牌 {tempBidCount}个{tempBidFace === 1 ? '1🎯' : tempBidFace}
-              </button>
-              <div style={S.btnRow}>
-                <button style={S.btnOpen} onClick={() => handleOpen()}>🔓 开盅</button>
-              </div>
-            </>
-          )}
+        {warning && (
+          <div style={styles.warningBanner}>
+            ⚠️ {warning}
+          </div>
+        )}
 
-          {gameStarted && !gameOver && phase === 'bidding' && !isMyTurn && (
-            <div style={S.waitBox}>
-              <span style={S.waitText}>⏳ 等待 <strong style={{ color: '#fbbf24' }}>{currentPlayer}</strong> 操作...</span>
-            </div>
-          )}
-
-          {gameOver && (
-            <div style={S.btnRow}>
-              {isCreator && <button style={S.btnReset} onClick={handleReset}>🔄 再来一局</button>}
-              <button style={S.btnLeave} onClick={handleLeave}>🏠 返回大厅</button>
-            </div>
-          )}
-
-          {errorMsg && !gameOver && <p style={{ color: '#f87171', fontSize: 13, marginTop: 8 }}>{errorMsg}</p>}
-        </div>
-
-        {/* 操作日志 */}
-        {operationLog.length > 0 && (
-          <div style={S.logContainer}>
-            <div style={S.logTitle}>📋 记录</div>
-            {operationLog.slice(-5).map((log, i) => (
-              <div key={i} style={S.logEntry}>{log}</div>
+        {bidHistory.length > 0 && (
+          <div style={styles.historyContainer}>
+            <div style={styles.historyTitle}>📜 叫牌记录</div>
+            {bidHistory.slice(-5).reverse().map((log, idx) => (
+              <div key={idx} style={styles.historyEntry}>{log}</div>
             ))}
           </div>
         )}
 
-        {/* 底部信息 */}
-        <div style={S.footer}>
-          <span style={S.playerCount}>👥 {players.length}/12 人</span>
-          {gameStarted && !gameOver && (
-            <span style={S.phaseTag}>{phase === 'bidding' ? '🎯 叫牌阶段' : '⏳ 准备中'}</span>
+        <div style={styles.actionBar}>
+          {phase === "waiting" && !gameStarted && (
+            <>
+              {players.find(p => p.name === playerName)?.seatId === 0 ? (
+                <span style={{ color: '#888', fontSize: '14px' }}>👑 房主（已准备）</span>
+              ) : (
+                <button onClick={toggleReady} style={players.find(p => p.name === playerName)?.ready ? styles.btnReady : styles.btnNotReady}>
+                  {players.find(p => p.name === playerName)?.ready ? '✅ 已准备' : '⏳ 准备'}
+                </button>
+              )}
+              {players.length >= 2 && players.find(p => p.name === playerName)?.seatId === 0 && (
+                <button onClick={startGame} style={styles.btnStart} disabled={diceShaking}>
+                  {diceShaking ? '摇骰中...' : '🚀 开始游戏'}
+                </button>
+              )}
+            </>
           )}
+          {phase === "rolling" && (
+            <button 
+              onClick={handleRollDice} 
+              style={hasRolledLocal ? styles.btnReady : styles.btnStart}
+              disabled={hasRolledLocal || cupOpened}
+            >
+              {hasRolledLocal ? '✅ 已摇骰' : (cupOpened ? '🔒 骰盅已开' : '🎲 摇骰')}
+            </button>
+          )}
+          {gameStarted && !gameOver && phase === "bidding" && (
+            <>
+              {currentPlayer === playerName ? (
+                <>
+                  {/* 叫牌面板 */}
+                  <div style={styles.bidPanel}>
+                    {/* 快捷加叫行 */}
+                    {lastBidDisplay && (
+                      <div style={styles.quickAddRow}>
+                        <span style={{ color: '#aaa', fontSize: '13px', marginRight: '6px' }}>上家: {lastBidDisplay.count}个{lastBidDisplay.value}</span>
+                        {quickAdds.map(add => (
+                          <button
+                            key={add}
+                            onClick={() => handleQuickBid(add)}
+                            style={styles.quickAddBtn}
+                          >
+                            +{add}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {/* 点数行 */}
+                    <div style={styles.bidValueRow}>
+                      {values.map(v => (
+                        <button
+                          key={v}
+                          onClick={() => setSelectedValue(v)}
+                          style={{
+                            ...styles.bidNumBtn,
+                            background: selectedValue === v ? '#fbbf24' : 'rgba(255,255,255,0.08)',
+                            border: selectedValue === v ? '2px solid #fbbf24' : '1px solid rgba(255,255,255,0.1)',
+                            opacity: 1,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                    {/* 数量行 */}
+                    <div style={styles.bidCountRow}>
+                      {bidPages[bidPage].map(num => (
+                        <button
+                          key={num}
+                          onClick={() => setSelectedCount(num)}
+                          style={{
+                            ...styles.bidNumBtn,
+                            background: selectedCount === num ? '#8b5cf6' : 'rgba(255,255,255,0.08)',
+                            border: selectedCount === num ? '2px solid #8b5cf6' : '1px solid rgba(255,255,255,0.1)',
+                          }}
+                        >
+                          {num}个
+                        </button>
+                      ))}
+                    </div>
+                    <div style={styles.bidNav}>
+                      <button onClick={() => setBidPage(Math.max(0, bidPage-1))} style={styles.bidNavBtn}>◀</button>
+                      <span style={{ color: '#aaa', fontSize: '13px' }}>{bidPage+1}/3</span>
+                      <button onClick={() => setBidPage(Math.min(2, bidPage+1))} style={styles.bidNavBtn}>▶</button>
+                      <button onClick={handleCallBid} style={styles.bidCallBtn}>叫牌</button>
+                    </div>
+                    {selectedCount !== null && selectedValue !== null && (
+                      <div style={styles.bidPreview}>
+                        当前选择: <strong>{selectedCount}个{selectedValue}</strong>
+                      </div>
+                    )}
+                  </div>
+                  <div style={styles.targetSelector}>
+                    <span style={{ color: '#ccc', marginRight: '8px', fontSize: '14px' }}>开谁：</span>
+                    <select
+                      value={selectedTarget || ''}
+                      onChange={(e) => {
+                        const val = e.target.value || null;
+                        setSelectedTarget(val);
+                        broadcastState({
+                          players,
+                          currentPlayer,
+                          gameStarted,
+                          gameOver,
+                          result,
+                          lastBid,
+                          phase,
+                          hasRolled,
+                          oneSealed,
+                          bidHistory,
+                          warning,
+                          cupOpened,
+                          selectedTarget: val,
+                          nextStarter,
+                          diceShaking,
+                        });
+                      }}
+                      style={styles.targetSelect}
+                    >
+                      <option value="">默认（上一个叫牌者）</option>
+                      {players.filter(p => p.name !== playerName).map(p => (
+                        <option key={p.name} value={p.name}>{p.name}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => openDice(undefined, false)} style={styles.btnOpen}>🔓 开骰</button>
+                  </div>
+                </>
+              ) : (
+                <div style={styles.waitBox}>
+                  <span style={styles.waitText}>⏳ 等待 {currentPlayer} 操作</span>
+                  <div style={styles.targetSelector}>
+                    <span style={{ color: '#ccc', marginRight: '8px', fontSize: '14px' }}>抢开谁：</span>
+                    <select
+                      value={selectedTarget || ''}
+                      onChange={(e) => {
+                        const val = e.target.value || null;
+                        setSelectedTarget(val);
+                        broadcastState({
+                          players,
+                          currentPlayer,
+                          gameStarted,
+                          gameOver,
+                          result,
+                          lastBid,
+                          phase,
+                          hasRolled,
+                          oneSealed,
+                          bidHistory,
+                          warning,
+                          cupOpened,
+                          selectedTarget: val,
+                          nextStarter,
+                          diceShaking,
+                        });
+                      }}
+                      style={styles.targetSelect}
+                    >
+                      <option value="">选择目标</option>
+                      {players.filter(p => p.name !== playerName).map(p => (
+                        <option key={p.name} value={p.name}>{p.name}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => openDice(selectedTarget || undefined, true)} style={styles.btnOpenSmall}>⚡ 抢开</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          {gameOver && (
+            <button onClick={resetGame} style={styles.btnReset}>🔄 再来一局</button>
+          )}
+          {errorMsg && <div style={{ color: "#f87171", fontSize: 13, marginTop: 8 }}>{errorMsg}</div>}
+          {disconnected && <div style={{ color: "#f87171", fontSize: 13, marginTop: 4 }}>⚠️ 网络连接断开，部分操作可能无法同步</div>}
         </div>
+
+        {lastBid && !gameOver && phase === "bidding" && (
+          <div style={styles.bidInfo}>
+            📢 {lastBid.player} 叫了 {lastBid.count} 个 {lastBid.value} {oneSealed && '🔒 1已封印'}
+          </div>
+        )}
       </div>
+
+      <style>{`
+        .table-container.shake-warning {
+          animation: shakeRed 0.5s ease-in-out 3;
+          border: 3px solid #ef4444 !important;
+        }
+        @keyframes shakeRed {
+          0%, 100% { transform: translateX(0); border-color: #ef4444; }
+          25% { transform: translateX(-10px); }
+          75% { transform: translateX(10px); }
+        }
+        @keyframes shake {
+          0% { transform: rotate(0deg) scale(1); }
+          25% { transform: rotate(10deg) scale(1.1); }
+          50% { transform: rotate(-10deg) scale(0.9); }
+          75% { transform: rotate(5deg) scale(1.05); }
+          100% { transform: rotate(0deg) scale(1); }
+        }
+        @keyframes pulseWarning {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </div>
   );
 }
 
-// ==================== 样式 ====================
-const S: Record<string, React.CSSProperties> = {
+// ==================== 样式（布局优化） ====================
+const styles: any = {
   container: {
-    minHeight: '100vh',
-    background: 'radial-gradient(ellipse at 50% 50%, #1a1a3e 0%, #0f0f1a 60%, #0a0a12 100%)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '12px',
-    fontFamily: 'system-ui, -apple-system, sans-serif',
-    position: 'relative',
-    overflow: 'hidden',
+    minHeight: "100vh",
+    background: "radial-gradient(ellipse at 20% 50%, #1a0a2e 0%, #0f0f1a 50%, #0a0a12 100%)",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: "8px",
+    fontFamily: "system-ui, sans-serif",
+    position: "relative",
+    overflow: "hidden",
+  },
+  glowOrb: {
+    position: "absolute",
+    top: "-20%", right: "-10%",
+    width: "500px", height: "500px",
+    background: "radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)",
+    borderRadius: "50%",
+    pointerEvents: "none" as const,
+    animation: "pulse 4s ease-in-out infinite",
+  },
+  glowOrb2: {
+    position: "absolute",
+    bottom: "-30%", left: "-10%",
+    width: "400px", height: "400px",
+    background: "radial-gradient(circle, rgba(251,191,36,0.08), transparent 70%)",
+    borderRadius: "50%",
+    pointerEvents: "none" as const,
+    animation: "pulse 5s ease-in-out infinite reverse",
   },
   card: {
-    background: 'rgba(255,255,255,0.04)',
-    backdropFilter: 'blur(30px)',
-    WebkitBackdropFilter: 'blur(30px)',
-    borderRadius: 28,
-    padding: '32px 24px',
-    maxWidth: 400,
-    width: '90vw',
-    boxShadow: '0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.06)',
-    position: 'relative',
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(30px)",
+    borderRadius: "28px",
+    padding: "32px 24px",
+    maxWidth: "400px",
+    width: "100%",
+    border: "1px solid rgba(255,255,255,0.06)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
+    position: "relative",
     zIndex: 1,
   },
+  logo: { fontSize: "48px", textAlign: "center" as const, marginBottom: "8px" },
   title: {
-    textAlign: 'center',
-    color: '#fff',
-    fontSize: 'min(36px, 8vw)',
-    fontWeight: 800,
-    marginBottom: 4,
-    background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
+    textAlign: "center" as const,
+    color: "#fff",
+    fontSize: "32px",
+    fontWeight: "800",
+    marginBottom: "4px",
+    background: "linear-gradient(135deg, #fbbf24, #f59e0b)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
   },
-  subtitle: {
-    textAlign: 'center',
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 14,
-    marginBottom: 32,
-  },
+  subtitle: { textAlign: "center" as const, color: "rgba(255,255,255,0.4)", fontSize: "13px", marginBottom: "24px" },
   input: {
-    width: '100%',
-    padding: '14px 18px',
-    marginBottom: 12,
-    borderRadius: 14,
-    border: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(255,255,255,0.04)',
-    color: '#fff',
-    fontSize: 15,
-    outline: 'none',
-    boxSizing: 'border-box',
+    width: "100%",
+    padding: "12px 16px",
+    marginBottom: "10px",
+    borderRadius: "12px",
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.04)",
+    color: "#fff",
+    fontSize: "15px",
+    outline: "none",
+    transition: "all 0.3s",
+    boxSizing: "border-box" as const,
   },
-  btnRow: { display: 'flex', gap: 12, marginTop: 4 },
-  btnCreate: {
-    flex: 1, padding: 14, borderRadius: 14, border: 'none',
-    background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
-    color: '#fff', fontSize: 15, fontWeight: 600, cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(139,92,246,0.3)',
+  btnGroup: { display: "flex", gap: "10px", marginTop: "4px" },
+  btnPrimary: {
+    flex: 1,
+    padding: "12px",
+    borderRadius: "12px",
+    border: "none",
+    background: "linear-gradient(135deg, #8b5cf6, #6d28d9)",
+    color: "#fff",
+    fontSize: "15px",
+    fontWeight: "600",
+    cursor: "pointer",
+    boxShadow: "0 4px 20px rgba(139,92,246,0.3)",
   },
-  btnJoin: {
-    flex: 1, padding: 14, borderRadius: 14,
-    border: '1px solid rgba(255,255,255,0.12)',
-    background: 'rgba(255,255,255,0.04)',
-    color: '#fff', fontSize: 15, fontWeight: 600, cursor: 'pointer',
+  btnSecondary: {
+    flex: 1,
+    padding: "12px",
+    borderRadius: "12px",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
+    color: "#fff",
+    fontSize: "15px",
+    fontWeight: "600",
+    cursor: "pointer",
   },
-  error: { color: '#f87171', textAlign: 'center', margin: '12px 0 0', fontSize: 14 },
-  gameCard: {
-    background: 'rgba(255,255,255,0.04)',
-    backdropFilter: 'blur(30px)',
-    WebkitBackdropFilter: 'blur(30px)',
-    borderRadius: 28,
-    padding: '16px 16px',
-    maxWidth: 800,
-    width: '100%',
-    maxHeight: '100vh',
-    overflowY: 'auto',
-    boxShadow: '0 30px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.06)',
-    position: 'relative',
+  tableContainer: {
+    position: "relative",
     zIndex: 1,
+    width: "100%",
+    maxWidth: "500px",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(30px)",
+    borderRadius: "24px",
+    padding: "12px 10px",
+    border: "1px solid rgba(255,255,255,0.06)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
   },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  roomBadge: {
-    color: 'rgba(255,255,255,0.4)', fontSize: 13,
-    background: 'rgba(255,255,255,0.06)', padding: '4px 14px', borderRadius: 20,
+  table: {
+    position: "relative",
+    width: "100%",
+    aspectRatio: "16/9",
+    background: "linear-gradient(180deg, #2a1f3d 0%, #1a1329 100%)",
+    borderRadius: "18px",
+    border: "2px solid rgba(139,92,246,0.2)",
+    boxShadow: "inset 0 0 40px rgba(0,0,0,0.5)",
+    marginBottom: "16px",
+    overflow: "visible",
   },
-  playerBadge: {
-    color: '#a78bfa', fontSize: 13, fontWeight: 600,
-    background: 'rgba(139,92,246,0.12)', padding: '4px 14px', borderRadius: 20,
+  roomInfo: {
+    position: "absolute",
+    top: "6px",
+    right: "10px",
+    left: "10px",
+    color: "rgba(255,255,255,0.5)",
+    fontSize: "11px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    background: "rgba(0,0,0,0.3)",
+    padding: "4px 10px",
+    borderRadius: "14px",
+    zIndex: 3,
   },
-  statusBar: {
-    background: 'rgba(255,255,255,0.04)', borderRadius: 16,
-    padding: '14px 20px', textAlign: 'center', marginBottom: 20,
-    minHeight: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-    border: '1px solid rgba(255,255,255,0.04)',
+  diceCenter: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    transform: "translate(-50%, -50%)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
   },
-  statusText: { color: 'rgba(255,255,255,0.6)', fontSize: 15 },
-  resultText: { color: '#fbbf24', fontSize: 17, fontWeight: 600 },
-  btnStartSmall: {
-    padding: '4px 14px', borderRadius: 8, border: 'none',
-    background: 'linear-gradient(135deg, #22d3ee, #0891b2)',
-    color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', marginLeft: 8,
-  },
-  tableArea: {
+  diceBase: {
     position: 'relative',
-    width: 'min(420px, 90vw)',
-    height: 'min(420px, 90vw)',
-    margin: '0 auto 16px',
+    width: '160px',
+    height: '160px',
+    background: 'radial-gradient(ellipse at 40% 40%, #4a3a5a, #1a0a2a)',
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(34,211,238,0.03) 0%, rgba(34,211,238,0.01) 40%, transparent 70%)',
-    border: '2px solid rgba(34,211,238,0.1)',
-    boxShadow: 'inset 0 0 60px rgba(34,211,238,0.03)',
-  },
-  diceTable: {
-    position: 'absolute',
-    left: '50%',
-    top: '50%',
-    transform: 'translate(-50%, -50%)',
-    width: 150,
-    height: 150,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(251,191,36,0.12) 0%, rgba(251,191,36,0.04) 60%, transparent 100%)',
-    border: '2px solid rgba(251,191,36,0.2)',
+    border: '3px solid rgba(139,92,246,0.2)',
+    boxShadow: 'inset 0 -10px 30px rgba(0,0,0,0.6), 0 10px 40px rgba(0,0,0,0.4)',
     display: 'flex',
-    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    boxShadow: '0 0 30px rgba(251,191,36,0.05)',
+    margin: '0 auto',
   },
-  centerDiceLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginBottom: 4 },
-  centerDiceRow: { display: 'flex', gap: 8 },
-  centerHandInfo: { color: '#fbbf24', fontSize: 12, marginTop: 4 },
-  seat: {
+  diceDisplay: {
     position: 'absolute',
-    width: 80,
-    padding: '8px 6px',
-    borderRadius: 14,
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    zIndex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    height: '100%',
+    padding: '15px',
+    boxSizing: 'border-box' as const,
+  },
+  diceRow: {
+    display: 'flex',
+    gap: '8px',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap' as const,
+  },
+  diceShaking: {
+    fontSize: '34px',
+    display: 'inline-block',
+    animation: 'shake 0.15s infinite alternate',
+    opacity: 0.7,
+  },
+  diceLid: {
+    position: 'absolute',
+    top: '-5px',
+    left: '-5px',
+    right: '-5px',
+    bottom: '-5px',
+    borderRadius: '50%',
+    background: 'radial-gradient(ellipse at 30% 20%, #6a5a7a, #2a1a3a)',
+    border: '2px solid rgba(139,92,246,0.2)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 0,
+    transformOrigin: 'bottom center',
+    transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease',
+    cursor: 'pointer',
+    clipPath: 'polygon(20% 0%, 80% 0%, 95% 90%, 5% 90%)',
+    borderRadius: '50% 50% 40% 40% / 100% 100% 30% 30%',
+    boxShadow: '0 8px 30px rgba(0,0,0,0.6), inset 0 -20px 30px rgba(0,0,0,0.4), inset 0 10px 20px rgba(255,255,255,0.1)',
+  },
+  lidInner: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: '-10px',
+  },
+  lidHandle: {
+    fontSize: '30px',
+    opacity: 0.5,
+  },
+  lidLabel: {
+    fontSize: '10px',
+    color: 'rgba(255,255,255,0.2)',
+    marginTop: '2px',
+    letterSpacing: '2px',
+  },
+  diceStats: {
+    marginTop: '6px',
+    padding: '4px 12px',
+    background: 'rgba(0,0,0,0.4)',
+    borderRadius: '10px',
+    fontSize: '13px',
+    color: '#fbbf24',
+    textAlign: 'center' as const,
+  },
+  lidControls: {
+    display: 'flex',
+    gap: '10px',
+    marginTop: '8px',
+    justifyContent: 'center',
+  },
+  lidBtn: {
+    padding: '4px 14px',
+    borderRadius: '16px',
+    border: 'none',
+    background: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+    fontSize: '12px',
+    cursor: 'pointer',
+    backdropFilter: "blur(4px)",
+    transition: 'all 0.2s',
     border: '1px solid rgba(255,255,255,0.1)',
-    background: 'rgba(255,255,255,0.04)',
-    textAlign: 'center',
-    transition: 'all 0.3s',
-    cursor: 'default',
-    backdropFilter: 'blur(10px)',
+    '&:hover': {
+      background: 'rgba(255,255,255,0.2)',
+    },
   },
-  cupIcon: {
-    fontSize: 28,
-    lineHeight: 1,
-    filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.4))',
-    transition: 'all 0.3s',
+  statusBar: {
+    background: "rgba(255,255,255,0.04)",
+    borderRadius: "12px",
+    padding: "8px 12px",
+    textAlign: "center" as const,
+    marginBottom: "10px",
+    minHeight: "36px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid rgba(255,255,255,0.04)",
+    fontSize: "13px",
   },
-  seatName: {
-    color: '#e0e0e0', fontWeight: 600, fontSize: 13,
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2,
+  statusText: { color: "rgba(255,255,255,0.6)", fontSize: "13px" },
+  resultText: { color: "#fbbf24", fontSize: "15px", fontWeight: "600" },
+  readySummary: {
+    background: "rgba(34,211,238,0.05)",
+    borderRadius: "8px",
+    padding: "4px 10px",
+    marginBottom: "10px",
+    textAlign: "center" as const,
+    color: "rgba(255,255,255,0.7)",
+    fontSize: "12px",
   },
-  crown: { color: '#fbbf24', fontSize: 12 },
-  meBadge: {
-    color: '#a78bfa', fontSize: 10, fontWeight: 600,
-    background: 'rgba(139,92,246,0.15)', padding: '1px 6px', borderRadius: 8, marginLeft: 4,
+  warningBanner: {
+    background: "rgba(239,68,68,0.15)",
+    border: "1px solid #ef4444",
+    borderRadius: "8px",
+    padding: "4px 10px",
+    marginBottom: "8px",
+    textAlign: "center" as const,
+    color: "#f87171",
+    fontSize: "12px",
+    fontWeight: "600",
+    animation: "pulseWarning 1s ease-in-out infinite",
   },
-  seatDice: { display: 'flex', gap: 4, marginTop: 4, justifyContent: 'center' },
-  seatDiceItem: { fontSize: 20 },
-  hintText: { color: 'rgba(255,255,255,0.3)', fontSize: 10, marginTop: 2 },
-  handInfo: {
-    color: '#fbbf24', fontSize: 11, marginTop: 4,
-    background: 'rgba(251,191,36,0.08)', padding: '2px 8px', borderRadius: 10,
-    display: 'inline-flex', alignItems: 'center', gap: 4,
+  historyContainer: {
+    background: "rgba(0,0,0,0.3)",
+    borderRadius: "8px",
+    padding: "4px 8px",
+    marginBottom: "8px",
+    maxHeight: "60px",
+    overflowY: "auto",
+    fontSize: "11px",
+    color: "rgba(255,255,255,0.6)",
   },
-  bidInfo: {
-    background: 'linear-gradient(135deg, rgba(251,191,36,0.06), rgba(139,92,246,0.06))',
-    borderRadius: 14, padding: '12px 16px',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-    marginBottom: 16, border: '1px solid rgba(251,191,36,0.08)',
+  historyTitle: { fontWeight: "bold", color: "rgba(255,255,255,0.8)", marginBottom: "2px", fontSize: "11px" },
+  historyEntry: { padding: "2px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", fontSize: "10px" },
+  actionBar: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "8px",
+    alignItems: "center",
+    marginTop: "4px",
   },
-  bidIcon: { fontSize: 18 },
-  bidText: { color: 'rgba(255,255,255,0.7)', fontSize: 15 },
-  actionBar: { display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', marginTop: 4, width: '100%' },
-  bidGroup: { display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'center', maxWidth: '95vw' },
-  btnBid: {
-    padding: '5px 10px', borderRadius: 8,
-    border: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(255,255,255,0.04)',
-    color: '#fff', fontSize: 12, cursor: 'pointer',
+  bidPanel: {
+    background: 'rgba(0,0,0,0.3)',
+    borderRadius: '14px',
+    padding: '8px 8px',
+    marginBottom: '6px',
+    width: '100%',
+    maxWidth: '400px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: '6px',
+  },
+  quickAddRow: {
+    display: 'flex',
+    gap: '6px',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+    flexWrap: 'wrap' as const,
+  },
+  quickAddBtn: {
+    padding: '2px 12px',
+    borderRadius: '12px',
+    border: '1px solid rgba(251,191,36,0.3)',
+    background: 'rgba(251,191,36,0.1)',
+    color: '#fbbf24',
+    fontSize: '13px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  bidValueRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '5px',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  bidCountRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '5px',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  bidNumBtn: {
+    width: '36px',
+    height: '36px',
+    borderRadius: '8px',
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(255,255,255,0.08)',
+    color: '#fff',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bidNav: {
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+    marginTop: '2px',
+  },
+  bidNavBtn: {
+    padding: '2px 10px',
+    borderRadius: '6px',
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#fff',
+    fontSize: '16px',
+    cursor: 'pointer',
+  },
+  bidCallBtn: {
+    padding: '4px 16px',
+    borderRadius: '16px',
+    border: 'none',
+    background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
+    color: '#fff',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    boxShadow: '0 4px 12px rgba(139,92,246,0.3)',
+  },
+  bidPreview: {
+    color: '#fbbf24',
+    fontSize: '13px',
+    marginTop: '2px',
+  },
+  targetSelector: {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    marginTop: "4px",
+    flexWrap: "wrap" as const,
+    justifyContent: "center",
+  },
+  targetSelect: {
+    padding: "3px 8px",
+    borderRadius: "6px",
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(0,0,0,0.3)",
+    color: "#fff",
+    fontSize: "12px",
+    outline: "none",
   },
   btnOpen: {
-    padding: '12px 44px', borderRadius: 14, border: 'none',
-    background: 'linear-gradient(135deg, #f43f5e, #e11d48)',
-    color: '#fff', fontSize: 16, fontWeight: 600, cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(244,63,94,0.3)',
+    padding: "8px 24px",
+    borderRadius: "10px",
+    border: "none",
+    background: "linear-gradient(135deg, #f43f5e, #e11d48)",
+    color: "#fff",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    boxShadow: "0 4px 16px rgba(244,63,94,0.3)",
+  },
+  btnOpenSmall: {
+    padding: "3px 12px",
+    borderRadius: "14px",
+    border: "none",
+    background: "rgba(244,63,94,0.7)",
+    color: "#fff",
+    fontSize: "12px",
+    cursor: "pointer",
+  },
+  btnReady: {
+    padding: "6px 16px",
+    borderRadius: "16px",
+    border: "none",
+    background: "#22d3ee",
+    color: "#0f0f1a",
+    fontSize: "13px",
+    fontWeight: "600",
+    cursor: "pointer",
+  },
+  btnNotReady: {
+    padding: "6px 16px",
+    borderRadius: "16px",
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(255,255,255,0.05)",
+    color: "#fff",
+    fontSize: "13px",
+    fontWeight: "600",
+    cursor: "pointer",
   },
   btnStart: {
-    padding: '12px 44px', borderRadius: 14, border: 'none',
-    background: 'linear-gradient(135deg, #22d3ee, #0891b2)',
-    color: '#fff', fontSize: 16, fontWeight: 600, cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(34,211,238,0.25)',
+    padding: "8px 24px",
+    borderRadius: "10px",
+    border: "none",
+    background: "linear-gradient(135deg, #22d3ee, #0891b2)",
+    color: "#fff",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    boxShadow: "0 4px 16px rgba(34,211,238,0.25)",
   },
   btnReset: {
-    padding: '12px 44px', borderRadius: 14, border: 'none',
-    background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
-    color: '#0f0f1a', fontSize: 16, fontWeight: 600, cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(251,191,36,0.2)',
+    padding: "8px 24px",
+    borderRadius: "10px",
+    border: "none",
+    background: "linear-gradient(135deg, #fbbf24, #f59e0b)",
+    color: "#0f0f1a",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    boxShadow: "0 4px 16px rgba(251,191,36,0.2)",
   },
-  btnLeave: {
-    padding: '10px 30px', borderRadius: 12,
-    border: '1px solid rgba(255,255,255,0.1)',
-    background: 'transparent',
-    color: 'rgba(255,255,255,0.4)', fontSize: 14, cursor: 'pointer',
-  },
-  waitBox: { padding: 14, textAlign: 'center' },
-  waitText: { color: 'rgba(255,255,255,0.4)', fontSize: 15 },
-  logContainer: {
-    background: 'rgba(0,0,0,0.3)', borderRadius: 8,
-    padding: '6px 10px', marginBottom: 10, maxHeight: 70,
-    overflowY: 'auto', fontSize: 11, color: 'rgba(255,255,255,0.5)',
-  },
-  logTitle: { fontWeight: 'bold', color: 'rgba(255,255,255,0.7)', marginBottom: 4 },
-  logEntry: { padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' },
-  footer: {
-    display: 'flex', justifyContent: 'space-between', marginTop: 14, paddingTop: 14,
-    borderTop: '1px solid rgba(255,255,255,0.04)',
-  },
-  playerCount: { color: 'rgba(255,255,255,0.3)', fontSize: 13 },
-  phaseTag: { color: 'rgba(255,255,255,0.2)', fontSize: 13 },
-  seatViolation: {
-    borderColor: '#f43f5e',
-    animation: 'violationBlink 0.5s ease-in-out infinite',
+  waitBox: { padding: "8px", textAlign: "center" as const },
+  waitText: { color: "rgba(255,255,255,0.4)", fontSize: "13px" },
+  bidInfo: {
+    background: "rgba(251,191,36,0.06)",
+    borderRadius: "8px",
+    padding: "6px 10px",
+    textAlign: "center" as const,
+    color: "#fbbf24",
+    marginTop: "8px",
+    fontSize: "13px",
   },
 };
 
-// 添加全局动画样式
-const styleTag = typeof document !== 'undefined' && !document.getElementById('dice067-styles');
-if (styleTag) {
+if (typeof document !== 'undefined') {
   const style = document.createElement('style');
-  style.id = 'dice067-styles';
   style.textContent = `
-    @keyframes shakeAnim {
-      0%, 100% { transform: translateX(0); }
-      25% { transform: translateX(-5px) rotate(-5deg); }
-      75% { transform: translateX(5px) rotate(5deg); }
-    }
-    @keyframes violationBlink {
-      0%, 100% { borderColor: 'rgba(255,255,255,0.06)'; }
-      50% { borderColor: '#f43f5e'; boxShadow: '0 0 15px rgba(244,63,94,0.5)'; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(1.1); }
     }
   `;
   document.head.appendChild(style);
 }
-
-
-
-
-
-
-
