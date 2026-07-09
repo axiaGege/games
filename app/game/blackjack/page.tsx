@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 // ==================== 扑克牌工具 ====================
@@ -91,7 +91,6 @@ const compareHands = (hand1: any[], hand2: any[]) => {
 };
 
 // ==================== 解析 players ====================
-// 加入 status 字段默认值
 const parsePlayers = (raw: any): any[] => {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -116,7 +115,7 @@ const parsePlayers = (raw: any): any[] => {
   return [];
 };
 
-// ==================== 🃏 扑克牌组件（仅用于「你的手牌」区域） ====================
+// ==================== 🃏 扑克牌组件 ====================
 const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' }) => {
   const sizeMap = {
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14 },
@@ -163,6 +162,10 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
   const isRed = card.suit === '♥' || card.suit === '♦';
   const color = isRed ? '#e53935' : '#1a1a1a';
   const rankDisplay = card.rank === '10' ? '10' : card.rank;
+
+      </div>
+    );
+  };
 
   return (
     <div style={{
@@ -222,6 +225,7 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
     </div>
   );
 };
+
 export default function BlackjackPage() {
   const [playerName, setPlayerName] = useState("");
   const [roomPassword, setRoomPassword] = useState("");
@@ -249,14 +253,36 @@ export default function BlackjackPage() {
   const [isDealer, setIsDealer] = useState(false);
   const [readyPlayers, setReadyPlayers] = useState<string[]>([]);
   const [settlementStep, setSettlementStep] = useState(0);
+  // 轮盘/抽牌选庄复用状态（DB字段兼容）
   const [wheelVisible, setWheelVisible] = useState(false);
-  const [wheelRotation, setWheelRotation] = useState(0);
-  const [wheelSelected, setWheelSelected] = useState<string | null>(null);
-  const [wheelSpinning, setWheelSpinning] = useState(false);
-  const [wheelSegments, setWheelSegments] = useState<string[]>([]);
+  const [wheelSelected, setWheelSelected] = useState<any>(null);
+  // 🔥 修复：wheelSegments 改为 any，既能存数组也能存 JSON 字符串
+  const [wheelSegments, setWheelSegments] = useState<any>([]);
+  // 抽牌选庄 state
+  const [drawRule, setDrawRule] = useState<"big" | "small" | null>(null);
+  const [drawCards, setDrawCards] = useState<{ name: string; card: any }[]>([]);
+  const [drawRevealed, setDrawRevealed] = useState<Set<string>>(new Set());
+  const [drawSubPhase, setDrawSubPhase] = useState<"choose" | "reveal" | "done">("choose");
+  const [drawDeadline, setDrawDeadline] = useState<number | null>(null);
+  const [drawWinner, setDrawWinner] = useState<string | null>(null);
+  const [drawOwner, setDrawOwner] = useState<string | null>(null);
+  const [drawCountdown, setDrawCountdown] = useState(5);
+  const [newDealerName, setNewDealerName] = useState<string | null>(null);
+  const [spectators, setSpectators] = useState<string[]>([]);
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
   const isSettlingRef = useRef(false);
+  const drawTimeoutFiredRef = useRef(false);
+
+  // 刷新/关闭标签页时提示
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
 
   // 同步 players 到 ref，解决闭包问题
   useEffect(() => {
@@ -264,7 +290,6 @@ export default function BlackjackPage() {
   }, [players]);
 
   // ==================== 辅助函数 ====================
-  // 广播 + 数据库同步（列名小写）
   const broadcastAndSyncDB = async (state: any) => {
     try {
       await supabase.channel(`blackjack:${roomId}`).send({
@@ -300,10 +325,11 @@ export default function BlackjackPage() {
   };
 
   const getMyPlayer = () => players.find(p => p.name === playerName);
-  const allReady = players.length >= 2 && players.every(p => readyPlayers.includes(p.name));
+  const activePlayers = players.filter(p => p.status !== 'watching');
+  const allReady = activePlayers.length >= 2 && activePlayers.every(p => readyPlayers.includes(p.name));
   const currentPlayer = players[currentPlayerIndex] || null;
 
-  // ==================== Supabase 订阅（广播监听） ====================
+  // ==================== Supabase 订阅 ====================
   useEffect(() => {
     if (!roomId) return;
     console.log('🔄 订阅房间:', roomId);
@@ -311,58 +337,59 @@ export default function BlackjackPage() {
       .channel(`blackjack:${roomId}`, { config: { broadcast: { ack: true } } })
       .on('broadcast', { event: 'gameState' }, (payload) => {
         const state = payload.payload;
+        console.log("📥 收到广播, players:", state.players?.map?.(p => typeof p === "string" ? p : (p?.name || "?")), "spectators:", state.spectators);
         const parsedPlayers = parsePlayers(state.players);
 
-        // ---- 合并 players ----
         setPlayers(prev => {
-          if (isSettlingRef.current) return prev;  // 结算中，忽略旧广播覆盖
+          if (isSettlingRef.current) return prev;
+          const broadcastNames = new Set(parsedPlayers.map(p => p.name));
+          const localOnlySpectators = prev.filter(p =>
+            !broadcastNames.has(p.name) && p.status === 'watching'
+          );
           const localMe = prev.find(p => p.name === playerName);
           const remoteMe = parsedPlayers.find(p => p.name === playerName);
           if (localMe && remoteMe) {
-            // 发牌阶段直接使用广播数据，避免竞态
             const isDealing = state.phase === "dealing";
-            if (isDealing) return parsedPlayers;
+            if (isDealing) return [...localOnlySpectators, ...parsedPlayers];
             const hasLocalCards = localMe.cards && localMe.cards.length > 0;
-            return parsedPlayers.map(p => {
-              if (p.name === playerName) {
+            return [
+              ...localOnlySpectators,
+              ...parsedPlayers.map(p => {
+                if (p.name === playerName) {
+                  return {
+                    ...p,
+                    cards: hasLocalCards ? localMe.cards : (p.cards || []),
+                    cardCount: hasLocalCards ? localMe.cardCount : (p.cardCount || 0),
+                    bustType: hasLocalCards ? (localMe.bustType || 'none') : (p.bustType || 'none'),
+                    isStanding: hasLocalCards ? (localMe.isStanding || false) : (p.isStanding || false),
+                    isBust: hasLocalCards ? (localMe.isBust || false) : (p.isBust || false),
+                    isBlackjack: hasLocalCards ? (localMe.isBlackjack || false) : (p.isBlackjack || false),
+                    isFiveCard: hasLocalCards ? (localMe.isFiveCard || false) : (p.isFiveCard || false),
+                    status: hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing'),
+                  };
+                }
+                const prevPlayer = prev.find(pp => pp.name === p.name);
+                const isNewPlayer = !prevPlayer;
                 return {
                   ...p,
-                  cards: hasLocalCards ? localMe.cards : (p.cards || []),
-                  cardCount: hasLocalCards ? localMe.cardCount : (p.cardCount || 0),
-                  bustType: hasLocalCards ? (localMe.bustType || 'none') : (p.bustType || 'none'),
-                  isStanding: hasLocalCards ? (localMe.isStanding || false) : (p.isStanding || false),
-                  isBust: hasLocalCards ? (localMe.isBust || false) : (p.isBust || false),
-                  isBlackjack: hasLocalCards ? (localMe.isBlackjack || false) : (p.isBlackjack || false),
-                  isFiveCard: hasLocalCards ? (localMe.isFiveCard || false) : (p.isFiveCard || false),
-                  status: hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing'),
+                  cards: p.cards || [],
+                  cardCount: p.cards?.length || p.cardCount || 0,
+                  isFiveCard: p.isFiveCard || (p.cards?.length === 5 && calculateHand(p.cards) <= 21),
+                  status: prevPlayer ? prevPlayer.status : (p.status || 'playing'),
                 };
-              }
-              // 其他玩家：直接使用广播数据
-              const prevPlayer = prev.find(pp => pp.name === p.name);
-              const isNewPlayer = !prevPlayer;
-              return {
-                ...p,
-                cards: p.cards || [],
-                cardCount: p.cards?.length || p.cardCount || 0,
-                isFiveCard: p.isFiveCard || (p.cards?.length === 5 && calculateHand(p.cards) <= 21),
-                status: isNewPlayer ? 'watching' : (p.status || 'playing'),
-              };
-            });
+              }),
+            ];
           }
-          return parsedPlayers;
+          return [...localOnlySpectators, ...parsedPlayers];
         });
 
-        // ---- 保护 phase ----
         setPhase(prevPhase => {
-          // dealing/player_turn/dealer_turn 优先
           if (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn") {
             return state.phase;
           }
-          // settlement/wheel/waiting 正常更新
           return state.phase || "waiting";
         });
 
-        // ---- 新一局开始（dealing），所有客户端统一重置本地手牌状态 ----
         if (state.phase === "dealing") {
           setShowMyCards(false);
           setMyCards([]);
@@ -370,7 +397,6 @@ export default function BlackjackPage() {
           setMyBustType('none');
         }
 
-        // ---- 保护 gameOver ----
         setGameOver(prevGameOver => {
           if (state.phase === "dealing" || state.phase === "player_turn") {
             return false;
@@ -386,11 +412,35 @@ export default function BlackjackPage() {
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
         setReadyPlayers(state.readyPlayers || []);
+        if (state.newDealerName !== undefined) setNewDealerName(state.newDealerName);
+        if (state.spectators !== undefined) setSpectators(state.spectators);
         setSettlementStep(state.settlementStep || 0);
         setSeed(state.seed || null);
         setDeckOffset(state.deckOffset || 0);
+        // —— 处理抽牌选庄同步 ——
         setWheelVisible(state.wheelVisible || false);
-        setWheelSelected(state.wheelSelected || null);
+        const rawCtrl = state.wheelSelected;
+        if (rawCtrl) {
+          const ctrl = unpackDrawCtrl(rawCtrl);
+          if (ctrl) {
+            setDrawOwner(ctrl.owner || null);
+            setDrawRule(ctrl.rule || null);
+            setDrawSubPhase(ctrl.rule ? "reveal" : "choose");
+            setDrawDeadline(ctrl.deadline || null);
+            const revealed = ctrl.revealed ? new Set<string>(ctrl.revealed) : new Set<string>();
+            setDrawRevealed(revealed);
+            // 🔥 修复：从 wheelSegments 解析 drawCards
+            const cards = unpackDrawCards(state.wheelSegments);
+            setDrawCards(cards);
+            if (ctrl.winner) setDrawWinner(ctrl.winner);
+          } else {
+            setDrawOwner(null); setDrawRule(null); setDrawSubPhase("choose");
+            setDrawCards([]); setDrawRevealed(new Set<string>());
+          }
+        } else if (state.wheelVisible) {
+          setDrawSubPhase("choose");
+        }
+        setWheelSelected(rawCtrl || null);
         setWheelSegments(state.wheelSegments || []);
 
         if (state.seed === null) {
@@ -471,8 +521,12 @@ export default function BlackjackPage() {
     setPlayers(parsedPlayers);
     setJoined(true);
     setReadyPlayers([playerName.trim()]);
+    localStorage.setItem('bj_name', playerName.trim());
+    localStorage.setItem('bj_pass', roomPassword.trim());
+    localStorage.setItem('bj_room', data.id);
     await broadcastAndSyncDB({
       players: parsedPlayers,
+      spectators: [],
       phase: "waiting",
       dealerId: null,
       currentPlayerIndex: 0,
@@ -529,6 +583,23 @@ export default function BlackjackPage() {
       setWheelVisible(roomData.wheelvisible || false);
       setWheelSelected(roomData.wheelselected || null);
       setWheelSegments(roomData.wheelsegments || []);
+      // 抽牌选庄状态恢复
+      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
+
+      const meRestore = currentPlayers.find((p: any) => p.name === playerName.trim());
+      if (meRestore) {
+        setMyCards(meRestore.cards || []);
+        setMyCardCount(meRestore.cardCount || 0);
+        setMyBustType(meRestore.bustType || 'none');
+        setShowMyCards(meRestore.isDealer ? false : true);
+        setIsDealer(meRestore.isDealer || false);
+        setMySeatId(meRestore.seatId !== undefined ? meRestore.seatId : null);
+      }
+
+      localStorage.setItem('bj_name', playerName.trim());
+      localStorage.setItem('bj_pass', roomPassword.trim());
+      localStorage.setItem('bj_room', roomData.id);
+
       return;
     }
 
@@ -538,71 +609,157 @@ export default function BlackjackPage() {
       if (!occupiedSeats.includes(i)) { seatId = i; break; }
     }
 
-    const newPlayer = {
-      name: playerName.trim(),
-      cards: [],
-      cardCount: 0,
-      isStanding: false,
-      isBust: false,
-      isBlackjack: false,
-      isFiveCard: false,
-      seatId,
-      isDealer: false,
-      bustType: 'none',
-      status: 'watching',
-    };
-    const updatedPlayers = [...currentPlayers, newPlayer];
+    const isMidGame = roomData.phase && roomData.phase !== "waiting";
 
-    await supabase.from("rooms").update({
-      players: updatedPlayers,
-      readyplayers: roomData.readyplayers || [],
-    }).eq("id", roomData.id);
+    if (isMidGame) {
+      const newSpectatorName = playerName.trim();
+      const existingSpectators = roomData.spectators || [];
+      const updatedSpectators = existingSpectators.includes(newSpectatorName)
+        ? existingSpectators
+        : [...existingSpectators, newSpectatorName];
 
-    setRoomId(roomData.id);
-    setJoined(true);
-    setPlayers(updatedPlayers);
-    setReadyPlayers(roomData.readyplayers || []);
+      try {
+        await supabase.from("rooms").update({
+          spectators: updatedSpectators,
+        }).eq("id", roomData.id);
+      } catch (_) {}
 
-    setPhase(roomData.phase || "waiting");
-    setDealerId(roomData.dealerid || null);
-    setGameOver(roomData.gameover || false);
-    setCurrentPlayerIndex(roomData.currentplayerindex || 0);
-    setSeed(roomData.seed || null);
-    setResult(roomData.result || "");
-    setResultDetails(roomData.resultdetails || []);
-    setSettlementStep(roomData.settlementstep || 0);
-    setDeckOffset(roomData.deckoffset || 0);
-    setWheelVisible(roomData.wheelvisible || false);
-    setWheelSelected(roomData.wheelselected || null);
-    setWheelSegments(roomData.wheelsegments || []);
+      setRoomId(roomData.id);
+      setJoined(true);
+      setPlayers(currentPlayers);
+      setSpectators(updatedSpectators);
+      setReadyPlayers(roomData.readyplayers || []);
+      localStorage.setItem('bj_name', playerName.trim());
+      localStorage.setItem('bj_pass', roomPassword.trim());
+      localStorage.setItem('bj_room', roomData.id);
 
-    await broadcastAndSyncDB({
-      players: updatedPlayers,
-      phase: roomData.phase || "waiting",
-      dealerId: roomData.dealerid || null,
-      currentPlayerIndex: roomData.currentplayerindex || 0,
-      gameOver: roomData.gameover || false,
-      result: roomData.result || "",
-      resultDetails: roomData.resultdetails || [],
-      readyPlayers: roomData.readyplayers || [],
-      settlementStep: roomData.settlementstep || 0,
-      seed: roomData.seed || null,
-      deckOffset: roomData.deckoffset || 0,
-      wheelVisible: roomData.wheelvisible || false,
-      wheelSelected: roomData.wheelselected || null,
-      wheelSegments: roomData.wheelsegments || [],
-    });
+      setPhase(roomData.phase || "waiting");
+      setDealerId(roomData.dealerid || null);
+      setGameOver(roomData.gameover || false);
+      setCurrentPlayerIndex(roomData.currentplayerindex || 0);
+      setSeed(roomData.seed || null);
+      setResult(roomData.result || "");
+      setResultDetails(roomData.resultdetails || []);
+      setSettlementStep(roomData.settlementstep || 0);
+      setDeckOffset(roomData.deckoffset || 0);
+      setWheelVisible(roomData.wheelvisible || false);
+      setWheelSelected(roomData.wheelselected || null);
+      setWheelSegments(roomData.wheelsegments || []);
+      // 抽牌选庄状态恢复
+      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
+
+      await broadcastAndSyncDB({
+        players: currentPlayers,
+        spectators: updatedSpectators,
+        phase: roomData.phase || "waiting",
+        dealerId: roomData.dealerid || null,
+        currentPlayerIndex: roomData.currentplayerindex || 0,
+        gameOver: roomData.gameover || false,
+        result: roomData.result || "",
+        resultDetails: roomData.resultdetails || [],
+        readyPlayers: roomData.readyplayers || [],
+        settlementStep: roomData.settlementstep || 0,
+        seed: roomData.seed || null,
+        deckOffset: roomData.deckoffset || 0,
+        wheelVisible: roomData.wheelvisible || false,
+        wheelSelected: roomData.wheelselected || null,
+        wheelSegments: roomData.wheelsegments || [],
+      });
+    } else {
+      const newPlayer = {
+        name: playerName.trim(),
+        cards: [],
+        cardCount: 0,
+        isStanding: false,
+        isBust: false,
+        isBlackjack: false,
+        isFiveCard: false,
+        seatId,
+        isDealer: false,
+        bustType: 'none',
+        status: 'playing',
+      };
+      const updatedPlayers = [...currentPlayers, newPlayer];
+
+      await supabase.from("rooms").update({
+        players: updatedPlayers,
+        readyplayers: roomData.readyplayers || [],
+      }).eq("id", roomData.id);
+
+      setRoomId(roomData.id);
+      setJoined(true);
+      setPlayers(updatedPlayers);
+      setSpectators(roomData.spectators || []);
+      setReadyPlayers(roomData.readyplayers || []);
+      localStorage.setItem('bj_name', playerName.trim());
+      localStorage.setItem('bj_pass', roomPassword.trim());
+      localStorage.setItem('bj_room', roomData.id);
+
+      setPhase(roomData.phase || "waiting");
+      setDealerId(roomData.dealerid || null);
+      setGameOver(roomData.gameover || false);
+      setCurrentPlayerIndex(roomData.currentplayerindex || 0);
+      setSeed(roomData.seed || null);
+      setResult(roomData.result || "");
+      setResultDetails(roomData.resultdetails || []);
+      setSettlementStep(roomData.settlementstep || 0);
+      setDeckOffset(roomData.deckoffset || 0);
+      setWheelVisible(roomData.wheelvisible || false);
+      setWheelSelected(roomData.wheelselected || null);
+      setWheelSegments(roomData.wheelsegments || []);
+      // 抽牌选庄状态恢复
+      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
+
+      await broadcastAndSyncDB({
+        players: updatedPlayers,
+        spectators: roomData.spectators || [],
+        phase: roomData.phase || "waiting",
+        dealerId: roomData.dealerid || null,
+        currentPlayerIndex: roomData.currentplayerindex || 0,
+        gameOver: roomData.gameover || false,
+        result: roomData.result || "",
+        resultDetails: roomData.resultdetails || [],
+        readyPlayers: roomData.readyplayers || [],
+        settlementStep: roomData.settlementstep || 0,
+        seed: roomData.seed || null,
+        deckOffset: roomData.deckoffset || 0,
+        wheelVisible: roomData.wheelvisible || false,
+        wheelSelected: roomData.wheelselected || null,
+        wheelSegments: roomData.wheelsegments || [],
+      });
+    }
   };
+
+  const joinRoomRef = useRef(joinRoom);
+  joinRoomRef.current = joinRoom;
+
+  useEffect(() => {
+    const savedName = localStorage.getItem('bj_name');
+    const savedPass = localStorage.getItem('bj_pass');
+    const savedRoom = localStorage.getItem('bj_room');
+    if (savedName && savedPass && savedRoom) {
+      setPlayerName(savedName);
+      setRoomPassword(savedPass);
+      setRoomId(savedRoom);
+      setTimeout(() => { joinRoomRef.current(); }, 500);
+    }
+  }, []);
 
   const leaveRoom = async () => {
     if (!roomId) return;
+    const isLeavingSpectator = spectators.includes(playerName);
     const updatedPlayers = players.filter(p => p.name !== playerName);
+    const updatedSpectators = isLeavingSpectator
+      ? spectators.filter(n => n !== playerName)
+      : spectators;
     await supabase.from("rooms").update({
       players: updatedPlayers,
       readyplayers: readyPlayers.filter(p => p !== playerName),
     }).eq("id", roomId);
+    try { await supabase.from("rooms").update({ spectators: updatedSpectators }).eq("id", roomId); } catch (_) {}
     await broadcastAndSyncDB({
       players: updatedPlayers,
+      spectators: updatedSpectators,
       phase: "waiting",
       dealerId: null,
       currentPlayerIndex: 0,
@@ -642,9 +799,18 @@ export default function BlackjackPage() {
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
+    setDrawRule(null);
+    setDrawCards([]);
+    setDrawRevealed(new Set<string>());
+    setDrawSubPhase("choose");
+    setDrawWinner(null);
+    setDrawOwner(null);
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
     }
+    localStorage.removeItem('bj_name');
+    localStorage.removeItem('bj_pass');
+    localStorage.removeItem('bj_room');
   };
 
   const toggleReady = async () => {
@@ -652,10 +818,18 @@ export default function BlackjackPage() {
       setErrorMsg("游戏已开始，不能准备");
       return;
     }
+
+    // 观战者不能准备
+    const me = players.find(p => p.name === playerName);
+    if (me?.status === 'watching') {
+      setErrorMsg('观战模式不能准备，请等本局结束');
+      return;
+    }
     const isReady = readyPlayers.includes(playerName);
     const newReady = isReady ? readyPlayers.filter(p => p !== playerName) : [...readyPlayers, playerName];
     setReadyPlayers(newReady);
     await broadcastAndSyncDB({
+      spectators: spectators || [],
       players,
       phase,
       dealerId,
@@ -674,7 +848,27 @@ export default function BlackjackPage() {
   };
 
   // ==================== 开始游戏 ====================
-  const startGame = async () => {
+
+    if (!roomId) return;
+    const me = players.find(p => p.name === playerName);
+    if (!me) return;
+    const updatedPlayers = players.filter(p => p.name !== playerName);
+    const updatedSpectators = [...(spectators || []), playerName];
+    await supabase.from('rooms').update({
+      players: updatedPlayers,
+      spectators: updatedSpectators,
+    }).eq('id', roomId);
+    setPlayers(updatedPlayers);
+    setSpectators(updatedSpectators);
+    await broadcastAndSyncDB({
+      players: updatedPlayers,
+      spectators: updatedSpectators,
+      phase, dealerId, currentPlayerIndex, gameOver, result, resultDetails,
+      readyPlayers, settlementStep: 0, seed, deckOffset,
+      wheelVisible, wheelSelected, wheelSegments,
+    });
+  };
+
     if (phase !== "waiting") return;
     if (players.length < 2) { setErrorMsg("至少2人才能开始"); return; }
     if (!allReady) { setErrorMsg("还有玩家未准备"); return; }
@@ -710,6 +904,7 @@ export default function BlackjackPage() {
 
     await broadcastAndSyncDB({
       players: resetPlayers,
+      spectators: spectators || [],
       phase: "dealing",
       dealerId: firstDealer,
       currentPlayerIndex: 0,
@@ -787,6 +982,7 @@ export default function BlackjackPage() {
       setResultDetails(details);
       await broadcastAndSyncDB({
         players: newPlayers,
+        spectators: spectators || [],
         phase: "settlement",
         dealerId: dealerName,
         currentPlayerIndex: 0,
@@ -813,6 +1009,7 @@ export default function BlackjackPage() {
 
     await broadcastAndSyncDB({
       players: newPlayers,
+      spectators: spectators || [],
       phase: "player_turn",
       dealerId: dealerName,
       currentPlayerIndex: firstIndex,
@@ -828,7 +1025,6 @@ export default function BlackjackPage() {
       wheelSegments: [],
     });
 
-    // 广播后双重重置，防止被旧广播覆盖
     setPhase("player_turn");
     setGameOver(false);
 
@@ -876,6 +1072,7 @@ export default function BlackjackPage() {
       setDeckOffset(0);
       await broadcastAndSyncDB({
         players: pNow,
+        spectators: spectators || [],
         phase,
         dealerId,
         currentPlayerIndex,
@@ -928,6 +1125,7 @@ export default function BlackjackPage() {
 
       await broadcastAndSyncDB({
         players: updatedPlayersWithStand,
+        spectators: spectators || [],
         phase,
         dealerId,
         currentPlayerIndex,
@@ -943,13 +1141,13 @@ export default function BlackjackPage() {
         wheelSegments,
       });
 
-      // 5张牌（五小龙/爆牌）自动推进回合
       await handleStand(true);
       return;
     }
 
     await broadcastAndSyncDB({
       players: updatedPlayers,
+      spectators: spectators || [],
       phase,
       dealerId,
       currentPlayerIndex,
@@ -1015,7 +1213,6 @@ export default function BlackjackPage() {
         });
       }
 
-      // allDone 只统计 status === 'playing' 的玩家
       const allDoneNow = updatedPlayers
         .filter((p: any) => p.status === 'playing')
         .every((p: any) => p.isStanding || p.isBust || p.cardCount === 5);
@@ -1042,7 +1239,6 @@ export default function BlackjackPage() {
       return;
     }
 
-    // 推进时跳过 status === 'watching' 的玩家
     let next = (currentPlayerIndex + 1) % finalPlayers.length;
     let count = 0;
     while (count < finalPlayers.length) {
@@ -1054,6 +1250,7 @@ export default function BlackjackPage() {
     setCurrentPlayerIndex(next);
     await broadcastAndSyncDB({
       players: finalPlayers,
+      spectators: spectators || [],
       phase,
       dealerId,
       currentPlayerIndex: next,
@@ -1071,7 +1268,6 @@ export default function BlackjackPage() {
     if (finalPlayers[next]?.name === playerName) startTimeout();
   };
 
-  // 认爆1杯
   const handleConfess = async () => {
     console.log('🔥 认罚');
     if (phase !== "player_turn") return;
@@ -1088,7 +1284,6 @@ export default function BlackjackPage() {
     });
     setPlayers(updatedPlayers);
 
-    // 不广播，由 handleStand 统一广播
     await handleStand(true);
   };
 
@@ -1119,6 +1314,7 @@ export default function BlackjackPage() {
       setDeckOffset(0);
       await broadcastAndSyncDB({
         players: pNow,
+        spectators: spectators || [],
         phase,
         dealerId,
         currentPlayerIndex,
@@ -1174,6 +1370,7 @@ export default function BlackjackPage() {
 
       await broadcastAndSyncDB({
         players: updatedPlayersWithStand,
+        spectators: spectators || [],
         phase,
         dealerId,
         currentPlayerIndex,
@@ -1189,13 +1386,13 @@ export default function BlackjackPage() {
         wheelSegments,
       });
 
-      // 🔥 直接传入数据给结算，不依赖 players 状态
       await settleGame(updatedPlayersWithStand);
       return;
     }
 
     await broadcastAndSyncDB({
       players: updatedPlayers,
+      spectators: spectators || [],
       phase,
       dealerId,
       currentPlayerIndex,
@@ -1229,19 +1426,16 @@ export default function BlackjackPage() {
   };
 
   // ==================== 结算 ====================
-  // 🔥 修复：接受 overridePlayers 参数，内部使用 ps，广播时用 ps
   const settleGame = async (overridePlayers?: any[]) => {
     isSettlingRef.current = true;
     try {
     console.log('📊 settleGame 被调用, dealerId:', dealerId, 'players count:', players.length);
     console.log('📊 players:', players.map(p => ({ name: p.name, cardCount: p.cardCount, hasCards: !!p.cards, cardsLen: p.cards?.length, status: p.status })));
 
-    // 🔥 优先使用传入的数据，避免依赖 players 状态
     const ps = overridePlayers && overridePlayers.length > 0 ? overridePlayers : players;
     console.log('📊 settleGame 使用 ps 数量:', ps.length);
     console.log('📊 ps 每个玩家牌数:', ps.map((p: any) => ({ name: p.name, cardCount: p.cardCount, cardsLen: p.cards?.length, status: p.status })));
 
-    // ---- 补全 dealerId ----
     let effectiveDealerId = dealerId;
     if (!effectiveDealerId) {
       const found = ps.find((p: any) => p.isDealer);
@@ -1256,6 +1450,7 @@ export default function BlackjackPage() {
         setResult("游戏结束（无庄家）");
         await broadcastAndSyncDB({
           players: ps,
+          spectators: spectators || [],
           phase: "settlement",
           dealerId: null,
           currentPlayerIndex,
@@ -1274,7 +1469,6 @@ export default function BlackjackPage() {
       }
     }
 
-    // ---- 找到庄家 ----
     const dealer = ps.find((p: any) => p.name === effectiveDealerId);
     if (!dealer) {
       console.warn('⚠️ 找不到庄家玩家，强制结束');
@@ -1283,6 +1477,7 @@ export default function BlackjackPage() {
       setResult("游戏结束（庄家已离开）");
       await broadcastAndSyncDB({
         players: ps,
+        spectators: spectators || [],
         phase: "settlement",
         dealerId: effectiveDealerId,
         currentPlayerIndex,
@@ -1303,11 +1498,9 @@ export default function BlackjackPage() {
     setPhase("settlement");
     setGameOver(true);
 
-    // ---- 生成结算结果 ----
     const results: any[] = [];
     const activePlayers = ps.filter((p: any) => p.status === 'playing');
 
-    // 🔥 先判断双方是否都是五小龙（平局）
     const isDealerFive = isFiveCardCharlie(dealer.cards);
     const activeNonDealerPlayers = activePlayers.filter((p: any) => p.name !== effectiveDealerId);
 
@@ -1316,7 +1509,6 @@ export default function BlackjackPage() {
 
       const isPlayerFive = isFiveCardCharlie(player.cards);
 
-      // 双方都五小龙 → 平局
       if (isPlayerFive && isDealerFive) {
         results.push({
           name: player.name,
@@ -1384,7 +1576,6 @@ export default function BlackjackPage() {
 
     setResultDetails(results);
 
-    // ---- 生成总结文字 ----
     let playerResults: string[] = [];
     let maxDealerPenalty = 0;
     let maxDealerName = "";
@@ -1425,9 +1616,9 @@ export default function BlackjackPage() {
 
     console.log('✅ 结算结果:', summary);
 
-    // 🔥 关键修复：广播时使用 ps（传入的数据），而不是 players
     await broadcastAndSyncDB({
       players: ps,
+      spectators: spectators || [],
       phase: "settlement",
       dealerId: effectiveDealerId,
       currentPlayerIndex,
@@ -1443,60 +1634,136 @@ export default function BlackjackPage() {
       wheelSegments: [],
     });
 
-    // 强制确保状态不被覆盖
     setPhase("settlement");
     setGameOver(true);
-    setPlayers(ps);  // 🔥 强制同步最新数据
+    setPlayers(ps);
     console.log('✅ 结算完成');
+
+    // 🔥 结算完成后进入抽牌选庄
+    const playingPlayers = ps.filter((p: any) => p.status === 'playing');
+    if (playingPlayers.length >= 2) {
+      await enterDrawPhase();
+    }
     } finally {
       isSettlingRef.current = false;
     }
   };
 
-  // ==================== 转盘抽庄 ====================
-  const showWheel = async (currentPlayers: any[]) => {
-    const names = currentPlayers.map(p => p.name);
-    if (names.length < 2) return;
-    setWheelSegments(names);
-    setWheelSelected(null);
-    setWheelRotation(0);
+  // ==================== 抽牌选庄辅助函数 ====================
+  const RANK_ORDER: Record<string, number> = { A: 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, J: 11, Q: 12, K: 13 };
+  const drawRankValue = (rank: string) => RANK_ORDER[rank] ?? 0;
+
+  const unpackDrawCtrl = (raw: string | null): any => {
+    try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  };
+  const unpackDrawCards = (raw: any): { name: string; card: any }[] => {
+    try {
+      if (typeof raw === 'string') {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+        return [];
+      }
+      if (Array.isArray(raw)) return raw;
+      return [];
+    } catch {
+      return [];
+    }
+  };
+  const packDrawCtrl = (ctrl: any): string => JSON.stringify(ctrl);
+
+  const currentDrawOwner = (): string | null => {
+    const ctrl = unpackDrawCtrl(wheelSelected);
+    return ctrl?.owner ?? null;
+  };
+
+  // 🔥 庄家选大/小 → 发牌 + 广播
+  const chooseDrawRule = async (rule: "big" | "small") => {
+    const owner = dealerId;
+    if (!owner) {
+      console.error('❌ chooseDrawRule: 没有庄家');
+      return;
+    }
+
+    // 只从 status === 'playing' 的玩家中抽，观战者不参与
+    const playingPlayers = players.filter(p => p.status === 'playing');
+    if (playingPlayers.length < 2) {
+      console.error('❌ chooseDrawRule: 活跃玩家不足2人', playingPlayers.length);
+      return;
+    }
+
+    const newSeed = Math.floor(Math.random() * 1000000);
+    const deck = createDeckWithSeed(newSeed);
+    const cards: { name: string; card: any }[] = playingPlayers.map((p, idx) => ({
+      name: p.name,
+      card: deck[idx % deck.length]
+    }));
+
+    console.log('✅ chooseDrawRule 生成的 cards:', JSON.stringify(cards, null, 2));
+
+    const now = Date.now();
+    const ctrl = packDrawCtrl({
+      owner,
+      rule,
+      seed: newSeed,
+      deadline: now + 8000,
+      revealed: [],
+      winner: null,
+    });
+
+    // 🔥 设置所有状态
+    setDrawRule(rule);
+    setDrawCards(cards);
+    setDrawRevealed(new Set<string>());
+    setDrawSubPhase("reveal");
+    setDrawDeadline(now + 8000);
+    setDrawCountdown(8);
+    setDrawOwner(owner);
+    setDrawWinner(null);
+    setWheelSelected(ctrl);
+    setWheelSegments(JSON.stringify(cards));
     setWheelVisible(true);
     setPhase("wheel");
+    drawTimeoutFiredRef.current = false;
+
+    // 🔥 广播给所有人
     await broadcastAndSyncDB({
-      players: currentPlayers,
+      spectators: spectators || [],
+      players,
       phase: "wheel",
       dealerId,
       currentPlayerIndex,
       gameOver: true,
-      result,
+      result: `🃏 庄家选择了 ${rule === "big" ? "大庄" : "小庄"}，请亮牌！`,
       resultDetails,
       readyPlayers,
       settlementStep: 0,
       seed,
       deckOffset,
       wheelVisible: true,
-      wheelSelected: null,
-      wheelSegments: names,
+      wheelSelected: ctrl,
+      wheelSegments: JSON.stringify(cards),
     });
   };
 
-  const spinWheel = async () => {
-    if (wheelSpinning) return;
-    setWheelSpinning(true);
-    setWheelSelected(null);
+  // 玩家亮牌
+  const revealOwnCard = async () => {
+    const me = drawCards.find(d => d.name === playerName);
+    if (!me || drawRevealed.has(playerName)) return;
 
-    const names = wheelSegments;
-    const totalSegments = names.length;
-    const winIndex = Math.floor(Math.random() * totalSegments);
-    const segmentAngle = 360 / totalSegments;
-    const targetAngle = 360 * (5 + Math.random() * 3) + (360 - winIndex * segmentAngle - segmentAngle / 2);
-    setWheelRotation(targetAngle);
+    const next = new Set(drawRevealed);
+    next.add(playerName);
+    setDrawRevealed(next);
 
-    setTimeout(() => {
-      const winner = names[winIndex];
-      setWheelSelected(winner);
-      setWheelSpinning(false);
-      broadcastAndSyncDB({
+    const ctrl = unpackDrawCtrl(wheelSelected);
+    if (ctrl) {
+      const newCtrl = packDrawCtrl({
+        ...ctrl,
+        revealed: Array.from(next),
+      });
+      setWheelSelected(newCtrl);
+
+      await broadcastAndSyncDB({
+      spectators: spectators || [],
         players,
         phase: "wheel",
         dealerId,
@@ -1509,14 +1776,230 @@ export default function BlackjackPage() {
         seed,
         deckOffset,
         wheelVisible: true,
-        wheelSelected: winner,
-        wheelSegments: names,
+        wheelSelected: newCtrl,
+        wheelSegments,
       });
-      setTimeout(() => {
-        startNextRound(winner);
-      }, 1500);
-    }, 3000 + Math.random() * 1000);
+    }
+
+    // 如果所有人都亮了，立即判定
+    if (next.size === drawCards.length) {
+      await handleDrawRevealTimeout();
+    }
   };
+
+  // 🔥 平局重抽 + 自动判定（已修复所有 bug）
+  const handleDrawRevealTimeout = useCallback(async () => {
+    // 🔥 保护1：drawCards 为空或格式不对
+    if (!drawCards || drawCards.length === 0) {
+      console.warn('⚠️ drawCards 为空，跳过判定');
+      return;
+    }
+
+    // 🔥 保护2：检查每个元素是否有 name
+    if (!drawCards.every(d => d?.name && d?.card)) {
+      console.warn('⚠️ drawCards 数据格式不正确，跳过判定');
+      return;
+    }
+
+    if (drawSubPhase !== "reveal") {
+      console.warn('⚠️ 当前不是 reveal 阶段，跳过判定');
+      return;
+    }
+    if (drawWinner) {
+      console.warn('⚠️ 已有赢家，跳过判定');
+      return;
+    }
+
+    // 所有人强制亮牌
+    const allNames = drawCards.map(d => d.name);
+    setDrawRevealed(new Set<string>(allNames));
+
+    const rule = drawRule || "big";
+    let targetVal = rule === "big" ? -1 : 999;
+    const playerVals = drawCards.map(d => ({ name: d.name, val: drawRankValue(d.card.rank) }));
+
+    for (const p of playerVals) {
+      if (rule === "big" ? p.val > targetVal : p.val < targetVal) {
+        targetVal = p.val;
+      }
+    }
+
+    const tied = playerVals.filter(p => p.val === targetVal);
+
+    // 🔥 保护3：tied 为空（理论上不会发生，但加了安全）
+    if (tied.length === 0) {
+      console.error('❌ 没有找到赢家，playerVals:', playerVals);
+      return;
+    }
+
+    // 🔥 平局：只给平局者重抽，保持 reveal 状态，重置倒计时
+    if (tied.length > 1) {
+      const losers = drawCards.filter(d => drawRankValue(d.card.rank) !== targetVal);
+      const tiedNames = tied.map(p => p.name);
+
+      const newSeed = Math.floor(Math.random() * 1000000);
+      const deck = createDeckWithSeed(newSeed);
+      const newTiedCards = tiedNames.map((name, idx) => ({
+        name,
+        card: deck[idx % deck.length]
+      }));
+
+      const newCards = [...newTiedCards, ...losers];
+      setDrawCards(newCards);
+      setDrawRevealed(new Set<string>());
+      setDrawWinner(null);
+
+      const now = Date.now();
+      const ctrl = unpackDrawCtrl(wheelSelected);
+      const newCtrl = packDrawCtrl({
+        ...ctrl,
+        deadline: now + 8000,
+        revealed: [],
+        winner: null,
+      });
+      setWheelSelected(newCtrl);
+      setWheelSegments(JSON.stringify(newCards));
+      setDrawDeadline(now + 8000);
+      setDrawCountdown(8);
+      drawTimeoutFiredRef.current = false;
+
+      // 🔥 平局重抽也要广播
+      await broadcastAndSyncDB({
+      spectators: spectators || [],
+        players,
+        phase: "wheel",
+        dealerId,
+        currentPlayerIndex,
+        gameOver: true,
+        result: `🔄 ${tiedNames.join('、')} 平局，重抽！`,
+        resultDetails,
+        readyPlayers,
+        settlementStep: 0,
+        seed,
+        deckOffset,
+        wheelVisible: true,
+        wheelSelected: newCtrl,
+        wheelSegments: JSON.stringify(newCards),
+      });
+      return;
+    }
+
+    // 唯一赢家
+    const winner = tied[0].name;
+    setDrawWinner(winner);
+    setDrawSubPhase("done");
+
+    const ctrl = unpackDrawCtrl(wheelSelected);
+    const newCtrl = packDrawCtrl({
+      ...ctrl,
+      winner,
+      revealed: allNames,
+    });
+    setWheelSelected(newCtrl);
+
+    const cardDisplay = drawCards.map(d => {
+      const card = d.card;
+      const rankDisplay = card.rank === '10' ? '10' : card.rank;
+      return `🂠 ${d.name}：${card.suit}${rankDisplay}`;
+    }).join("\n");
+    const resultMsg = `${cardDisplay}\n\n👑 ${winner} 成为新庄家！`;
+
+    setResult(resultMsg);
+
+    await broadcastAndSyncDB({
+      spectators: spectators || [],
+      players,
+      phase: "waiting",
+      dealerId: winner,
+      currentPlayerIndex,
+      gameOver: true,
+      result: resultMsg,
+      resultDetails,
+      readyPlayers,
+      settlementStep: 0,
+      seed,
+      deckOffset,
+      wheelVisible: true,
+      wheelSelected: newCtrl,
+      wheelSegments,
+      newDealerName: winner,
+    });
+      spectators: spectators || [],
+      players,
+      phase: "wheel",
+      dealerId,
+      currentPlayerIndex,
+      gameOver: true,
+      result: resultMsg,
+      resultDetails,
+      readyPlayers,
+      settlementStep: 0,
+      seed,
+      deckOffset,
+      wheelVisible: true,
+      wheelSelected: newCtrl,
+      wheelSegments,
+    });
+
+    setTimeout(() => {
+      if (winner) startNextRound(winner);
+    }, 4000);
+      if (winner) startNextRound(winner);
+    }, 2500);
+  }, [drawSubPhase, drawWinner, drawRule, drawCards, drawRevealed, wheelSelected, players, dealerId, currentPlayerIndex, resultDetails, readyPlayers, seed, deckOffset]);
+
+  // 倒计时 useEffect
+  useEffect(() => {
+    if (drawDeadline === null || drawSubPhase !== "reveal") return;
+    const timer = setInterval(() => {
+      const left = Math.max(0, Math.ceil((drawDeadline - Date.now()) / 1000));
+      setDrawCountdown(left);
+      if (left === 0 && !drawTimeoutFiredRef.current) {
+        drawTimeoutFiredRef.current = true;
+        handleDrawRevealTimeout();
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [drawDeadline, drawSubPhase, handleDrawRevealTimeout]);
+
+  // 进入选庄阶段
+  const enterDrawPhase = async () => {
+    const owner = dealerId;
+    if (!owner) return;
+
+    setDrawOwner(owner);
+    setDrawSubPhase("choose");
+    setDrawRule(null);
+    setDrawCards([]);
+    setDrawRevealed(new Set<string>());
+    setDrawWinner(null);
+    setWheelVisible(true);
+    setPhase("wheel");
+    setWheelSelected(null);
+    setWheelSegments([]);
+
+    await broadcastAndSyncDB({
+      spectators: spectators || [],
+      players,
+      phase: "wheel",
+      dealerId,
+      currentPlayerIndex,
+      gameOver: true,
+      result: "🎴 请庄家选择 大庄 或 小庄",
+      resultDetails,
+      readyPlayers,
+      settlementStep: 0,
+      seed,
+      deckOffset,
+      wheelVisible: true,
+      wheelSelected: null,
+      wheelSegments: [],
+    });
+  };
+
+  // 兼容旧函数（保留，防止其他地方调用报错）
+  const showWheel = async (currentPlayers: any[]) => { await enterDrawPhase(); };
+  const spinWheel = async () => {};
 
   // ==================== 下一局 ====================
   const startNextRound = async (newDealerName: string) => {
@@ -1525,6 +2008,12 @@ export default function BlackjackPage() {
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
+    setDrawRule(null);
+    setDrawCards([]);
+    setDrawRevealed(new Set<string>());
+    setDrawSubPhase("choose");
+    setDrawWinner(null);
+    setDrawOwner(null);
     setPhase("dealing");
     setGameOver(false);
     setResult("");
@@ -1536,6 +2025,10 @@ export default function BlackjackPage() {
     setMyCardCount(0);
     setMyBustType('none');
 
+    const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
+    const freeSeats: number[] = [];
+    for (let i = 0; i < 12; i++) if (!occupiedSeats.includes(i)) freeSeats.push(i);
+    // 🔥 spectators 不参与游戏，保持观战状态
     const resetPlayers = players.map(p => ({
       ...p,
       cards: [],
@@ -1544,12 +2037,13 @@ export default function BlackjackPage() {
       isBust: false,
       isBlackjack: false,
       isFiveCard: false,
-      bustType: 'none',
       isDealer: p.name === newDealerName,
-      status: p.status === 'watching' ? 'watching' : 'playing',
+      status: 'playing',
+      bustType: 'none',
     }));
-
     setPlayers(resetPlayers);
+    setSpectators([]);
+    try { await supabase.from("rooms").update({ spectators: [] }).eq("id", roomId); } catch (_) {}
     setDealerId(newDealerName);
     setIsDealer(playerName === newDealerName);
 
@@ -1560,6 +2054,7 @@ export default function BlackjackPage() {
 
     await broadcastAndSyncDB({
       players: resetPlayers,
+      spectators: spectators || [],
       phase: "dealing",
       dealerId: newDealerName,
       currentPlayerIndex: 0,
@@ -1597,6 +2092,12 @@ export default function BlackjackPage() {
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
+    setDrawRule(null);
+    setDrawCards([]);
+    setDrawRevealed(new Set<string>());
+    setDrawSubPhase("choose");
+    setDrawWinner(null);
+    setDrawOwner(null);
 
     const newSeed = Math.floor(Math.random() * 1000000);
     const newDeck = createDeckWithSeed(newSeed);
@@ -1604,6 +2105,10 @@ export default function BlackjackPage() {
     setLocalDeck(newDeck);
     setDeckOffset(0);
 
+    const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
+    const freeSeats: number[] = [];
+    for (let i = 0; i < 12; i++) if (!occupiedSeats.includes(i)) freeSeats.push(i);
+    // 🔥 spectators 不参与游戏，保持观战状态
     const resetPlayers = players.map(p => ({
       ...p,
       cards: [],
@@ -1613,13 +2118,16 @@ export default function BlackjackPage() {
       isBlackjack: false,
       isFiveCard: false,
       isDealer: false,
-      bustType: 'none',
       status: 'playing',
+      bustType: 'none',
     }));
     setPlayers(resetPlayers);
+    setSpectators([]);
+    try { await supabase.from("rooms").update({ spectators: [] }).eq("id", roomId); } catch (_) {}
 
     await broadcastAndSyncDB({
       players: resetPlayers,
+      spectators: [],
       phase: "waiting",
       dealerId: null,
       currentPlayerIndex: 0,
@@ -1832,7 +2340,6 @@ export default function BlackjackPage() {
                         }}>
                           {isMe ? '你' : displayName}
                           {isDealer && <span style={{ color: '#fbbf24', fontSize: '10px', marginLeft: '1px' }}>（庄家）</span>}
-                          {p.status === 'watching' && <span style={{ color: '#888', fontSize: '10px', marginLeft: '2px' }}>（观战）</span>}
                         </span>
                         <div style={{
                           display: 'flex',
@@ -2000,23 +2507,29 @@ export default function BlackjackPage() {
 
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <span>👥 {players.length}/12</span>
+              <span>👥 {players.length + spectators.length}/12</span>
               {dealerId && <span>👑 {dealerId}</span>}
               {phase === "player_turn" && currentPlayer && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
             </span>
-            <button onClick={leaveRoom} style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid #ef4444', color: '#f87171', padding: '2px 10px', borderRadius: '12px', fontSize: '12px', cursor: 'pointer', marginLeft: 'auto' }}>🚪 离开</button>
           </div>
         </div>
 
         <div style={styles.statusBar}>
-          {phase === "waiting" && <span style={styles.statusText}>⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length} 已准备）` : '（至少2人）'}</span>}
+          {phase === "waiting" && <span style={styles.statusText}>⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length + spectators.length} 已准备）` : '（至少2人）'}</span>}
+          {phase === "waiting_for_dealer" && <span style={{ color: "#fbbf24", fontSize: "13px" }}>📊 结算完成 - 上一轮庄家【${dealerId}】请点击开始抽牌</span>}
           {phase === "dealing" && <span style={styles.statusText}>🃏 发牌中...</span>}
           {phase === "player_turn" && !gameOver && <span style={styles.statusText}>🎯 {currentPlayer?.name} 的回合 {currentPlayer?.isStanding ? '（停牌）' : ''}</span>}
           {phase === "dealer_turn" && !gameOver && <span style={styles.statusText}>👑 庄家回合</span>}
           {phase === "settlement" && <span style={styles.statusText}>📊 结算完成</span>}
-          {phase === "wheel" && <span style={styles.statusText}>🎡 抽庄中...</span>}
+          {phase === "wheel" && <span style={styles.statusText}>🎴 抽牌选庄中...</span>}
           {gameOver && phase !== "wheel" && <span style={styles.resultText}>{result || '游戏结束'}</span>}
         </div>
+
+        {spectators.length > 0 && (
+          <div style={{ textAlign: 'center', color: '#888', fontSize: '11px', marginBottom: '4px', padding: '2px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
+            👀 观战：{spectators.join('、')}
+          </div>
+        )}
 
         <div style={styles.actionBar}>
           {phase === "waiting" && (
@@ -2026,6 +2539,9 @@ export default function BlackjackPage() {
               </button>
               {players.length >= 2 && allReady && players.find(p => p.name === playerName)?.seatId === 0 && (
                 <button onClick={startGame} style={styles.btnStart}>🚀 开始游戏</button>
+              )}
+              {phase === "waiting_for_dealer" && dealerId === playerName && (
+                <button onClick={enterDrawPhase} style={styles.btnReset}>🃏 开始抽牌定庄</button>
               )}
             </>
           )}
@@ -2052,20 +2568,30 @@ export default function BlackjackPage() {
               <button onClick={() => handleDealerStand(false)} style={styles.btnBid}>停牌</button>
             </>
           )}
-          {phase === "wheel" && isDealer && !wheelSpinning && (
-            <button onClick={spinWheel} style={styles.btnStart}>🎯 开始抽庄</button>
+          {phase === "wheel" && isDealer && drawSubPhase === "choose" && (
+            <>
+              <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.2)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '13px', padding: '6px 14px' }}>👑 大庄</button>
+              <button onClick={() => chooseDrawRule("small")} style={{ ...styles.btnBid, background: 'rgba(16,185,129,0.2)', border: '1px solid #10b981', color: '#10b981', fontSize: '13px', padding: '6px 14px' }}>🌱 小庄</button>
+            </>
           )}
-          {phase === "wheel" && wheelSpinning && <span style={{ color: '#fbbf24', fontSize: '14px' }}>转盘中...</span>}
+          {phase === "wheel" && drawSubPhase === "choose" && !isDealer && (
+            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>⏳ 等待庄家选大庄/小庄...</span>
+          )}
+          {phase === "wheel" && drawSubPhase === "reveal" && (
+            <span style={{ color: '#fbbf24', fontSize: '13px' }}>
+              🃏 亮牌倒计时 {drawCountdown}s
+            </span>
+          )}
 
           {gameOver && phase !== "wheel" && (
             <>
               {isDealer ? (
-                <button onClick={() => showWheel(players.filter(p => p.status === 'playing'))} style={styles.btnStart}>
-                  🎡 开始抽庄
+                <button onClick={enterDrawPhase} style={styles.btnStart}>
+                  🎴 抽牌选庄
                 </button>
               ) : (
                 <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '13px' }}>
-                  ⏳ 等待庄家开始抽庄...
+                  ⏳ 等待庄家抽牌选庄...
                 </span>
               )}
               <button onClick={resetGame} style={styles.btnReset}>🔄 重置</button>
@@ -2097,36 +2623,72 @@ export default function BlackjackPage() {
         )}
       </div>
 
+      {/* ========== 抽牌选庄弹窗 ========== */}
       {wheelVisible && (
         <div style={styles.wheelOverlay}>
           <div style={styles.wheelContainer}>
-            <h2 style={styles.wheelTitle}>🎡 抽庄</h2>
-            <div style={styles.wheelWrapper}>
-              <div style={{
-                ...styles.wheel,
-                transform: `rotate(${wheelRotation}deg)`,
-                transition: wheelSpinning ? 'transform 3.5s cubic-bezier(0.17, 0.67, 0.12, 1)' : 'none',
-              }}>
-                {wheelSegments.map((name, idx) => {
-                  const angle = (360 / wheelSegments.length) * idx;
-                  return (
-                    <div key={idx} style={{
-                      ...styles.wheelSegment,
-                      transform: `rotate(${angle}deg)`,
-                      backgroundColor: idx % 2 === 0 ? '#8b5cf6' : '#6d28d9',
-                    }}>
-                      <span style={styles.wheelSegmentText}>{name}</span>
-                    </div>
-                  );
-                })}
+            <h2 style={styles.wheelTitle}>🎴 抽牌选庄</h2>
+
+            {drawSubPhase === "choose" && (
+              <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.7)', fontSize: '15px', padding: '20px' }}>
+                {isDealer ? (
+                  <div>
+                    <div style={{ marginBottom: '14px', color: '#fbbf24' }}>请选择庄家规则：</div>
+                    <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.15)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '14px', padding: '8px 18px', marginRight: '10px' }}>👑 大庄（点数大者当庄）</button>
+                    <button onClick={() => chooseDrawRule("small")} style={{ ...styles.btnBid, background: 'rgba(16,185,129,0.15)', border: '1px solid #10b981', color: '#10b981', fontSize: '14px', padding: '8px 18px' }}>🌱 小庄（点数小者当庄）</button>
+                  </div>
+                ) : (
+                  <div style={{ animation: 'pulse 2s ease-in-out infinite' }}>⏳ 等待庄家 {dealerId} 选择...</div>
+                )}
               </div>
-              <div style={styles.wheelPointer}>▼</div>
-            </div>
-            {wheelSelected && <div style={styles.wheelResult}>👑 {wheelSelected} 成为新庄家！</div>}
-            {!wheelSelected && !wheelSpinning && isDealer && (
-              <button onClick={spinWheel} style={styles.btnStart}>🎯 开始抽庄</button>
             )}
-            {wheelSpinning && <div style={styles.wheelSpinningText}>🎲 转盘中...</div>}
+
+            {drawSubPhase === "reveal" && (
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ marginBottom: '10px', fontSize: '13px', color: '#c7d2fe', letterSpacing: '1px' }}>
+                  {drawRule === "big" ? '👑 大庄模式' : '🌱 小庄模式'} — {drawCountdown > 0 ? `${drawCountdown}秒后自动亮牌` : '自动亮牌中...'}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '12px' }}>
+                  {drawCards.map((d) => {
+                    const isMe = d.name === playerName;
+                    const isRevealed = drawRevealed.has(d.name);
+                    const rankDisplay = isRevealed ? d.card.rank : "?";
+                    const isRed = d.card.suit === '♥' || d.card.suit === '♦';
+                    return (
+                      <div key={d.name} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                        <div style={{ fontSize: '12px', color: isMe ? '#fbbf24' : 'rgba(255,255,255,0.6)', marginBottom: '2px' }}>{d.name}{isMe ? ' (你)' : ''}</div>
+                        {isRevealed ? (
+                          <div style={{ width: 44, height: 60, borderRadius: 6, background: '#ffffff', border: '1.5px solid rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: isRed ? '#e53935' : '#1a1a1a' }}>{rankDisplay}</span>
+                            <span style={{ fontSize: '16px', color: isRed ? '#e53935' : '#1a1a1a' }}>{d.card.suit}</span>
+                          </div>
+                        ) : (
+                          <div style={{ width: 44, height: 60, borderRadius: 6, background: 'linear-gradient(135deg, #1a237e, #0d1442)', border: '1.5px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <span style={{ fontSize: '18px', opacity: 0.4 }}>🃏</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {!drawRevealed.has(playerName) && drawCountdown > 0 && (
+                  <button onClick={revealOwnCard} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.2)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '13px', padding: '6px 16px' }}>🃏 亮牌</button>
+                )}
+                {drawRevealed.has(playerName) && (
+                  <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>✅ 已亮牌</div>
+                )}
+              </div>
+            )}
+
+            {drawSubPhase === "done" && drawWinner && (
+              <div style={{ textAlign: 'center', padding: '16px' }}>
+                <div style={{ fontSize: '28px', marginBottom: '8px' }}>👑</div>
+                <div style={{ color: '#fbbf24', fontSize: '20px', fontWeight: 'bold', textShadow: '0 0 12px rgba(251,191,36,0.5)', animation: 'pulse 1s ease-in-out infinite' }}>
+                  {drawWinner} 成为新庄家！
+                </div>
+                <div style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>即将开始新一局...</div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2255,21 +2817,23 @@ const styles: any = {
     zIndex: 999,
   },
   wheelContainer: {
-    backgroundColor: '#1a1a2e', borderRadius: '32px', padding: '24px',
-    maxWidth: '400px', width: '90%',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.8)',
+    background: 'linear-gradient(145deg, #1e1b4b, #1a1a2e)',
+    borderRadius: '32px', padding: '24px',
+    maxWidth: '420px', width: '90%',
+    boxShadow: '0 0 80px rgba(139,92,246,0.4), 0 0 40px rgba(251,191,36,0.15), 0 20px 60px rgba(0,0,0,0.8)',
+    border: '1px solid rgba(139,92,246,0.4)',
     textAlign: 'center',
   },
-  wheelTitle: { color: '#fff', fontSize: '24px', marginBottom: '16px' },
+  wheelTitle: { color: '#fff', fontSize: '26px', marginBottom: '20px', letterSpacing: '2px', textShadow: '0 0 20px rgba(139,92,246,0.5)' },
   wheelWrapper: {
-    position: 'relative', width: '280px', height: '280px',
+    position: 'relative', width: '300px', height: '300px',
     margin: '0 auto 20px',
   },
   wheel: {
     width: '100%', height: '100%', borderRadius: '50%',
     overflow: 'hidden',
-    border: '4px solid #8b5cf6',
-    boxShadow: '0 0 30px rgba(139,92,246,0.3)',
+    border: '3px solid rgba(251,191,36,0.6)',
+    boxShadow: '0 0 50px rgba(251,191,36,0.25), 0 0 30px rgba(139,92,246,0.2), inset 0 0 40px rgba(0,0,0,0.4)',
     position: 'relative',
   },
   wheelSegment: {
@@ -2280,25 +2844,16 @@ const styles: any = {
     clipPath: 'polygon(0% 0%, 100% 0%, 0% 100%)',
   },
   wheelSegmentText: {
-    position: 'absolute', top: '10px', left: '10px',
-    color: '#fff', fontWeight: 'bold', fontSize: '14px',
+    position: 'absolute',
+    top: '6px',
+    left: '4px',
+    fontWeight: 'bold',
     transform: 'rotate(-90deg)',
-    textShadow: '0 1px 3px rgba(0,0,0,0.5)',
-  },
-  wheelPointer: {
-    position: 'absolute', top: '-12px', left: '50%',
-    transform: 'translateX(-50%)',
-    color: '#fbbf24', fontSize: '36px', fontWeight: 'bold',
-    zIndex: 10,
-    textShadow: '0 0 10px rgba(251,191,36,0.5)',
-  },
-  wheelResult: {
-    color: '#fbbf24', fontSize: '20px', fontWeight: 'bold',
-    marginBottom: '16px',
-    animation: 'pulse 1s ease-in-out infinite',
-  },
-  wheelSpinningText: {
-    color: '#aaa', fontSize: '16px', marginTop: '12px',
+    textShadow: '0 1px 4px rgba(0,0,0,0.8)',
+    letterSpacing: '0.5px',
+    pointerEvents: 'none',
+    whiteSpace: 'nowrap',
+    overflow: 'visible',
   },
 };
 
