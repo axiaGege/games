@@ -35,14 +35,6 @@ const createDeckWithSeed = (seed: number) => {
   return deck;
 };
 
-const shuffleDeck = (deck: any[]) => {
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [deck[i], deck[j]] = [deck[j], deck[i]];
-  }
-  return deck;
-};
-
 const calculateHand = (cards: any[]) => {
   let total = 0, aces = 0;
   for (const card of cards) {
@@ -163,10 +155,6 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
   const color = isRed ? '#e53935' : '#1a1a1a';
   const rankDisplay = card.rank === '10' ? '10' : card.rank;
 
-      </div>
-    );
-  };
-
   return (
     <div style={{
       width: s.width,
@@ -233,7 +221,7 @@ export default function BlackjackPage() {
   const [roomId, setRoomId] = useState("");
 
   const [players, setPlayers] = useState<any[]>([]);
-  const [phase, setPhase] = useState<"waiting" | "dealing" | "player_turn" | "dealer_turn" | "settlement" | "wheel">("waiting");
+  const [phase, setPhase] = useState<"waiting" | "dealing" | "player_turn" | "dealer_turn" | "wheel" | "waiting_for_dealer">("waiting");
   const [dealerId, setDealerId] = useState<string | null>(null);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
   const [gameOver, setGameOver] = useState(false);
@@ -256,7 +244,6 @@ export default function BlackjackPage() {
   // 轮盘/抽牌选庄复用状态（DB字段兼容）
   const [wheelVisible, setWheelVisible] = useState(false);
   const [wheelSelected, setWheelSelected] = useState<any>(null);
-  // 🔥 修复：wheelSegments 改为 any，既能存数组也能存 JSON 字符串
   const [wheelSegments, setWheelSegments] = useState<any>([]);
   // 抽牌选庄 state
   const [drawRule, setDrawRule] = useState<"big" | "small" | null>(null);
@@ -268,11 +255,28 @@ export default function BlackjackPage() {
   const [drawOwner, setDrawOwner] = useState<string | null>(null);
   const [drawCountdown, setDrawCountdown] = useState(5);
   const [newDealerName, setNewDealerName] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{show:boolean, message:string, callback:any}>({show:false, message:'', callback:null});
   const [spectators, setSpectators] = useState<string[]>([]);
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
   const isSettlingRef = useRef(false);
   const drawTimeoutFiredRef = useRef(false);
+
+  // ==================== ConfirmDialog 组件 ====================
+  const ConfirmDialog = () => {
+    if (!confirmDialog.show) return null;
+    return (
+      <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", backgroundColor: "rgba(0,0,0,0.6)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999 }}>
+        <div style={{ background: "linear-gradient(145deg, #1e1b4b, #1a1a2e)", borderRadius: "16px", padding: "24px", maxWidth: "320px", width: "90%", textAlign: "center", border: "1px solid rgba(139,92,246,0.4)" }}>
+          <p style={{ color: "#fff", fontSize: "15px", marginBottom: "20px" }}>{confirmDialog.message}</p>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+            <button onClick={() => setConfirmDialog({ show: false, message: "", callback: null })} style={{ padding: "8px 24px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", cursor: "pointer" }}>取消</button>
+            <button onClick={async () => { if (confirmDialog.callback) await confirmDialog.callback(); setConfirmDialog({ show: false, message: "", callback: null }); }} style={{ padding: "8px 24px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #22d3ee, #0891b2)", color: "#fff", fontWeight: "600", cursor: "pointer" }}>确认</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // 刷新/关闭标签页时提示
   useEffect(() => {
@@ -337,7 +341,7 @@ export default function BlackjackPage() {
       .channel(`blackjack:${roomId}`, { config: { broadcast: { ack: true } } })
       .on('broadcast', { event: 'gameState' }, (payload) => {
         const state = payload.payload;
-        console.log("📥 收到广播, players:", state.players?.map?.(p => typeof p === "string" ? p : (p?.name || "?")), "spectators:", state.spectators);
+        console.log("📥 收到广播, players:", state.players?.map?.((p: any) => typeof p === "string" ? p : (p?.name || "?")), "spectators:", state.spectators);
         const parsedPlayers = parsePlayers(state.players);
 
         setPlayers(prev => {
@@ -351,21 +355,21 @@ export default function BlackjackPage() {
           if (localMe && remoteMe) {
             const isDealing = state.phase === "dealing";
             if (isDealing) return [...localOnlySpectators, ...parsedPlayers];
-            const hasLocalCards = localMe.cards && localMe.cards.length > 0;
+
             return [
               ...localOnlySpectators,
               ...parsedPlayers.map(p => {
                 if (p.name === playerName) {
                   return {
                     ...p,
-                    cards: hasLocalCards ? localMe.cards : (p.cards || []),
-                    cardCount: hasLocalCards ? localMe.cardCount : (p.cardCount || 0),
-                    bustType: hasLocalCards ? (localMe.bustType || 'none') : (p.bustType || 'none'),
-                    isStanding: hasLocalCards ? (localMe.isStanding || false) : (p.isStanding || false),
-                    isBust: hasLocalCards ? (localMe.isBust || false) : (p.isBust || false),
-                    isBlackjack: hasLocalCards ? (localMe.isBlackjack || false) : (p.isBlackjack || false),
-                    isFiveCard: hasLocalCards ? (localMe.isFiveCard || false) : (p.isFiveCard || false),
-                    status: hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing'),
+                    cards: p.cards || [],
+                    cardCount: p.cards?.length || p.cardCount || 0,
+                    bustType: p.bustType || 'none',
+                    isStanding: p.isStanding || false,
+                    isBust: p.isBust || false,
+                    isBlackjack: p.isBlackjack || false,
+                    isFiveCard: p.isFiveCard || false,
+                    status: p.status || 'playing',
                   };
                 }
                 const prevPlayer = prev.find(pp => pp.name === p.name);
@@ -387,6 +391,7 @@ export default function BlackjackPage() {
           if (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn") {
             return state.phase;
           }
+          if (state.phase === "waiting_for_dealer") return "waiting_for_dealer";
           return state.phase || "waiting";
         });
 
@@ -401,7 +406,7 @@ export default function BlackjackPage() {
           if (state.phase === "dealing" || state.phase === "player_turn") {
             return false;
           }
-          if (state.phase === "settlement" || state.phase === "wheel") {
+          if (state.phase === "waiting_for_dealer" || state.phase === "wheel") {
             return state.gameOver || false;
           }
           return prevGameOver;
@@ -429,10 +434,12 @@ export default function BlackjackPage() {
             setDrawDeadline(ctrl.deadline || null);
             const revealed = ctrl.revealed ? new Set<string>(ctrl.revealed) : new Set<string>();
             setDrawRevealed(revealed);
-            // 🔥 修复：从 wheelSegments 解析 drawCards
             const cards = unpackDrawCards(state.wheelSegments);
             setDrawCards(cards);
-            if (ctrl.winner) setDrawWinner(ctrl.winner);
+            if (ctrl.winner) {
+              setDrawWinner(ctrl.winner);
+              setDrawSubPhase("done");
+            }
           } else {
             setDrawOwner(null); setDrawRule(null); setDrawSubPhase("choose");
             setDrawCards([]); setDrawRevealed(new Set<string>());
@@ -521,9 +528,11 @@ export default function BlackjackPage() {
     setPlayers(parsedPlayers);
     setJoined(true);
     setReadyPlayers([playerName.trim()]);
-    localStorage.setItem('bj_name', playerName.trim());
-    localStorage.setItem('bj_pass', roomPassword.trim());
-    localStorage.setItem('bj_room', data.id);
+    try {
+      localStorage.setItem('bj_name', playerName.trim());
+      localStorage.setItem('bj_pass', roomPassword.trim());
+      localStorage.setItem('bj_room', data.id);
+    } catch (_) {}
     await broadcastAndSyncDB({
       players: parsedPlayers,
       spectators: [],
@@ -566,6 +575,8 @@ export default function BlackjackPage() {
       setErrorMsg("房间已满（最多12人）");
       return;
     }
+
+    // 玩家已存在（重连）
     if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
       setRoomId(roomData.id);
       setJoined(true);
@@ -575,7 +586,10 @@ export default function BlackjackPage() {
       setGameOver(roomData.gameover || false);
       setCurrentPlayerIndex(roomData.currentplayerindex || 0);
       setSeed(roomData.seed || null);
-      setReadyPlayers(roomData.readyplayers || []);
+      const validReady = (roomData.readyplayers || []).filter((name: string) =>
+        currentPlayers.some((p: any) => p.name === name)
+      );
+      setReadyPlayers(validReady);
       setResult(roomData.result || "");
       setResultDetails(roomData.resultdetails || []);
       setSettlementStep(roomData.settlementstep || 0);
@@ -583,8 +597,8 @@ export default function BlackjackPage() {
       setWheelVisible(roomData.wheelvisible || false);
       setWheelSelected(roomData.wheelselected || null);
       setWheelSegments(roomData.wheelsegments || []);
-      // 抽牌选庄状态恢复
-      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
+      // 恢复抽牌选庄状态
+      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) { setDrawWinner(c.winner); setDrawSubPhase("done"); } } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
 
       const meRestore = currentPlayers.find((p: any) => p.name === playerName.trim());
       if (meRestore) {
@@ -596,13 +610,33 @@ export default function BlackjackPage() {
         setMySeatId(meRestore.seatId !== undefined ? meRestore.seatId : null);
       }
 
-      localStorage.setItem('bj_name', playerName.trim());
-      localStorage.setItem('bj_pass', roomPassword.trim());
-      localStorage.setItem('bj_room', roomData.id);
+      try {
+        localStorage.setItem('bj_name', playerName.trim());
+        localStorage.setItem('bj_pass', roomPassword.trim());
+        localStorage.setItem('bj_room', roomData.id);
+      } catch (_) {}
+
+      await broadcastAndSyncDB({
+        players: currentPlayers,
+        phase: roomData.phase || "waiting",
+        dealerId: roomData.dealerid || null,
+        currentPlayerIndex: roomData.currentplayerindex || 0,
+        gameOver: roomData.gameover || false,
+        result: roomData.result || "",
+        resultDetails: roomData.resultdetails || [],
+        readyPlayers: validReady,
+        settlementStep: roomData.settlementstep || 0,
+        seed: roomData.seed || null,
+        deckOffset: roomData.deckoffset || 0,
+        wheelVisible: roomData.wheelvisible || false,
+        wheelSelected: roomData.wheelselected || null,
+        wheelSegments: roomData.wheelsegments || [],
+      });
 
       return;
     }
 
+    // 分配座位
     const occupiedSeats = currentPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
     let seatId = 0;
     for (let i = 0; i < 12; i++) {
@@ -611,132 +645,85 @@ export default function BlackjackPage() {
 
     const isMidGame = roomData.phase && roomData.phase !== "waiting";
 
-    if (isMidGame) {
-      const newSpectatorName = playerName.trim();
-      const existingSpectators = roomData.spectators || [];
-      const updatedSpectators = existingSpectators.includes(newSpectatorName)
-        ? existingSpectators
-        : [...existingSpectators, newSpectatorName];
+    // 🔥 关键修改：所有加入的人都进 players，用 status 区分
+    const newPlayer = {
+      name: playerName.trim(),
+      cards: [],
+      cardCount: 0,
+      isStanding: false,
+      isBust: false,
+      isBlackjack: false,
+      isFiveCard: false,
+      seatId,
+      isDealer: false,
+      bustType: 'none',
+      status: isMidGame ? 'watching' : 'playing',
+    };
+    const updatedPlayers = [...currentPlayers, newPlayer];
 
-      try {
-        await supabase.from("rooms").update({
-          spectators: updatedSpectators,
-        }).eq("id", roomData.id);
-      } catch (_) {}
+    await supabase.from("rooms").update({
+      players: updatedPlayers,
+      readyplayers: roomData.readyplayers || [],
+    }).eq("id", roomData.id);
 
-      setRoomId(roomData.id);
-      setJoined(true);
-      setPlayers(currentPlayers);
-      setSpectators(updatedSpectators);
-      setReadyPlayers(roomData.readyplayers || []);
+    setRoomId(roomData.id);
+    setJoined(true);
+    setPlayers(updatedPlayers);
+    setSpectators([]);
+    const validReady = (roomData.readyplayers || []).filter((name: string) =>
+      updatedPlayers.some((p: any) => p.name === name)
+    );
+    setReadyPlayers(validReady);
+    try {
       localStorage.setItem('bj_name', playerName.trim());
       localStorage.setItem('bj_pass', roomPassword.trim());
       localStorage.setItem('bj_room', roomData.id);
+    } catch (_) {}
 
-      setPhase(roomData.phase || "waiting");
-      setDealerId(roomData.dealerid || null);
-      setGameOver(roomData.gameover || false);
-      setCurrentPlayerIndex(roomData.currentplayerindex || 0);
-      setSeed(roomData.seed || null);
-      setResult(roomData.result || "");
-      setResultDetails(roomData.resultdetails || []);
-      setSettlementStep(roomData.settlementstep || 0);
-      setDeckOffset(roomData.deckoffset || 0);
-      setWheelVisible(roomData.wheelvisible || false);
-      setWheelSelected(roomData.wheelselected || null);
-      setWheelSegments(roomData.wheelsegments || []);
-      // 抽牌选庄状态恢复
-      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
+    setPhase(roomData.phase || "waiting");
+    setDealerId(roomData.dealerid || null);
+    setGameOver(roomData.gameover || false);
+    setCurrentPlayerIndex(roomData.currentplayerindex || 0);
+    setSeed(roomData.seed || null);
+    setResult(roomData.result || "");
+    setResultDetails(roomData.resultdetails || []);
+    setSettlementStep(roomData.settlementstep || 0);
+    setDeckOffset(roomData.deckoffset || 0);
+    setWheelVisible(roomData.wheelvisible || false);
+    setWheelSelected(roomData.wheelselected || null);
+    setWheelSegments(roomData.wheelsegments || []);
+    // 恢复抽牌选庄状态
+    { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) { setDrawWinner(c.winner); setDrawSubPhase("done"); } } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
 
-      await broadcastAndSyncDB({
-        players: currentPlayers,
-        spectators: updatedSpectators,
-        phase: roomData.phase || "waiting",
-        dealerId: roomData.dealerid || null,
-        currentPlayerIndex: roomData.currentplayerindex || 0,
-        gameOver: roomData.gameover || false,
-        result: roomData.result || "",
-        resultDetails: roomData.resultdetails || [],
-        readyPlayers: roomData.readyplayers || [],
-        settlementStep: roomData.settlementstep || 0,
-        seed: roomData.seed || null,
-        deckOffset: roomData.deckoffset || 0,
-        wheelVisible: roomData.wheelvisible || false,
-        wheelSelected: roomData.wheelselected || null,
-        wheelSegments: roomData.wheelsegments || [],
-      });
-    } else {
-      const newPlayer = {
-        name: playerName.trim(),
-        cards: [],
-        cardCount: 0,
-        isStanding: false,
-        isBust: false,
-        isBlackjack: false,
-        isFiveCard: false,
-        seatId,
-        isDealer: false,
-        bustType: 'none',
-        status: 'playing',
-      };
-      const updatedPlayers = [...currentPlayers, newPlayer];
-
-      await supabase.from("rooms").update({
-        players: updatedPlayers,
-        readyplayers: roomData.readyplayers || [],
-      }).eq("id", roomData.id);
-
-      setRoomId(roomData.id);
-      setJoined(true);
-      setPlayers(updatedPlayers);
-      setSpectators(roomData.spectators || []);
-      setReadyPlayers(roomData.readyplayers || []);
-      localStorage.setItem('bj_name', playerName.trim());
-      localStorage.setItem('bj_pass', roomPassword.trim());
-      localStorage.setItem('bj_room', roomData.id);
-
-      setPhase(roomData.phase || "waiting");
-      setDealerId(roomData.dealerid || null);
-      setGameOver(roomData.gameover || false);
-      setCurrentPlayerIndex(roomData.currentplayerindex || 0);
-      setSeed(roomData.seed || null);
-      setResult(roomData.result || "");
-      setResultDetails(roomData.resultdetails || []);
-      setSettlementStep(roomData.settlementstep || 0);
-      setDeckOffset(roomData.deckoffset || 0);
-      setWheelVisible(roomData.wheelvisible || false);
-      setWheelSelected(roomData.wheelselected || null);
-      setWheelSegments(roomData.wheelsegments || []);
-      // 抽牌选庄状态恢复
-      { const rc = roomData.wheelselected; if (rc) { try { const c = JSON.parse(rc); setDrawOwner(c.owner||null); setDrawRule(c.rule||null); setDrawSubPhase(c.rule?"reveal":"choose"); setDrawDeadline(c.deadline||null); setDrawRevealed(new Set<string>(c.revealed||[])); try{setDrawCards(JSON.parse(roomData.wheelsegments||"[]"));}catch{setDrawCards([]);} if (c.winner) setDrawWinner(c.winner); } catch { setDrawSubPhase("choose"); } } else if (!roomData.wheelvisible) { setDrawSubPhase("choose"); } }
-
-      await broadcastAndSyncDB({
-        players: updatedPlayers,
-        spectators: roomData.spectators || [],
-        phase: roomData.phase || "waiting",
-        dealerId: roomData.dealerid || null,
-        currentPlayerIndex: roomData.currentplayerindex || 0,
-        gameOver: roomData.gameover || false,
-        result: roomData.result || "",
-        resultDetails: roomData.resultdetails || [],
-        readyPlayers: roomData.readyplayers || [],
-        settlementStep: roomData.settlementstep || 0,
-        seed: roomData.seed || null,
-        deckOffset: roomData.deckoffset || 0,
-        wheelVisible: roomData.wheelvisible || false,
-        wheelSelected: roomData.wheelselected || null,
-        wheelSegments: roomData.wheelsegments || [],
-      });
-    }
+    await broadcastAndSyncDB({
+      players: updatedPlayers,
+      spectators: [],
+      phase: roomData.phase || "waiting",
+      dealerId: roomData.dealerid || null,
+      currentPlayerIndex: roomData.currentplayerindex || 0,
+      gameOver: roomData.gameover || false,
+      result: roomData.result || "",
+      resultDetails: roomData.resultdetails || [],
+      readyPlayers: validReady,
+      settlementStep: roomData.settlementstep || 0,
+      seed: roomData.seed || null,
+      deckOffset: roomData.deckoffset || 0,
+      wheelVisible: roomData.wheelvisible || false,
+      wheelSelected: roomData.wheelselected || null,
+      wheelSegments: roomData.wheelsegments || [],
+    });
   };
 
   const joinRoomRef = useRef(joinRoom);
   joinRoomRef.current = joinRoom;
 
   useEffect(() => {
-    const savedName = localStorage.getItem('bj_name');
-    const savedPass = localStorage.getItem('bj_pass');
-    const savedRoom = localStorage.getItem('bj_room');
+    let savedName, savedPass, savedRoom;
+    try {
+      savedName = localStorage.getItem('bj_name');
+      savedPass = localStorage.getItem('bj_pass');
+      savedRoom = localStorage.getItem('bj_room');
+    } catch (_) {}
     if (savedName && savedPass && savedRoom) {
       setPlayerName(savedName);
       setRoomPassword(savedPass);
@@ -808,9 +795,11 @@ export default function BlackjackPage() {
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
     }
-    localStorage.removeItem('bj_name');
-    localStorage.removeItem('bj_pass');
-    localStorage.removeItem('bj_room');
+    try {
+      localStorage.removeItem('bj_name');
+      localStorage.removeItem('bj_pass');
+      localStorage.removeItem('bj_room');
+    } catch (_) {}
   };
 
   const toggleReady = async () => {
@@ -819,7 +808,6 @@ export default function BlackjackPage() {
       return;
     }
 
-    // 观战者不能准备
     const me = players.find(p => p.name === playerName);
     if (me?.status === 'watching') {
       setErrorMsg('观战模式不能准备，请等本局结束');
@@ -848,32 +836,12 @@ export default function BlackjackPage() {
   };
 
   // ==================== 开始游戏 ====================
-
-    if (!roomId) return;
-    const me = players.find(p => p.name === playerName);
-    if (!me) return;
-    const updatedPlayers = players.filter(p => p.name !== playerName);
-    const updatedSpectators = [...(spectators || []), playerName];
-    await supabase.from('rooms').update({
-      players: updatedPlayers,
-      spectators: updatedSpectators,
-    }).eq('id', roomId);
-    setPlayers(updatedPlayers);
-    setSpectators(updatedSpectators);
-    await broadcastAndSyncDB({
-      players: updatedPlayers,
-      spectators: updatedSpectators,
-      phase, dealerId, currentPlayerIndex, gameOver, result, resultDetails,
-      readyPlayers, settlementStep: 0, seed, deckOffset,
-      wheelVisible, wheelSelected, wheelSegments,
-    });
-  };
-
+  const startGame = async () => {
     if (phase !== "waiting") return;
-    if (players.length < 2) { setErrorMsg("至少2人才能开始"); return; }
+    if (activePlayers.length < 2) { setErrorMsg("至少2人才能开始"); return; }
     if (!allReady) { setErrorMsg("还有玩家未准备"); return; }
 
-    const firstDealer = players[0].name;
+    const firstDealer = activePlayers[0].name;
     const resetPlayers = players.map(p => ({
       ...p,
       cards: [],
@@ -884,7 +852,7 @@ export default function BlackjackPage() {
       isFiveCard: false,
       bustType: 'none',
       isDealer: p.name === firstDealer,
-      status: 'playing',
+      status: p.status === 'watching' ? 'watching' : 'playing',
     }));
     setPlayers(resetPlayers);
     setDealerId(firstDealer);
@@ -970,20 +938,30 @@ export default function BlackjackPage() {
     const dealer = newPlayers.find(p => p.name === dealerName);
     if (dealer && isBlackjack(dealer.cards)) {
       setGameOver(true);
-      setPhase("settlement");
       const resultMsg = `庄家黑杰克！所有玩家各喝 2 杯！`;
       setResult(resultMsg);
-      const details = newPlayers.filter(p => p.name !== dealerName).map(p => ({
-        name: p.name,
-        cards: p.cards,
-        result: '庄家黑杰克，喝2杯',
-        penalty: 2,
-      }));
+      const details = [
+        {
+          name: dealerName,
+          cards: dealer.cards,
+          result: '庄家黑杰克',
+          penalty: 0,
+          who: 'dealer'
+        },
+        ...newPlayers.filter(p => p.name !== dealerName).map(p => ({
+          name: p.name,
+          cards: p.cards,
+          result: '庄家黑杰克，喝2杯',
+          penalty: 2,
+          who: 'all_players'
+        }))
+      ];
       setResultDetails(details);
+      setPhase("waiting_for_dealer");
       await broadcastAndSyncDB({
         players: newPlayers,
         spectators: spectators || [],
-        phase: "settlement",
+        phase: "waiting_for_dealer",
         dealerId: dealerName,
         currentPlayerIndex: 0,
         gameOver: true,
@@ -1047,106 +1025,65 @@ export default function BlackjackPage() {
 
   // ==================== 玩家操作 ====================
   const handleHit = async () => {
-    console.log('🔥 handleHit 被调用');
-    if (phase !== "player_turn") return;
-    const pNow = playersRef.current;
-    const me = pNow.find(p => p.name === playerName);
-    if (!me) { console.warn('⛔ 找不到自己'); return; }
-    if (me.status === 'watching') { console.warn('⛔ 观战模式，不能操作'); return; }
-    if (me.isStanding) { console.warn('⛔ 已停牌'); return; }
-    if (me.cardCount >= 5) { setErrorMsg("已达最大牌数5张"); return; }
+  console.log('🔥 handleHit 被调用');
+  if (phase !== "player_turn") return;
+  const pNow = playersRef.current;
+  const me = pNow.find(p => p.name === playerName);
+  if (!me) { console.warn('⛔ 找不到自己'); return; }
+  if (me.status === 'watching') { console.warn('⛔ 观战模式，不能操作'); return; }
+  if (me.isStanding) { console.warn('⛔ 已停牌'); return; }
+  if (me.cardCount >= 5) { setErrorMsg("已达最大牌数5张"); return; }
 
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
+  if (timeoutRef.current) {
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+  }
+
+  let deck = localDeck;
+  let offset = deckOffset;
+  // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
+  if (deck.length === 0 || offset >= 52) {
+    setErrorMsg("牌堆已用完，自动停牌");
+    await handleStand(true);
+    return;
+  }
+
+  const card = deck[offset];
+  offset++;
+  setDeckOffset(offset);
+  const newCards = [...myCards, card];
+  const newCount = newCards.length;
+  const total = calculateHand(newCards);
+  const isBustNow = total > 21;
+  const isFive = newCount === 5 && total <= 21;
+  const isFiveBust = newCount === 5 && total > 21;
+
+  setMyCards(newCards);
+  setMyCardCount(newCount);
+
+  const updatedPlayers = pNow.map(p => {
+    if (p.name === playerName) {
+      const isBj = isBlackjack(newCards);
+      return { ...p, cards: newCards, cardCount: newCount, isBlackjack: isBj, isFiveCard: isFive, isBust: isBustNow, bustType: isBustNow ? 'hidden' : 'none' };
     }
+    return p;
+  });
+  setPlayers(updatedPlayers);
 
-    let deck = localDeck;
-    let offset = deckOffset;
-    if (deck.length === 0 || offset >= 52) {
-      const newSeed = Math.floor(Math.random() * 1000000);
-      deck = createDeckWithSeed(newSeed);
-      offset = 0;
-      setSeed(newSeed);
-      setLocalDeck(deck);
-      setDeckOffset(0);
-      await broadcastAndSyncDB({
-        players: pNow,
-        spectators: spectators || [],
-        phase,
-        dealerId,
-        currentPlayerIndex,
-        gameOver,
-        result,
-        resultDetails,
-        readyPlayers,
-        settlementStep: 0,
-        seed: newSeed,
-        deckOffset: 0,
-        wheelVisible,
-        wheelSelected,
-        wheelSegments,
-      });
-    }
+  if (newCount === 5) {
+    if (isFive) setResult(`🎉 五小龙！`);
+    else if (isFiveBust) setResult(`💥 第5张爆牌！`);
 
-    const card = deck[offset];
-    offset++;
-    setDeckOffset(offset);
-    const newCards = [...myCards, card];
-    const newCount = newCards.length;
-    const total = calculateHand(newCards);
-    const isBustNow = total > 21;
-    const isFive = newCount === 5 && total <= 21;
-    const isFiveBust = newCount === 5 && total > 21;
-
-    setMyCards(newCards);
-    setMyCardCount(newCount);
-
-    const updatedPlayers = pNow.map(p => {
+    const updatedPlayersWithStand = updatedPlayers.map(p => {
       if (p.name === playerName) {
-        const isBj = isBlackjack(newCards);
-        return { ...p, cards: newCards, cardCount: newCount, isBlackjack: isBj, isFiveCard: isFive, isBust: isBustNow, bustType: isBustNow ? 'hidden' : 'none' };
+        return { ...p, isStanding: true };
       }
       return p;
     });
-    setPlayers(updatedPlayers);
-
-    if (newCount === 5) {
-      if (isFive) setResult(`🎉 五小龙！`);
-      else if (isFiveBust) setResult(`💥 第5张爆牌！`);
-      
-      const updatedPlayersWithStand = updatedPlayers.map(p => {
-        if (p.name === playerName) {
-          return { ...p, isStanding: true };
-        }
-        return p;
-      });
-      setPlayers(updatedPlayersWithStand);
-
-      await broadcastAndSyncDB({
-        players: updatedPlayersWithStand,
-        spectators: spectators || [],
-        phase,
-        dealerId,
-        currentPlayerIndex,
-        gameOver,
-        result,
-        resultDetails,
-        readyPlayers,
-        settlementStep: 0,
-        seed,
-        deckOffset: offset,
-        wheelVisible,
-        wheelSelected,
-        wheelSegments,
-      });
-
-      await handleStand(true);
-      return;
-    }
+    setPlayers(updatedPlayersWithStand);
 
     await broadcastAndSyncDB({
-      players: updatedPlayers,
+      players: updatedPlayersWithStand,
       spectators: spectators || [],
       phase,
       dealerId,
@@ -1162,8 +1099,30 @@ export default function BlackjackPage() {
       wheelSelected,
       wheelSegments,
     });
-    startTimeout();
-  };
+
+    await handleStand(true);
+    return;
+  }
+
+  await broadcastAndSyncDB({
+    players: updatedPlayers,
+    spectators: spectators || [],
+    phase,
+    dealerId,
+    currentPlayerIndex,
+    gameOver,
+    result,
+    resultDetails,
+    readyPlayers,
+    settlementStep: 0,
+    seed,
+    deckOffset: offset,
+    wheelVisible,
+    wheelSelected,
+    wheelSegments,
+  });
+  startTimeout();
+};
 
   const handleStand = async (auto: boolean = false) => {
     console.log('🔥 handleStand 被调用, auto:', auto);
@@ -1219,14 +1178,6 @@ export default function BlackjackPage() {
       finalPlayers = updatedPlayers;
       allDone = allDoneNow;
       console.log('📊 allDone:', allDoneNow);
-      console.log('🔍 调试:', updatedPlayers.map((p: any) => ({
-        name: p.name,
-        cards: p.cards?.length,
-        isStanding: p.isStanding,
-        isBust: p.isBust,
-        cardCount: p.cardCount,
-        status: p.status
-      })));
 
       return updatedPlayers;
     });
@@ -1287,111 +1238,122 @@ export default function BlackjackPage() {
     await handleStand(true);
   };
 
+  // ==================== 退出本局 ====================
+  const exitCurrentRound = async () => {
+    setConfirmDialog({ show: true, message: '确定退出本局吗？退出后可在准备阶段重新加入。', callback: async () => {
+      if (!roomId) return;
+      const updatedPlayers = players.filter(p => p.name !== playerName);
+      const updatedSpectators = [...(spectators || []), playerName];
+      await supabase.from('rooms').update({ players: updatedPlayers, spectators: updatedSpectators }).eq('id', roomId);
+      setPlayers(updatedPlayers);
+      setSpectators(updatedSpectators);
+      await broadcastAndSyncDB({ players: updatedPlayers, spectators: updatedSpectators, phase, dealerId, currentPlayerIndex, gameOver, result, resultDetails, readyPlayers, settlementStep: 0, seed, deckOffset, wheelVisible, wheelSelected, wheelSegments });
+      setConfirmDialog({ show: false, message: '', callback: null });
+      setErrorMsg('你已退出本局，进入观战模式。下一局可重新加入。');
+    } });
+  };
+
+  // ==================== 重新加入 ====================
+  const rejoinGame = async () => {
+    if (!roomId) return;
+    const updatedSpectators = (spectators || []).filter(n => n !== playerName);
+    const { data: roomData } = await supabase
+      .from('rooms')
+      .select('players')
+      .eq('id', roomId)
+      .single();
+    if (!roomData) return;
+    const currentPlayers = parsePlayers(roomData.players);
+    if (currentPlayers.length >= 12) {
+      setErrorMsg('房间已满，无法加入'); return;
+    }
+    const newPlayer = {
+      name: playerName.trim(), cards: [], cardCount: 0,
+      isStanding: false, isBust: false, isBlackjack: false,
+      isFiveCard: false, seatId: currentPlayers.length,
+      isDealer: false, bustType: 'none', status: 'playing',
+    };
+    const updatedPlayers = [...currentPlayers, newPlayer];
+    await supabase.from('rooms').update({
+      players: updatedPlayers,
+      spectators: updatedSpectators,
+    }).eq('id', roomId);
+    setPlayers(updatedPlayers);
+    setSpectators(updatedSpectators);
+    await broadcastAndSyncDB({
+      players: updatedPlayers,
+      spectators: updatedSpectators,
+      phase, dealerId, currentPlayerIndex, gameOver, result, resultDetails,
+      readyPlayers, settlementStep: 0, seed, deckOffset,
+      wheelVisible, wheelSelected, wheelSegments,
+    });
+    setErrorMsg('你已重新加入本局！');
+  };
+
   // ==================== 庄家操作 ====================
   const handleDealerHit = async () => {
-    console.log('🔥 handleDealerHit 被调用');
-    if (phase !== "dealer_turn") return;
-    if (gameOver) return;
-    if (!isDealer) { console.warn('⛔ 你不是庄家'); return; }
-    const pNow = playersRef.current;
-    const dealer = pNow.find(p => p.name === dealerId);
-    if (!dealer) return;
-    if (dealer.cardCount >= 5) { setErrorMsg("已达最大牌数5张"); return; }
+  console.log('🔥 handleDealerHit 被调用');
+  if (phase !== "dealer_turn") return;
+  if (gameOver) return;
+  if (!isDealer) { console.warn('⛔ 你不是庄家'); return; }
+  const pNow = playersRef.current;
+  const dealer = pNow.find(p => p.name === dealerId);
+  if (!dealer) return;
+  if (dealer.cardCount >= 5) { setErrorMsg("已达最大牌数5张"); return; }
 
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
+  if (timeoutRef.current) {
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+  }
+
+  let deck = localDeck;
+  let offset = deckOffset;
+  // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
+  if (deck.length === 0 || offset >= 52) {
+    setErrorMsg("牌堆已用完，庄家自动停牌");
+    await handleDealerStand(true);
+    return;
+  }
+
+  const card = deck[offset];
+  offset++;
+  setDeckOffset(offset);
+  const newCards = [...dealer.cards, card];
+  const newCount = newCards.length;
+  const total = calculateHand(newCards);
+  const isBustNow = total > 21;
+  const isFive = newCount === 5 && total <= 21;
+  const isFiveBust = newCount === 5 && total > 21;
+
+  const updatedPlayers = pNow.map(p => {
+    if (p.name === dealerId) {
+      const isBj = isBlackjack(newCards);
+      return { ...p, cards: newCards, cardCount: newCount, isBlackjack: isBj, isFiveCard: isFive, isBust: isBustNow, bustType: isBustNow ? 'hidden' : 'none' };
     }
+    return p;
+  });
+  setPlayers(updatedPlayers);
 
-    let deck = localDeck;
-    let offset = deckOffset;
-    if (deck.length === 0 || offset >= 52) {
-      const newSeed = Math.floor(Math.random() * 1000000);
-      deck = createDeckWithSeed(newSeed);
-      offset = 0;
-      setSeed(newSeed);
-      setLocalDeck(deck);
-      setDeckOffset(0);
-      await broadcastAndSyncDB({
-        players: pNow,
-        spectators: spectators || [],
-        phase,
-        dealerId,
-        currentPlayerIndex,
-        gameOver,
-        result,
-        resultDetails,
-        readyPlayers,
-        settlementStep: 0,
-        seed: newSeed,
-        deckOffset: 0,
-        wheelVisible,
-        wheelSelected,
-        wheelSegments,
-      });
-    }
+  if (isBustNow) {
+    setResult(`💥 庄家爆牌！`);
+    await settleGame(updatedPlayers);
+    return;
+  }
 
-    const card = deck[offset];
-    offset++;
-    setDeckOffset(offset);
-    const newCards = [...dealer.cards, card];
-    const newCount = newCards.length;
-    const total = calculateHand(newCards);
-    const isBustNow = total > 21;
-    const isFive = newCount === 5 && total <= 21;
-    const isFiveBust = newCount === 5 && total > 21;
+  if (newCount === 5) {
+    if (isFive) setResult(`🎉 庄家五小龙！`);
+    else if (isFiveBust) setResult(`💥 庄家第5张爆牌！`);
 
-    const updatedPlayers = pNow.map(p => {
+    const updatedPlayersWithStand = updatedPlayers.map(p => {
       if (p.name === dealerId) {
-        const isBj = isBlackjack(newCards);
-        return { ...p, cards: newCards, cardCount: newCount, isBlackjack: isBj, isFiveCard: isFive, isBust: isBustNow, bustType: isBustNow ? 'hidden' : 'none' };
+        return { ...p, isStanding: true };
       }
       return p;
     });
-    setPlayers(updatedPlayers);
-
-    if (isBustNow) {
-      setResult(`💥 庄家爆牌！`);
-      await settleGame(updatedPlayers);
-      return;
-    }
-
-    if (newCount === 5) {
-      if (isFive) setResult(`🎉 庄家五小龙！`);
-      else if (isFiveBust) setResult(`💥 庄家第5张爆牌！`);
-
-      const updatedPlayersWithStand = updatedPlayers.map(p => {
-        if (p.name === dealerId) {
-          return { ...p, isStanding: true };
-        }
-        return p;
-      });
-      setPlayers(updatedPlayersWithStand);
-
-      await broadcastAndSyncDB({
-        players: updatedPlayersWithStand,
-        spectators: spectators || [],
-        phase,
-        dealerId,
-        currentPlayerIndex,
-        gameOver,
-        result,
-        resultDetails,
-        readyPlayers,
-        settlementStep: 0,
-        seed,
-        deckOffset: offset,
-        wheelVisible,
-        wheelSelected,
-        wheelSegments,
-      });
-
-      await settleGame(updatedPlayersWithStand);
-      return;
-    }
+    setPlayers(updatedPlayersWithStand);
 
     await broadcastAndSyncDB({
-      players: updatedPlayers,
+      players: updatedPlayersWithStand,
       spectators: spectators || [],
       phase,
       dealerId,
@@ -1407,8 +1369,30 @@ export default function BlackjackPage() {
       wheelSelected,
       wheelSegments,
     });
-    startTimeout();
-  };
+
+    await settleGame(updatedPlayersWithStand);
+    return;
+  }
+
+  await broadcastAndSyncDB({
+    players: updatedPlayers,
+    spectators: spectators || [],
+    phase,
+    dealerId,
+    currentPlayerIndex,
+    gameOver,
+    result,
+    resultDetails,
+    readyPlayers,
+    settlementStep: 0,
+    seed,
+    deckOffset: offset,
+    wheelVisible,
+    wheelSelected,
+    wheelSegments,
+  });
+  startTimeout();
+};
 
   const handleDealerStand = async (auto: boolean = false) => {
     console.log('🎯 handleDealerStand 被调用', auto);
@@ -1445,13 +1429,13 @@ export default function BlackjackPage() {
         setDealerId(effectiveDealerId);
       } else {
         console.error('❌ 无法找到庄家，强制结束');
-        setPhase("settlement");
+        setPhase("waiting");
         setGameOver(true);
         setResult("游戏结束（无庄家）");
         await broadcastAndSyncDB({
           players: ps,
           spectators: spectators || [],
-          phase: "settlement",
+          phase: "waiting",
           dealerId: null,
           currentPlayerIndex,
           gameOver: true,
@@ -1472,13 +1456,13 @@ export default function BlackjackPage() {
     const dealer = ps.find((p: any) => p.name === effectiveDealerId);
     if (!dealer) {
       console.warn('⚠️ 找不到庄家玩家，强制结束');
-      setPhase("settlement");
+      setPhase("waiting");
       setGameOver(true);
       setResult("游戏结束（庄家已离开）");
       await broadcastAndSyncDB({
         players: ps,
         spectators: spectators || [],
-        phase: "settlement",
+        phase: "waiting",
         dealerId: effectiveDealerId,
         currentPlayerIndex,
         gameOver: true,
@@ -1495,14 +1479,40 @@ export default function BlackjackPage() {
       return;
     }
 
-    setPhase("settlement");
+    setPhase("waiting_for_dealer");
     setGameOver(true);
 
     const results: any[] = [];
     const activePlayers = ps.filter((p: any) => p.status === 'playing');
-
     const isDealerFive = isFiveCardCharlie(dealer.cards);
     const activeNonDealerPlayers = activePlayers.filter((p: any) => p.name !== effectiveDealerId);
+
+    // 先统计庄家输赢情况
+    let dealerWins = 0, dealerLosses = 0, dealerTies = 0;
+    for (const player of activeNonDealerPlayers) {
+      if (player.cardCount === 0 || !player.cards || player.cards.length === 0) continue;
+      const cmp = compareHands(player.cards, dealer.cards);
+      if (cmp === 1) dealerLosses++;
+      else if (cmp === -1) dealerWins++;
+      else dealerTies++;
+    }
+
+    let dealerResult = '';
+    if (dealerLosses > 0 && dealerWins > 0) dealerResult = '庄家输（部分赢）';
+    else if (dealerLosses > 0) dealerResult = '庄家输';
+    else if (dealerWins > 0 && dealerTies === 0) dealerResult = '庄家赢';
+    else if (dealerWins === 0 && dealerTies > 0 && dealerLosses === 0) dealerResult = '庄家平局';
+    else if (dealerWins > 0 && dealerTies > 0) dealerResult = '庄家赢（部分平局）';
+    else dealerResult = '庄家';
+
+    // 添加庄家自己的牌面
+    results.push({
+      name: dealer.name,
+      cards: dealer.cards,
+      result: dealerResult,
+      penalty: 0,
+      who: 'dealer'
+    });
 
     for (const player of activeNonDealerPlayers) {
       if (player.cardCount === 0 || !player.cards || player.cards.length === 0) continue;
@@ -1581,23 +1591,24 @@ export default function BlackjackPage() {
     let maxDealerName = "";
     let hasDealerPenalty = false;
 
-    for (const r of results) {
-      if (r.who === 'dealer') {
-        const dealerPenalty = r.dealerPenalty !== undefined ? r.dealerPenalty : r.penalty;
-        if (dealerPenalty > maxDealerPenalty) {
-          maxDealerPenalty = dealerPenalty;
-          maxDealerName = r.name;
-        }
-        hasDealerPenalty = true;
-        playerResults.push(`${r.name} ${r.result}`);
-      } else if (r.who === 'all_players') {
-        playerResults.push(`${r.name} ${r.result}，所有玩家各喝 ${r.penalty} 杯`);
-      } else if (r.who === 'none') {
-        playerResults.push(`${r.name} ${r.result}，不喝`);
-      } else {
-        playerResults.push(`${r.name} ${r.result}，${r.name} 喝 ${r.penalty} 杯`);
-      }
+for (const r of results) {
+  // 只有 r.name 是玩家且触发庄家罚杯时才计入（排除庄家自己的记录）
+  if (r.who === 'dealer' && r.name !== dealerId) {
+    const dealerPenalty = r.dealerPenalty !== undefined ? r.dealerPenalty : r.penalty;
+    if (dealerPenalty > maxDealerPenalty) {
+      maxDealerPenalty = dealerPenalty;
+      maxDealerName = r.name;
     }
+    hasDealerPenalty = true;
+    playerResults.push(`${r.name} ${r.result}`);
+  } else if (r.who === 'all_players') {
+    playerResults.push(`${r.name} ${r.result}，所有玩家各喝 ${r.penalty} 杯`);
+  } else if (r.who === 'none') {
+    playerResults.push(`${r.name} ${r.result}，不喝`);
+  } else {
+    playerResults.push(`${r.name} ${r.result}，${r.name} 喝 ${r.penalty} 杯`);
+  }
+}
 
     let summary = "";
     if (playerResults.length > 0) {
@@ -1619,7 +1630,7 @@ export default function BlackjackPage() {
     await broadcastAndSyncDB({
       players: ps,
       spectators: spectators || [],
-      phase: "settlement",
+      phase: "waiting_for_dealer",
       dealerId: effectiveDealerId,
       currentPlayerIndex,
       gameOver: true,
@@ -1634,16 +1645,9 @@ export default function BlackjackPage() {
       wheelSegments: [],
     });
 
-    setPhase("settlement");
     setGameOver(true);
     setPlayers(ps);
     console.log('✅ 结算完成');
-
-    // 🔥 结算完成后进入抽牌选庄
-    const playingPlayers = ps.filter((p: any) => p.status === 'playing');
-    if (playingPlayers.length >= 2) {
-      await enterDrawPhase();
-    }
     } finally {
       isSettlingRef.current = false;
     }
@@ -1658,7 +1662,7 @@ export default function BlackjackPage() {
   };
   const unpackDrawCards = (raw: any): { name: string; card: any }[] => {
     try {
-      if (typeof raw === 'string') {
+      if (typeof raw === "string") {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) return parsed;
         return [];
@@ -1676,7 +1680,7 @@ export default function BlackjackPage() {
     return ctrl?.owner ?? null;
   };
 
-  // 🔥 庄家选大/小 → 发牌 + 广播
+  // 庄家选大/小 → 发牌 + 广播
   const chooseDrawRule = async (rule: "big" | "small") => {
     const owner = dealerId;
     if (!owner) {
@@ -1710,7 +1714,6 @@ export default function BlackjackPage() {
       winner: null,
     });
 
-    // 🔥 设置所有状态
     setDrawRule(rule);
     setDrawCards(cards);
     setDrawRevealed(new Set<string>());
@@ -1725,7 +1728,6 @@ export default function BlackjackPage() {
     setPhase("wheel");
     drawTimeoutFiredRef.current = false;
 
-    // 🔥 广播给所有人
     await broadcastAndSyncDB({
       spectators: spectators || [],
       players,
@@ -1787,15 +1789,15 @@ export default function BlackjackPage() {
     }
   };
 
-  // 🔥 平局重抽 + 自动判定（已修复所有 bug）
+  // 平局重抽 + 自动判定（已修复所有 bug）
   const handleDrawRevealTimeout = useCallback(async () => {
-    // 🔥 保护1：drawCards 为空或格式不对
+    // 保护1：drawCards 为空或格式不对
     if (!drawCards || drawCards.length === 0) {
       console.warn('⚠️ drawCards 为空，跳过判定');
       return;
     }
 
-    // 🔥 保护2：检查每个元素是否有 name
+    // 保护2：检查每个元素是否有 name
     if (!drawCards.every(d => d?.name && d?.card)) {
       console.warn('⚠️ drawCards 数据格式不正确，跳过判定');
       return;
@@ -1826,13 +1828,13 @@ export default function BlackjackPage() {
 
     const tied = playerVals.filter(p => p.val === targetVal);
 
-    // 🔥 保护3：tied 为空（理论上不会发生，但加了安全）
+    // 保护3：tied 为空（理论上不会发生，但加了安全）
     if (tied.length === 0) {
       console.error('❌ 没有找到赢家，playerVals:', playerVals);
       return;
     }
 
-    // 🔥 平局：只给平局者重抽，保持 reveal 状态，重置倒计时
+    // 平局：只给平局者重抽，保持 reveal 状态，重置倒计时
     if (tied.length > 1) {
       const losers = drawCards.filter(d => drawRankValue(d.card.rank) !== targetVal);
       const tiedNames = tied.map(p => p.name);
@@ -1863,7 +1865,7 @@ export default function BlackjackPage() {
       setDrawCountdown(8);
       drawTimeoutFiredRef.current = false;
 
-      // 🔥 平局重抽也要广播
+      // 平局重抽也要广播
       await broadcastAndSyncDB({
       spectators: spectators || [],
         players,
@@ -1924,28 +1926,10 @@ export default function BlackjackPage() {
       wheelSegments,
       newDealerName: winner,
     });
-      spectators: spectators || [],
-      players,
-      phase: "wheel",
-      dealerId,
-      currentPlayerIndex,
-      gameOver: true,
-      result: resultMsg,
-      resultDetails,
-      readyPlayers,
-      settlementStep: 0,
-      seed,
-      deckOffset,
-      wheelVisible: true,
-      wheelSelected: newCtrl,
-      wheelSegments,
-    });
 
     setTimeout(() => {
       if (winner) startNextRound(winner);
     }, 4000);
-      if (winner) startNextRound(winner);
-    }, 2500);
   }, [drawSubPhase, drawWinner, drawRule, drawCards, drawRevealed, wheelSelected, players, dealerId, currentPlayerIndex, resultDetails, readyPlayers, seed, deckOffset]);
 
   // 倒计时 useEffect
@@ -2028,7 +2012,7 @@ export default function BlackjackPage() {
     const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
     const freeSeats: number[] = [];
     for (let i = 0; i < 12; i++) if (!occupiedSeats.includes(i)) freeSeats.push(i);
-    // 🔥 spectators 不参与游戏，保持观战状态
+    // spectators 不参与游戏，保持观战状态
     const resetPlayers = players.map(p => ({
       ...p,
       cards: [],
@@ -2108,7 +2092,7 @@ export default function BlackjackPage() {
     const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
     const freeSeats: number[] = [];
     for (let i = 0; i < 12; i++) if (!occupiedSeats.includes(i)) freeSeats.push(i);
-    // 🔥 spectators 不参与游戏，保持观战状态
+    // spectators 不参与游戏，保持观战状态
     const resetPlayers = players.map(p => ({
       ...p,
       cards: [],
@@ -2220,10 +2204,10 @@ export default function BlackjackPage() {
                 </div>
                 <div style={{ display: 'flex', gap: '1px', fontSize: '9px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
                   {isReady && phase === "waiting" && <span style={{ color: '#22d3ee' }}>✅</span>}
-                  {isStanding && phase !== "settlement" && <span style={{ color: '#22d3ee' }}>✅</span>}
-                  {isBust && phase === "settlement" && <span style={{ color: '#ef4444' }}>💥</span>}
-                  {isFive && phase === "settlement" && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                  {isBlackjackFlag && phase === "settlement" && <span style={{ color: '#fbbf24' }}>♠</span>}
+                  {isStanding && phase !== "waiting_for_dealer" && <span style={{ color: '#22d3ee' }}>✅</span>}
+                  {isBust && phase === "waiting_for_dealer" && <span style={{ color: '#ef4444' }}>💥</span>}
+                  {isFive && phase === "waiting_for_dealer" && <span style={{ color: '#fbbf24' }}>🐉</span>}
+                  {isBlackjackFlag && phase === "waiting_for_dealer" && <span style={{ color: '#fbbf24' }}>♠</span>}
                   {hasCards && <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '8px' }}>{player.cardCount}张</span>}
                 </div>
               </div>
@@ -2265,7 +2249,7 @@ export default function BlackjackPage() {
   const myPlayer = getMyPlayer();
 
   return (
-    <div style={styles.container}>
+        <div style={styles.container}>
       <div style={styles.glowOrb}></div>
       <div style={styles.glowOrb2}></div>
 
@@ -2273,6 +2257,7 @@ export default function BlackjackPage() {
         <div style={styles.table}>
           {renderSeats()}
 
+          {/* ====== 中央区域 ====== */}
           <div style={{
             position: 'absolute',
             top: '50%',
@@ -2283,246 +2268,350 @@ export default function BlackjackPage() {
             alignItems: 'center',
             justifyContent: 'flex-start',
             width: '85%',
-            maxHeight: '65%',
+            maxHeight: '60%',
             background: 'rgba(0,0,0,0.4)',
             borderRadius: '12px',
-            padding: '6px 10px',
+            padding: '4px 8px',
             zIndex: 1,
             pointerEvents: 'none' as const,
             overflowY: 'auto' as const,
             scrollbarWidth: 'thin' as const,
           }}>
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '2px',
-              width: '100%',
-            }}>
-              {dealerId ? (() => {
-                const dealer = players.find(p => p.name === dealerId);
-                if (!dealer) return null;
-                const otherPlayers = players.filter(p => p.name !== dealerId);
-                const allPlayers = [dealer, ...otherPlayers];
-                return allPlayers.map((p, idx) => {
-                  const isDealer = p.name === dealerId;
-                  const isMe = p.name === playerName;
-                  const hasCards = p.cards && p.cards.length > 0;
-                  const isSettlement = phase === "settlement";
-                  const displayName = p.name.length > 6 ? p.name.slice(0, 6) + '..' : p.name;
+            {(phase === "waiting_for_dealer" && resultDetails.length > 0) ? (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', width: '100%', fontSize: '11px' }}>
+    {/* 庄家行：只显示 dealerId 对应的真正庄家 */}
+    {resultDetails.find(d => d.name === dealerId) && (() => {
+      const d = resultDetails.find(d => d.name === dealerId)!;
+      const cards = d.cards || [];
+      const total = calculateHand(cards);
+      const isBust = total > 21;
+      const isFive = cards.length === 5 && total <= 21;
+      const isBj = isBlackjack(cards);
+      const displayTotal = isBj ? '黑杰克' : total;
+      let icon = '';
+      if (isBust) icon = '💥';
+      else if (isFive) icon = '🐉';
+      else if (isBj) icon = '♠';
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(251,191,36,0.15)', padding: '4px 10px', borderRadius: '6px', flexWrap: 'wrap', justifyContent: 'center', border: '1px solid rgba(251,191,36,0.2)', fontSize: '11px' }}>
+          <span style={{ fontWeight: 'bold', color: '#fbbf24' }}>庄家 {d.name}</span>
+          <span style={{ color: '#ddd' }}>
+            {cards.map((c: any, i: number) => {
+              const isRed = c.suit === '♥' || c.suit === '♦';
+              const color = isRed ? '#ff6b6b' : '#d308ee';
+              return <span key={i} style={{ margin: '0 1px', fontWeight: 700, color }}>{c.rank}{c.suit}</span>;
+            })}
+          </span>
+          <span style={{ color: '#aaa' }}>点数：{displayTotal}</span>
+          {icon && <span style={{ fontSize: '14px' }}>{icon}</span>}
+        </div>
+      );
+    })()}
 
-                  return (
-                    <div key={p.name}>
-                      {idx === 1 && (
-                        <div style={{
-                          width: '100%',
-                          height: '1px',
-                          background: 'rgba(255,255,255,0.15)',
-                          margin: '2px 0 3px 0',
-                        }} />
-                      )}
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        justifyContent: 'center',
-                        flexWrap: 'wrap' as const,
-                        padding: '1px 4px',
-                        borderRadius: '4px',
-                        background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
-                      }}>
-                        <span style={{
-                          fontSize: '11px',
-                          fontWeight: isMe ? 'bold' : 'normal',
-                          color: isMe ? '#fbbf24' : '#ddd',
-                          minWidth: '40px',
-                          textAlign: 'right' as const,
-                          whiteSpace: 'nowrap' as const,
-                        }}>
-                          {isMe ? '你' : displayName}
-                          {isDealer && <span style={{ color: '#fbbf24', fontSize: '10px', marginLeft: '1px' }}>（庄家）</span>}
-                        </span>
+    {/* 分割线 */}
+    <div style={{ width: '80%', height: '1px', background: 'rgba(255,255,255,0.12)', margin: '2px 0' }} />
+
+    {/* 玩家列表：排除真正庄家 */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', width: '100%' }}>
+      {resultDetails.filter(d => d.name !== dealerId).map((d, idx) => {
+        const cards = d.cards || [];
+        const total = calculateHand(cards);
+        const isBust = total > 21;
+        const isFive = cards.length === 5 && total <= 21;
+        const isBj = isBlackjack(cards);
+        const displayTotal = isBj ? '黑杰克' : total;
+        let icon = '';
+        if (isBust) icon = '💥';
+        else if (isFive) icon = '🐉';
+        else if (isBj) icon = '♠';
+        return (
+          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.05)', padding: '3px 10px', borderRadius: '6px', flexWrap: 'wrap', justifyContent: 'center', fontSize: '11px' }}>
+            <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
+            <span style={{ color: '#ddd' }}>
+              {cards.map((c: any, i: number) => {
+                const isRed = c.suit === '♥' || c.suit === '♦';
+                const color = isRed ? '#ff6b6b' : '#d308ee';
+                return <span key={i} style={{ margin: '0 1px', fontWeight: 700, color }}>{c.rank}{c.suit}</span>;
+              })}
+            </span>
+            <span style={{ color: '#aaa' }}>点数：{displayTotal}</span>
+            {icon && <span style={{ fontSize: '14px' }}>{icon}</span>}
+          </div>
+        );
+      })}
+    </div>
+  </div>
+) : (
+              // ===== 游戏进行中 =====
+              <>
+                {dealerId ? (() => {
+                  const dealer = players.find(p => p.name === dealerId);
+                  if (!dealer) return null;
+                  const otherPlayers = players.filter(p => p.name !== dealerId);
+                  const allPlayers = [dealer, ...otherPlayers];
+                  return allPlayers.map((p, idx) => {
+                    const isDealer = p.name === dealerId;
+                    const isMe = p.name === playerName;
+                    const hasCards = p.cards && p.cards.length > 0;
+                    const isSettlement = phase === "waiting_for_dealer";
+                    const displayName = p.name.length > 6 ? p.name.slice(0, 6) + '..' : p.name;
+
+                    return (
+                      <div key={p.name}>
+                        {idx === 1 && (
+                          <div style={{
+                            width: '100%',
+                            height: '1px',
+                            background: 'rgba(255,255,255,0.15)',
+                            margin: '2px 0 3px 0',
+                          }} />
+                        )}
                         <div style={{
                           display: 'flex',
-                          gap: '2px',
+                          alignItems: 'center',
+                          gap: '4px',
+                          justifyContent: 'center',
                           flexWrap: 'wrap' as const,
-                          justifyContent: 'flex-start',
+                          padding: '1px 4px',
+                          borderRadius: '4px',
+                          background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
                         }}>
-                          {hasCards ? (
-                            p.cards.map((card: any, idx2: number) => {
-                              if (!isSettlement) {
-                                return (
-                                  <span key={idx2} style={{
-                                    fontSize: '15px',
-                                    fontWeight: 'bold',
-                                    color: 'rgba(255,255,255,0.15)',
-                                    background: 'rgba(255,255,255,0.04)',
-                                    borderRadius: '3px',
-                                    padding: '0 3px',
-                                    minWidth: '18px',
-                                    textAlign: 'center',
-                                  }}>🂠</span>
-                                );
-                              } else {
-                                const isRed = card.suit === '♥' || card.suit === '♦';
-                                const color = isRed ? '#ff6b6b' : '#d308ee';
-                                const rankDisplay = card.rank === '10' ? '10' : card.rank;
-                                return (
-                                  <span key={idx2} style={{
-                                    fontSize: '15px',
-                                    fontWeight: '700',
-                                    color: color,
-                                    background: 'rgba(255,255,255,0.06)',
-                                    borderRadius: '3px',
-                                    padding: '0 3px',
-                                    minWidth: '20px',
-                                    textAlign: 'center',
-                                    fontFamily: '"Segoe UI", "Helvetica Neue", "Apple Color Emoji", system-ui, sans-serif',
-                                  }}>
-                                    {rankDisplay}{card.suit}
-                                  </span>
-                                );
-                              }
-                            })
-                          ) : (
-                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.15)' }}>—</span>
-                          )}
-                        </div>
-                        <div style={{
-                          display: 'flex',
-                          gap: '1px',
-                          fontSize: '9px',
-                          minWidth: '16px',
-                        }}>
-                          {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
-                          {p.isBust && isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
-                          {p.isFiveCard && isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                          {p.isBlackjack && isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: isMe ? 'bold' : 'normal',
+                            color: isMe ? '#fbbf24' : '#ddd',
+                            minWidth: '40px',
+                            textAlign: 'right' as const,
+                            whiteSpace: 'nowrap' as const,
+                          }}>
+                            {isMe ? '你' : displayName}
+                            {isDealer && <span style={{ color: '#fbbf24', fontSize: '10px', marginLeft: '1px' }}>（庄家）</span>}
+                          </span>
+                          <div style={{
+                            display: 'flex',
+                            gap: '2px',
+                            flexWrap: 'wrap' as const,
+                            justifyContent: 'flex-start',
+                          }}>
+                            {hasCards ? (
+                              p.cards.map((card: any, idx2: number) => {
+                                if (!isSettlement) {
+                                  return (
+                                    <span key={idx2} style={{
+                                      fontSize: '15px',
+                                      fontWeight: 'bold',
+                                      color: 'rgba(255,255,255,0.15)',
+                                      background: 'rgba(255,255,255,0.04)',
+                                      borderRadius: '3px',
+                                      padding: '0 3px',
+                                      minWidth: '18px',
+                                      textAlign: 'center',
+                                    }}>🂠</span>
+                                  );
+                                } else {
+                                  const isRed = card.suit === '♥' || card.suit === '♦';
+                                  const color = isRed ? '#ff6b6b' : '#d308ee';
+                                  const rankDisplay = card.rank === '10' ? '10' : card.rank;
+                                  return (
+                                    <span key={idx2} style={{
+                                      fontSize: '15px',
+                                      fontWeight: '700',
+                                      color: color,
+                                      background: 'rgba(255,255,255,0.06)',
+                                      borderRadius: '3px',
+                                      padding: '0 3px',
+                                      minWidth: '20px',
+                                      textAlign: 'center',
+                                      fontFamily: '"Segoe UI", "Helvetica Neue", "Apple Color Emoji", system-ui, sans-serif',
+                                    }}>
+                                      {rankDisplay}{card.suit}
+                                    </span>
+                                  );
+                                }
+                              })
+                            ) : (
+                              <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.15)' }}>—</span>
+                            )}
+                          </div>
+                          <div style={{
+                            display: 'flex',
+                            gap: '1px',
+                            fontSize: '9px',
+                            minWidth: '16px',
+                          }}>
+                            {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
+                            {p.isBust && isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
+                            {p.isFiveCard && isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
+                            {p.isBlackjack && isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                });
-              })() : (
-                players.map((p, idx) => {
-                  const isMe = p.name === playerName;
-                  const hasCards = p.cards && p.cards.length > 0;
-                  const isSettlement = phase === "settlement";
-                  const displayName = p.name.length > 6 ? p.name.slice(0, 6) + '..' : p.name;
+                    );
+                  });
+                })() : (
+                  players.map((p, idx) => {
+                    const isMe = p.name === playerName;
+                    const hasCards = p.cards && p.cards.length > 0;
+                    const isSettlement = phase === "waiting_for_dealer";
+                    const displayName = p.name.length > 6 ? p.name.slice(0, 6) + '..' : p.name;
 
-                  return (
-                    <div key={p.name}>
-                      {idx === 1 && (
-                        <div style={{
-                          width: '100%',
-                          height: '1px',
-                          background: 'rgba(255,255,255,0.15)',
-                          margin: '2px 0 3px 0',
-                        }} />
-                      )}
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        justifyContent: 'center',
-                        flexWrap: 'wrap' as const,
-                        padding: '1px 4px',
-                        borderRadius: '4px',
-                        background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
-                      }}>
-                        <span style={{
-                          fontSize: '11px',
-                          fontWeight: isMe ? 'bold' : 'normal',
-                          color: isMe ? '#fbbf24' : '#ddd',
-                          minWidth: '40px',
-                          textAlign: 'right' as const,
-                          whiteSpace: 'nowrap' as const,
-                        }}>
-                          {isMe ? '你' : displayName}
-                          {p.status === 'watching' && <span style={{ color: '#888', fontSize: '10px', marginLeft: '2px' }}>（观战）</span>}
-                        </span>
+                    return (
+                      <div key={p.name}>
+                        {idx === 1 && (
+                          <div style={{
+                            width: '100%',
+                            height: '1px',
+                            background: 'rgba(255,255,255,0.15)',
+                            margin: '2px 0 3px 0',
+                          }} />
+                        )}
                         <div style={{
                           display: 'flex',
-                          gap: '2px',
+                          alignItems: 'center',
+                          gap: '4px',
+                          justifyContent: 'center',
                           flexWrap: 'wrap' as const,
-                          justifyContent: 'flex-start',
+                          padding: '1px 4px',
+                          borderRadius: '4px',
+                          background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
                         }}>
-                          {hasCards ? (
-                            p.cards.map((card: any, idx2: number) => {
-                              if (!isSettlement) {
-                                return (
-                                  <span key={idx2} style={{
-                                    fontSize: '15px',
-                                    fontWeight: 'bold',
-                                    color: 'rgba(255,255,255,0.15)',
-                                    background: 'rgba(255,255,255,0.04)',
-                                    borderRadius: '3px',
-                                    padding: '0 3px',
-                                    minWidth: '18px',
-                                    textAlign: 'center',
-                                  }}>🂠</span>
-                                );
-                              } else {
-                                const isRed = card.suit === '♥' || card.suit === '♦';
-                                const color = isRed ? '#e53935' : '#1a1a1a';
-                                const rankDisplay = card.rank === '10' ? '10' : card.rank;
-                                return (
-                                  <span key={idx2} style={{
-                                    fontSize: '15px',
-                                    fontWeight: '700',
-                                    color: color,
-                                    background: 'rgba(255,255,255,0.06)',
-                                    borderRadius: '3px',
-                                    padding: '0 3px',
-                                    minWidth: '20px',
-                                    textAlign: 'center',
-                                    fontFamily: '"Segoe UI", "Helvetica Neue", "Apple Color Emoji", system-ui, sans-serif',
-                                  }}>
-                                    {rankDisplay}{card.suit}
-                                  </span>
-                                );
-                              }
-                            })
-                          ) : (
-                            <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.15)' }}>—</span>
-                          )}
-                        </div>
-                        <div style={{
-                          display: 'flex',
-                          gap: '1px',
-                          fontSize: '9px',
-                          minWidth: '16px',
-                        }}>
-                          {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
-                          {p.isBust && !isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
-                          {p.isFiveCard && !isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                          {p.isBlackjack && !isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: isMe ? 'bold' : 'normal',
+                            color: isMe ? '#fbbf24' : '#ddd',
+                            minWidth: '40px',
+                            textAlign: 'right' as const,
+                            whiteSpace: 'nowrap' as const,
+                          }}>
+                            {isMe ? '你' : displayName}
+                            {p.status === 'watching' && <span style={{ color: '#888', fontSize: '10px', marginLeft: '2px' }}>（观战）</span>}
+                          </span>
+                          <div style={{
+                            display: 'flex',
+                            gap: '2px',
+                            flexWrap: 'wrap' as const,
+                            justifyContent: 'flex-start',
+                          }}>
+                            {hasCards ? (
+                              p.cards.map((card: any, idx2: number) => {
+                                if (!isSettlement) {
+                                  return (
+                                    <span key={idx2} style={{
+                                      fontSize: '15px',
+                                      fontWeight: 'bold',
+                                      color: 'rgba(255,255,255,0.15)',
+                                      background: 'rgba(255,255,255,0.04)',
+                                      borderRadius: '3px',
+                                      padding: '0 3px',
+                                      minWidth: '18px',
+                                      textAlign: 'center',
+                                    }}>🂠</span>
+                                  );
+                                } else {
+                                  const isRed = card.suit === '♥' || card.suit === '♦';
+                                  const color = isRed ? '#e53935' : '#1a1a1a';
+                                  const rankDisplay = card.rank === '10' ? '10' : card.rank;
+                                  return (
+                                    <span key={idx2} style={{
+                                      fontSize: '15px',
+                                      fontWeight: '700',
+                                      color: color,
+                                      background: 'rgba(255,255,255,0.06)',
+                                      borderRadius: '3px',
+                                      padding: '0 3px',
+                                      minWidth: '20px',
+                                      textAlign: 'center',
+                                      fontFamily: '"Segoe UI", "Helvetica Neue", "Apple Color Emoji", system-ui, sans-serif',
+                                    }}>
+                                      {rankDisplay}{card.suit}
+                                    </span>
+                                  );
+                                }
+                              })
+                            ) : (
+                              <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.15)' }}>—</span>
+                            )}
+                          </div>
+                          <div style={{
+                            display: 'flex',
+                            gap: '1px',
+                            fontSize: '9px',
+                            minWidth: '16px',
+                          }}>
+                            {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
+                            {p.isBust && !isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
+                            {p.isFiveCard && !isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
+                            {p.isBlackjack && !isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+                    );
+                  })
+                )}
+              </>
+            )}
           </div>
 
+          {/* 房间信息 */}
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <span>👥 {players.length + spectators.length}/12</span>
+              <span>👥 {players.length}/12</span>
               {dealerId && <span>👑 {dealerId}</span>}
               {phase === "player_turn" && currentPlayer && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
             </span>
           </div>
         </div>
 
+        {/* ====== 状态栏 ====== */}
         <div style={styles.statusBar}>
-          {phase === "waiting" && <span style={styles.statusText}>⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length + spectators.length} 已准备）` : '（至少2人）'}</span>}
-          {phase === "waiting_for_dealer" && <span style={{ color: "#fbbf24", fontSize: "13px" }}>📊 结算完成 - 上一轮庄家【${dealerId}】请点击开始抽牌</span>}
+          {phase === "waiting" && (
+            <span style={styles.statusText}>
+              ⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length} 已准备）` : '（至少2人）'}
+            </span>
+          )}
+          {phase === "waiting_for_dealer" && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center', width: '100%', padding: '4px 0' }}>
+              <div style={{ color: "#fbbf24", fontSize: "14px", fontWeight: "bold" }}>
+                📊 结算完成 - 轮庄家【{dealerId}】请点击开始抽牌
+              </div>
+              {resultDetails.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', width: '100%' }}>
+                  {resultDetails.map((d, idx) => {
+                    let resultColor = '#888';
+                    if (d.result.includes('赢') || d.result === '庄家赢') resultColor = '#22d3ee';
+                    else if (d.result.includes('输') || d.result === '庄家输') resultColor = '#f87171';
+                    else if (d.result.includes('平局')) resultColor = '#888';
+                    let penaltyText = '';
+                    if (d.penalty > 0) {
+                      if (d.who === 'dealer') penaltyText = `庄家喝 ${d.penalty}杯`;
+                      else if (d.who === 'all_players') penaltyText = `所有玩家各喝 ${d.penalty}杯`;
+                      else if (d.who !== 'none') penaltyText = `${d.name} 喝 ${d.penalty}杯`;
+                    } else if (d.who === 'none' && d.result.includes('平局')) {
+                      penaltyText = '不喝';
+                    }
+                    return (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.06)', padding: '4px 12px', borderRadius: '6px', fontSize: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
+                        <span style={{ color: resultColor, fontWeight: '600' }}>{d.result}</span>
+                        {penaltyText && <span style={{ color: '#fbbf24' }}>🍺 {penaltyText}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           {phase === "dealing" && <span style={styles.statusText}>🃏 发牌中...</span>}
-          {phase === "player_turn" && !gameOver && <span style={styles.statusText}>🎯 {currentPlayer?.name} 的回合 {currentPlayer?.isStanding ? '（停牌）' : ''}</span>}
+          {phase === "player_turn" && !gameOver && (
+            <span style={styles.statusText}>
+              🎯 {currentPlayer?.name} 的回合 {currentPlayer?.isStanding ? '（停牌）' : ''}
+            </span>
+          )}
           {phase === "dealer_turn" && !gameOver && <span style={styles.statusText}>👑 庄家回合</span>}
-          {phase === "settlement" && <span style={styles.statusText}>📊 结算完成</span>}
           {phase === "wheel" && <span style={styles.statusText}>🎴 抽牌选庄中...</span>}
-          {gameOver && phase !== "wheel" && <span style={styles.resultText}>{result || '游戏结束'}</span>}
+          {gameOver && phase !== "wheel" && phase !== "waiting_for_dealer" && (
+            <span style={styles.resultText}>{result || '游戏结束'}</span>
+          )}
         </div>
 
         {spectators.length > 0 && (
@@ -2534,14 +2623,14 @@ export default function BlackjackPage() {
         <div style={styles.actionBar}>
           {phase === "waiting" && (
             <>
+              {myPlayer?.status === "watching" && (
+                <button onClick={rejoinGame} style={{...styles.btnReady, background: "#8b5cf6"}}>重新加入本局</button>
+              )}
               <button onClick={toggleReady} style={readyPlayers.includes(playerName) ? styles.btnReady : styles.btnNotReady}>
                 {readyPlayers.includes(playerName) ? '✅ 已准备' : '⏳ 准备'}
               </button>
-              {players.length >= 2 && allReady && players.find(p => p.name === playerName)?.seatId === 0 && (
+              {activePlayers.length >= 2 && allReady && players.find(p => p.name === playerName)?.seatId === 0 && (
                 <button onClick={startGame} style={styles.btnStart}>🚀 开始游戏</button>
-              )}
-              {phase === "waiting_for_dealer" && dealerId === playerName && (
-                <button onClick={enterDrawPhase} style={styles.btnReset}>🃏 开始抽牌定庄</button>
               )}
             </>
           )}
@@ -2583,7 +2672,14 @@ export default function BlackjackPage() {
             </span>
           )}
 
-          {gameOver && phase !== "wheel" && (
+          {phase === "waiting_for_dealer" && dealerId === playerName && (
+            <button onClick={enterDrawPhase} style={styles.btnStart}>🃏 开始抽牌定庄</button>
+          )}
+          {phase === "waiting_for_dealer" && dealerId !== playerName && (
+            <span style={{ color: "rgba(255,255,255,0.5)", fontSize: "13px" }}>⏳ 等待庄家抽牌定庄...</span>
+          )}
+
+          {(gameOver && phase !== "wheel" && phase !== "waiting_for_dealer") && (
             <>
               {isDealer ? (
                 <button onClick={enterDrawPhase} style={styles.btnStart}>
@@ -2623,7 +2719,6 @@ export default function BlackjackPage() {
         )}
       </div>
 
-      {/* ========== 抽牌选庄弹窗 ========== */}
       {wheelVisible && (
         <div style={styles.wheelOverlay}>
           <div style={styles.wheelContainer}>
@@ -2693,6 +2788,7 @@ export default function BlackjackPage() {
         </div>
       )}
 
+      <ConfirmDialog />
       <style>{`
         .table-container.shake-warning { animation: shakeRed 0.5s ease-in-out 3; border: 3px solid #ef4444 !important; }
         @keyframes shakeRed { 0%,100% { transform: translateX(0); border-color: #ef4444; } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
