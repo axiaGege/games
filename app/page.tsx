@@ -3,7 +3,7 @@
 const games = [
   { name: "067 骰子", icon: "🎲", desc: "经典大话骰，聚会必备", route: "/game/067", color: "#f43f5e" },
   { name: "炸金花", icon: "🃏", desc: "三人扑克，比牌运气", route: "/game/zjh", color: "#22d3ee" },
-  { name: "21点黑杰克", icon: "🂡", desc: "接近21点，不许超", route: "/game/21", color: "#a78bfa" },
+  { name: "21点黑杰克", icon: "🂡", desc: "接近21点，不许超", route: "/game/blackjack", color: "#a78bfa" },
   { name: "小姐牌", icon: "💃", desc: "喝酒互动，趣味无限", route: "/game/xjj", color: "#fbbf24" },
 ];
 
