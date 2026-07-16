@@ -2835,18 +2835,18 @@ export default function ZhaJinHuaPage() {
 
   const renderSeats = () => {
     const seatPositions = [
-      { seatId: 0, left: 22, top: 14 },
-      { seatId: 1, left: 78, top: 14 },
-      { seatId: 2, left: 10, top: 20 },
-      { seatId: 3, left: 10, top: 40 },
-      { seatId: 4, left: 10, top: 60 },
-      { seatId: 5, left: 10, top: 80 },
-      { seatId: 6, left: 90, top: 20 },
-      { seatId: 7, left: 90, top: 40 },
-      { seatId: 8, left: 90, top: 60 },
-      { seatId: 9, left: 90, top: 80 },
-      { seatId: 10, left: 22, top: 86 },
-      { seatId: 11, left: 78, top: 86 },
+      { seatId: 0, left: 16, top: 14 },
+      { seatId: 1, left: 84, top: 14 },
+      { seatId: 2, left: 9, top: 20 },
+      { seatId: 3, left: 9, top: 40 },
+      { seatId: 4, left: 9, top: 60 },
+      { seatId: 5, left: 9, top: 80 },
+      { seatId: 6, left: 91, top: 20 },
+      { seatId: 7, left: 91, top: 40 },
+      { seatId: 8, left: 91, top: 60 },
+      { seatId: 9, left: 91, top: 80 },
+      { seatId: 10, left: 16, top: 86 },
+      { seatId: 11, left: 84, top: 86 },
     ];
 
     return seatPositions.map((pos, idx) => {
@@ -3225,7 +3225,7 @@ export default function ZhaJinHuaPage() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '12px',
+                gap: '8px',
                 background: 'rgba(0,0,0,0.5)',
                 padding: '8px 14px',
                 borderRadius: '10px',
@@ -3233,7 +3233,7 @@ export default function ZhaJinHuaPage() {
                 marginBottom: '6px',
                 flexWrap: 'wrap' as const,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                   <span style={{ fontSize: '11px', color: '#fbbf24' }}>
   {(phase === "reveal" && allCompareData.length > 0 && compareData) ? 
     (compareData.playerName === '庄家' ? '庄家' : playerName) 
@@ -3251,7 +3251,7 @@ export default function ZhaJinHuaPage() {
                 {compareData.targetHand && compareData.targetHand.length > 0 && (
                   <>
                     <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '16px' }}>vs</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                       <span style={{ fontSize: '11px', color: '#ddd' }}>{compareData.playerName === '庄家' ? playerName : compareData.playerName}</span>
                       {compareData.targetHand.map((card: any, idx: number) => (
                         <PokerCard key={idx} card={card} hidden={false} size="small" small />
@@ -3265,7 +3265,10 @@ export default function ZhaJinHuaPage() {
                     fontSize: '14px',
                     fontWeight: 600,
                     color: compareData.result === '庄家赢' ? '#22d3ee' : compareData.result === '庄家输' ? '#f87171' : '#888',
-                    marginLeft: '8px',
+                    flexBasis: '100%',
+                    textAlign: 'center',
+                    marginLeft: '0',
+                    marginTop: '4px',
                   }}>
                     {compareData.result}
                     {compareData.penalty > 0 && (
@@ -3873,8 +3876,8 @@ const styles: any = {
   tableContainer: {
     position: "relative", zIndex: 1, width: "100%", maxWidth: "500px",
     background: "linear-gradient(135deg, rgba(220,38,38,0.04), rgba(251,191,36,0.03), rgba(0,0,0,0.5))",
-    backdropFilter: "blur(30px)", borderRadius: "24px",
-    padding: "12px 10px", border: "1px solid rgba(251,191,36,0.12)",
+    backdropFilter: "blur(30px)",     borderRadius: "24px",
+    padding: "12px 2px", border: "1px solid rgba(251,191,36,0.12)",
     boxShadow: "0 30px 80px rgba(220,38,38,0.2), 0 0 40px rgba(251,191,36,0.05)",
   },
   table: {
