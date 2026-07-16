@@ -2835,18 +2835,18 @@ export default function ZhaJinHuaPage() {
 
   const renderSeats = () => {
     const seatPositions = [
-      { seatId: 0, left: 16, top: 14 },
-      { seatId: 1, left: 84, top: 14 },
-      { seatId: 2, left: 9, top: 20 },
-      { seatId: 3, left: 9, top: 40 },
-      { seatId: 4, left: 9, top: 60 },
-      { seatId: 5, left: 9, top: 80 },
-      { seatId: 6, left: 91, top: 20 },
-      { seatId: 7, left: 91, top: 40 },
-      { seatId: 8, left: 91, top: 60 },
-      { seatId: 9, left: 91, top: 80 },
-      { seatId: 10, left: 16, top: 86 },
-      { seatId: 11, left: 84, top: 86 },
+      { seatId: 0, left: 33, top: 6 },
+      { seatId: 1, left: 67, top: 6 },
+      { seatId: 2, left: 8, top: 23 },
+      { seatId: 3, left: 8, top: 43 },
+      { seatId: 4, left: 8, top: 63 },
+      { seatId: 5, left: 8, top: 83 },
+      { seatId: 6, left: 92, top: 23 },
+      { seatId: 7, left: 92, top: 43 },
+      { seatId: 8, left: 92, top: 63 },
+      { seatId: 9, left: 92, top: 83 },
+      { seatId: 10, left: 33, top: 94 },
+      { seatId: 11, left: 67, top: 94 },
     ];
 
     return seatPositions.map((pos, idx) => {
@@ -3201,10 +3201,7 @@ export default function ZhaJinHuaPage() {
               justifyContent: 'center',
               gap: '12px',
               marginBottom: '8px',
-              background: 'rgba(0,0,0,0.35)',
-              padding: '8px 16px',
-              borderRadius: '12px',
-              border: '1px solid rgba(255,255,255,0.06)',
+              padding: '2px 6px',
             }}>
               <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>公牌</span>
               {communityCard ? (
@@ -3223,52 +3220,57 @@ export default function ZhaJinHuaPage() {
             {compareData && compareData.showResult && (allCompareData.length > 0 || isDealer || (compareData.playerName && compareData.playerName === playerName)) ? (
               <div style={{
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                background: 'rgba(0,0,0,0.5)',
-                padding: '8px 14px',
-                borderRadius: '10px',
-                border: '1px solid rgba(255,255,255,0.08)',
+                gap: '4px',
+                padding: '2px 6px',
                 marginBottom: '6px',
-                flexWrap: 'wrap' as const,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '12px',
+                  flexWrap: 'nowrap' as const,
+                }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
                   <span style={{ fontSize: '11px', color: '#fbbf24' }}>
   {(phase === "reveal" && allCompareData.length > 0 && compareData) ? 
     (compareData.playerName === '庄家' ? '庄家' : playerName) 
     : (dealerId ? `庄家（${dealerId}）` : '庄家')}
 </span>
-                  {compareData.dealerHand && compareData.dealerHand.length > 0 ? (
-                    compareData.dealerHand.map((card: any, idx: number) => (
-                      <PokerCard key={idx} card={card} hidden={false} size="small" small />
-                    ))
-                  ) : (
-                    <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)' }}>无牌</span>
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    {compareData.dealerHand && compareData.dealerHand.length > 0 ? (
+                      compareData.dealerHand.map((card: any, idx: number) => (
+                        <PokerCard key={idx} card={card} hidden={false} size="small" small />
+                      ))
+                    ) : (
+                      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)' }}>无牌</span>
+                    )}
+                  </div>
                   <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)' }}>{compareData.dealerHandName || ''}</span>
                 </div>
                 {compareData.targetHand && compareData.targetHand.length > 0 && (
                   <>
                     <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '16px' }}>vs</span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
                       <span style={{ fontSize: '11px', color: '#ddd' }}>{compareData.playerName === '庄家' ? playerName : compareData.playerName}</span>
-                      {compareData.targetHand.map((card: any, idx: number) => (
-                        <PokerCard key={idx} card={card} hidden={false} size="small" small />
-                      ))}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                        {compareData.targetHand.map((card: any, idx: number) => (
+                          <PokerCard key={idx} card={card} hidden={false} size="small" small />
+                        ))}
+                      </div>
                       <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)' }}>{compareData.targetHandName || ''}</span>
                     </div>
                   </>
                 )}
+                </div>
                 {compareData.result && (
                   <span style={{
                     fontSize: '14px',
                     fontWeight: 600,
                     color: compareData.result === '庄家赢' ? '#22d3ee' : compareData.result === '庄家输' ? '#f87171' : '#888',
-                    flexBasis: '100%',
                     textAlign: 'center',
-                    marginLeft: '0',
-                    marginTop: '4px',
                   }}>
                     {compareData.result}
                     {compareData.penalty > 0 && (
@@ -3289,11 +3291,8 @@ export default function ZhaJinHuaPage() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: '8px',
+                padding: '4px',
                 marginBottom: '6px',
-                background: 'rgba(0,0,0,0.25)',
-                borderRadius: '8px',
-                border: '1px dashed rgba(255,255,255,0.08)',
                 color: 'rgba(255,255,255,0.4)',
                 fontSize: '12px',
               }}>
