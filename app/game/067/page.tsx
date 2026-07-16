@@ -34,6 +34,27 @@ const isStraight = (dice: number[]): boolean => {
   return sorted.every((v, i) => i === 0 || v !== sorted[i - 1]);
 };
 
+// 单个玩家对“叫的点数 V”的实有个数（含围铱+1、纯豹+2 加成）
+const countForValue = (dice: number[], V: number, sealed: boolean): number => {
+  if (!dice || dice.length === 0) return 0;
+  // 顺子（五颗无重复）：整手归零，不参与数“叫的点数”
+  if (isStraight(dice)) return 0;
+  // 纯豹：5 颗全相同 → 7 个（仅当 V 等于该点数时加成，否则 1 仍可按百搭计）
+  const allSame = dice.every(d => d === dice[0]);
+  if (allSame && V === dice[0]) return 7;
+  // 围铱：含 1 且其余只有一种点数 → 6 个（仅当 V 等于该点数时加成）
+  const ones = dice.filter(d => d === 1).length;
+  const nonOneVals = Array.from(new Set(dice.filter(d => d !== 1)));
+  if (!sealed && ones > 0 && nonOneVals.length === 1 && V === nonOneVals[0]) return 6;
+  // 普通：真实点数 + 未封印时的百搭 1
+  let c = 0;
+  for (const d of dice) {
+    if (d === V) c++;
+    else if (d === 1 && !sealed) c++;
+  }
+  return c;
+};
+
 // 计算067规则（修正封印1后围骰不加成）—— 此函数未使用，可保留或删除
 const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
   if (isStraight(dice)) {
@@ -104,6 +125,7 @@ export default function GamePage() {
   const [players, setPlayers] = useState<any[]>([]);
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
+  const [showReveal, setShowReveal] = useState(false);
   const [result, setResult] = useState("");
   const [currentPlayer, setCurrentPlayer] = useState("");
   const [lastBid, setLastBid] = useState<{ player: string; count: number; value: number } | null>(null);
@@ -121,6 +143,10 @@ export default function GamePage() {
   const [mySeatId, setMySeatId] = useState<number | null>(null);
   const [hasRolledLocal, setHasRolledLocal] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
+  const [rolling, setRolling] = useState(false);
+  const [rollingDice, setRollingDice] = useState<number[]>([]);
+  const rollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 叫牌面板
   const [bidPage, setBidPage] = useState(0);
@@ -128,6 +154,12 @@ export default function GamePage() {
   const [selectedValue, setSelectedValue] = useState<number | null>(null);
   // 快捷加叫
   const [lastBidDisplay, setLastBidDisplay] = useState<{ count: number; value: number } | null>(null);
+  // 开牌方（点"开"的人）名字，用于摊牌浮层正确显示"谁喝"
+  const [rvOpenerName, setRvOpenerName] = useState<string>("");
+  const [rvIsSnapOpen, setRvIsSnapOpen] = useState<boolean>(false);
+  // 顺时针座位顺序：上排左→右(0..5)，下到右角(11)，下排右→左(11..6)，回到左上角(0)
+  const CLOCKWISE_SEAT_ORDER = [0, 1, 2, 3, 4, 5, 11, 10, 9, 8, 7, 6];
+  const seatOrderIndex = (s: number) => { const i = CLOCKWISE_SEAT_ORDER.indexOf(s); return i < 0 ? 99 : i; };
 
   const [errorMsg, setErrorMsg] = useState("");
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -176,6 +208,10 @@ export default function GamePage() {
         setPlayers(parsedPlayers);
         setGameStarted(state.gameStarted || false);
         setGameOver(state.gameOver || false);
+        if (state.gameOver) { setShowReveal(true); setIsLidOpen(false); }
+        else setShowReveal(false);
+        setRvOpenerName(state.opener || "");
+        setRvIsSnapOpen(state.isSnapOpen || false);
         setResult(state.result || "");
         setCurrentPlayer(state.currentPlayer || "");
         setLastBid(state.lastBid || null);
@@ -216,6 +252,19 @@ export default function GamePage() {
       if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
   }, [roomId, playerName]);
+
+  // ============ 自动重连：刷新页面后自动回到原房间，无需重新输密码 ============
+  useEffect(() => {
+    try {
+      const savedName = localStorage.getItem('067_name');
+      const savedPass = localStorage.getItem('067_pass');
+      if (savedName && savedPass) {
+        joinRoom(savedName, savedPass);
+      }
+    } catch (_) {}
+    // 仅在组件挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ============ 修改1: broadcastState 接收 roomId 参数 ============
   const broadcastState = async (roomId: string, state: any) => {
@@ -258,6 +307,7 @@ export default function GamePage() {
     });
     setJoined(false);
     setRoomId("");
+    try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); } catch (_) {}
     setPlayers([]);
     setGameStarted(false);
     setGameOver(false);
@@ -320,6 +370,7 @@ export default function GamePage() {
     const parsedPlayers = parsePlayers(data.players);
     setPlayers(parsedPlayers);
     setJoined(true);
+    try { localStorage.setItem('067_name', playerName.trim()); localStorage.setItem('067_pass', roomPassword.trim()); } catch (_) {}
     await broadcastState(data.id, {
       players: parsedPlayers,
       currentPlayer: "",
@@ -339,17 +390,20 @@ export default function GamePage() {
     });
   };
 
-  const joinRoom = async () => {
-    if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
-    if (!roomPassword.trim()) { setErrorMsg("请输入房间密码"); return; }
+  const joinRoom = async (overrideName?: string, overridePass?: string) => {
+    const name = (overrideName ?? playerName).trim();
+    const pass = (overridePass ?? roomPassword).trim();
+    if (!name) { setErrorMsg("请输入名字"); return; }
+    if (!pass) { setErrorMsg("请输入房间密码"); return; }
     setErrorMsg("");
+    setPlayerName(name);
 
-    console.log('📥 开始加入房间，密码:', roomPassword.trim());
+    console.log('📥 开始加入房间，密码:', pass);
 
     const { data, error } = await supabase
       .from("rooms")
       .select()
-      .eq("password", roomPassword.trim())
+      .eq("password", pass)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -357,6 +411,7 @@ export default function GamePage() {
     if (error || !data) {
       console.error('❌ 查询房间失败:', error);
       setErrorMsg("密码错误，未找到对应房间");
+      try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); } catch (_) {}
       return;
     }
 
@@ -371,10 +426,11 @@ export default function GamePage() {
     }
 
     // 玩家已存在时，同步 players 状态
-    if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
+    if (currentPlayers.some((p: any) => p.name === name)) {
       setRoomId(data.id);
       setPlayers(currentPlayers);
       setJoined(true);
+      try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
       return;
     }
 
@@ -384,7 +440,7 @@ export default function GamePage() {
       if (!occupiedSeats.includes(i)) { seatId = i; break; }
     }
 
-    const newPlayer = { name: playerName.trim(), dice: [], ready: false, seatId };
+    const newPlayer = { name, dice: [], ready: false, seatId };
     const updatedPlayers = [...currentPlayers, newPlayer];
     console.log('📤 准备更新的 players:', updatedPlayers);
 
@@ -403,6 +459,7 @@ export default function GamePage() {
     setRoomId(data.id);
     setJoined(true);
     setPlayers(updatedPlayers);
+    try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
     await broadcastState(data.id, {
       players: updatedPlayers,
       currentPlayer: "",
@@ -548,6 +605,16 @@ export default function GamePage() {
     setHasRolledLocal(true);
     playShakeSound();
     if (navigator.vibrate) navigator.vibrate(100);
+    // 自己骰子翻滚动画：快速翻滚约 0.7s 后定格为真实值
+    if (rollTimerRef.current) clearInterval(rollTimerRef.current);
+    if (rollTimeoutRef.current) clearTimeout(rollTimeoutRef.current);
+    setRolling(true);
+    setRollingDice(rollDice());
+    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 70);
+    rollTimeoutRef.current = setTimeout(() => {
+      if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
+      setRolling(false);
+    }, 700);
 
     // 广播时保留 gameStarted = true (此时游戏已开始)
     await broadcastState(roomId, {
@@ -570,7 +637,8 @@ export default function GamePage() {
 
     const rolledCount = updatedPlayers.filter(p => p.dice && p.dice.length > 0).length;
     if (rolledCount === updatedPlayers.length && updatedPlayers.length >= 2) {
-      const firstPlayer = nextStarter || updatedPlayers[0].name;
+      const sortedForStart = [...updatedPlayers].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
+      const firstPlayer = nextStarter || sortedForStart[0].name;
       setNextStarter(null);
       setCurrentPlayer(firstPlayer);
       setGameStarted(true);
@@ -643,7 +711,8 @@ export default function GamePage() {
     const newHistory = [...bidHistory, `${playerName} 叫了 ${count}个${value}`];
     setBidHistory(newHistory);
 
-    const playerNames = players.map((p) => p.name);
+    const sortedPlayers = [...players].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
+    const playerNames = sortedPlayers.map((p) => p.name);
     const idx = playerNames.indexOf(currentPlayer);
     const nextIdx = (idx + 1) % playerNames.length;
     setCurrentPlayer(playerNames[nextIdx]);
@@ -746,9 +815,7 @@ export default function GamePage() {
     // 情况2：被开者是顺子，开牌者不是顺子 → 只统计开牌者
     else if (targetIsStraight) {
       if (callerData && callerData.dice && callerData.dice.length > 0) {
-        const counts = Array(7).fill(0);
-        for (const d of callerData.dice) counts[d]++;
-        let count = counts[lastBid.value] + (oneSealed ? 0 : counts[1]);
+        const count = countForValue(callerData.dice, lastBid.value, oneSealed);
         totalCount = count;
       }
       if (totalCount >= calledCount) {
@@ -764,10 +831,7 @@ export default function GamePage() {
       let total = 0;
       for (const p of players) {
         if (p.dice && p.dice.length > 0) {
-          const counts = Array(7).fill(0);
-          for (const d of p.dice) counts[d]++;
-          let count = counts[lastBid.value] + (oneSealed ? 0 : counts[1]);
-          total += count;
+          total += countForValue(p.dice, lastBid.value, oneSealed);
         }
       }
       totalCount = total;
@@ -781,8 +845,13 @@ export default function GamePage() {
     }
 
     setGameOver(true);
+    setIsLidOpen(false);
+    setRvOpenerName(caller);
+    setRvIsSnapOpen(isSnapOpen);
+    setShowReveal(true);
     setPhase("ended");
     let resultMsg = "";
+    const cupLabel = isSnapOpen ? '（抢开×2杯）' : '（顺开×1杯）';
     if (targetIsStraight && callerIsStraight) {
       resultMsg = `🍺 ${loser} 输了！（双方都是顺子，谁开谁喝）`;
     } else if (targetIsStraight) {
@@ -790,6 +859,7 @@ export default function GamePage() {
     } else {
       resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，全场实际有 ${totalCount} 个${lastBid.value}`;
     }
+    resultMsg += cupLabel;
     setResult(resultMsg);
 
     if (isSnapOpen) {
@@ -805,6 +875,8 @@ export default function GamePage() {
       gameOver: true,
       result: resultMsg,
       lastBid,
+      opener: caller,
+      isSnapOpen,
       phase: "ended",
       hasRolled,
       oneSealed,
@@ -822,6 +894,9 @@ export default function GamePage() {
     setPlayers(resetPlayers);
     setGameStarted(false);
     setGameOver(false);
+    setShowReveal(false);
+    setRvOpenerName("");
+    setRvIsSnapOpen(false);
     setResult("");
     setLastBid(null);
     setCurrentPlayer("");
@@ -890,6 +965,13 @@ export default function GamePage() {
     setIsLidOpen(false);
   };
 
+  // 手机端：直接点骰盅本身来开/关，省掉两个按钮
+  const handleLidToggle = () => {
+    if (diceShaking) return; // 摇骰阶段不可开
+    if (isLidOpen) handleLidClose();
+    else handleLidOpen();
+  };
+
   // ==================== 座位渲染（椭圆桌） ====================
   const renderSeats = () => {
     const topSeats = [];
@@ -918,18 +1000,18 @@ export default function GamePage() {
           style={{
             position: 'absolute',
             left: `${seat.left}%`,
-            top: seat.row === 'top' ? '4%' : '56%',
+            top: seat.row === 'top' ? '3%' : '87%',
             transform: 'translateX(-50%)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            width: '60px',
-            height: '60px',
-            background: isActive ? 'rgba(251,191,36,0.25)' : (isTarget ? 'rgba(251,191,36,0.15)' : (player ? 'rgba(139,92,246,0.2)' : 'rgba(255,255,255,0.05)')),
+            width: '52px',
+            height: '52px',
+            background: isActive ? 'rgba(34,211,238,0.22)' : (isTarget ? 'rgba(236,72,153,0.18)' : (player ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.05)')),
             borderRadius: '50%',
-            border: isActive ? '3px solid #fbbf24' : (isTarget ? '2px solid #fbbf24' : (player ? '2px solid #8b5cf6' : '2px dashed rgba(255,255,255,0.2)')),
-            boxShadow: isActive ? '0 0 20px rgba(251,191,36,0.5)' : (isReady ? '0 0 10px rgba(34,211,238,0.3)' : 'none'),
+            border: isActive ? '3px solid #22d3ee' : (isTarget ? '2px solid #ec4899' : (player ? '2px solid rgba(34,211,238,0.35)' : '2px dashed rgba(255,255,255,0.2)')),
+            boxShadow: isActive ? '0 0 22px rgba(34,211,238,0.6)' : (isReady ? '0 0 10px rgba(34,211,238,0.3)' : 'none'),
             transition: 'all 0.3s',
             cursor: 'default',
             fontSize: '11px',
@@ -957,6 +1039,29 @@ export default function GamePage() {
     });
   };
 
+  // 摊牌浮层数据：开牌后展示全场骰子，供所有人自己数"够不够"
+  const rvBidVal = lastBid?.value;
+  const rvBidCnt = lastBid?.count;
+  const rvWildOn = !oneSealed;
+  const rvBidder = players.find(p => p.name === lastBid?.player);
+  const rvCaller = players.find(p => p.name === playerName);
+  const rvAnyStraight = (rvBidder ? isStraight(rvBidder.dice) : false) || (rvCaller ? isStraight(rvCaller.dice) : false);
+  let rvTotal = 0;
+  if (lastBid) {
+    players.forEach(p => {
+      if (p.dice && p.dice.length > 0) {
+        rvTotal += countForValue(p.dice, lastBid.value, oneSealed);
+      }
+    });
+  }
+
+  // 结论行配色：自己是否为输家（要喝的人）
+  const iAmDrinker = rvTotal >= (rvBidCnt ?? 0)
+    ? rvOpenerName === playerName
+    : (lastBid?.player === playerName);
+  const drinkerName = rvTotal >= (rvBidCnt ?? 0) ? rvOpenerName : (lastBid?.player ?? '');
+  const rvCups = rvIsSnapOpen ? 2 : 1;
+
   if (!joined) {
     return (
       <div style={styles.container}>
@@ -980,7 +1085,7 @@ export default function GamePage() {
           />
           <div style={styles.btnGroup}>
             <button onClick={createRoom} style={styles.btnPrimary}>🆕 创建房间</button>
-            <button onClick={joinRoom} style={styles.btnSecondary}>🔗 加入房间</button>
+            <button onClick={() => joinRoom()} style={styles.btnSecondary}>🔗 加入房间</button>
           </div>
           {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
           {disconnected && <div style={{ color: "#f87171", marginTop: 8, fontSize: 14 }}>⚠️ 网络连接断开，请检查网络</div>}
@@ -1001,39 +1106,31 @@ export default function GamePage() {
           <div style={styles.diceCenter}>
             <div style={styles.diceBase}>
               <div style={styles.diceDisplay}>
-                {diceShaking ? (
-                  <div style={styles.diceRow}>
-                    {[1,2,3,4,5].map((_, idx) => (
-                      <span key={idx} style={{ ...styles.diceShaking, animationDelay: `${idx * 0.1}s` }}>
-                        🎲
-                      </span>
-                    ))}
-                  </div>
-                ) : isLidOpen && myDice.length > 0 ? (
+                {isLidOpen && myDice.length > 0 ? (
                   <div style={styles.diceRow}>
                     {myDice.map((val, idx) => (
-                      <DiceSVG key={idx} value={val} size={41} />
+                      <div key={idx} className="fade-in"><DiceSVG value={val} size={34} /></div>
                     ))}
                   </div>
-                ) : myDice.length > 0 && !isLidOpen ? (
-                  <div style={styles.diceRow}>
-                    {myDice.map((_, idx) => (
-                      <span key={idx} style={{ fontSize: '36px', color: '#888' }}>❓</span>
-                    ))}
-                  </div>
-                ) : (
+                ) : myDice.length === 0 ? (
                   <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>🎲</span>
-                )}
+                ) : null}
               </div>
 
               <div
+                className="cup-glass"
+                onClick={handleLidToggle}
                 style={{
                   ...styles.diceLid,
-                  transform: isLidOpen ? 'translateY(-60px) rotateX(-10deg) scale(0.9)' : 'translateY(0) rotateX(0) scale(1)',
-                  opacity: isLidOpen ? 0.5 : 1,
-                  transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease',
+                  transform: isLidOpen
+                    ? 'translate(-50%, -50%) translateY(-64px) rotateX(-12deg) scale(0.92)'
+                    : 'translate(-50%, -50%)',
+                  opacity: isLidOpen ? 0.35 : 1,
+                  transition: 'transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease, box-shadow 0.3s ease',
+                  animation: rolling ? 'cupShake 0.5s ease-in-out infinite' : 'none',
                 }}
               >
+                <div style={styles.lidGloss} />
                 <div style={styles.lidInner}>
                   <span style={styles.lidHandle}>🎲</span>
                   <span style={styles.lidLabel}>骰盅</span>
@@ -1047,10 +1144,9 @@ export default function GamePage() {
               ) : diceShaking ? (
                 <span style={{ color: '#fbbf24', fontSize: '15px' }}>🎲 摇骰中...</span>
               ) : (
-                <>
-                  <button onClick={handleLidOpen} style={styles.lidBtn}>👆 开盅</button>
-                  <button onClick={handleLidClose} style={styles.lidBtn}>👇 关盅</button>
-                </>
+                <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '12px' }}>
+                  {isLidOpen ? '👆 点骰盅盖回' : (myDice.length > 0 ? '👆 点骰盅查看' : '摇骰后可点骰盅查看')}
+                </span>
               )}
             </div>
 
@@ -1068,7 +1164,7 @@ export default function GamePage() {
                   else if (maxCount === 5) label = `🔥 纯豹 (7个${maxVal})`;
                   else if (!oneSealed && ones > 0 && counts.slice(2).filter(c => c > 0).length === 1) {
                     const val = counts.indexOf(Math.max(...counts.slice(2)));
-                    if (val > 0) label = `💫 围骰 (6个${val})`;
+                    if (val > 0) label = `💫 豹子 (6个${val})`;
                   }
                   if (!label) label = `${myDice.length}颗骰子`;
                   return <span style={{ color: '#fbbf24', fontSize: '14px' }}>{label}</span>;
@@ -1106,7 +1202,10 @@ export default function GamePage() {
           </div>
         </div>
 
-        <div style={styles.statusBar}>
+        <div
+          className={gameStarted && !gameOver && phase === "bidding" && currentPlayer === playerName ? "turn-highlight" : ""}
+          style={styles.statusBar}
+        >
           {!gameStarted && phase !== "rolling" ? (
             <span style={styles.statusText}>
               ⏳ 等待开始 {players.length >= 2 ? '（房主点击"开始游戏"）' : '（至少2人）'}
@@ -1208,8 +1307,8 @@ export default function GamePage() {
                           onClick={() => setSelectedValue(v)}
                           style={{
                             ...styles.bidNumBtn,
-                            background: selectedValue === v ? '#fbbf24' : 'rgba(255,255,255,0.08)',
-                            border: selectedValue === v ? '2px solid #fbbf24' : '1px solid rgba(255,255,255,0.1)',
+                            background: selectedValue === v ? '#22d3ee' : 'rgba(255,255,255,0.08)',
+                            border: selectedValue === v ? '2px solid #22d3ee' : '1px solid rgba(255,255,255,0.1)',
                             opacity: 1,
                             cursor: 'pointer',
                           }}
@@ -1225,8 +1324,8 @@ export default function GamePage() {
                           onClick={() => setSelectedCount(num)}
                           style={{
                             ...styles.bidNumBtn,
-                            background: selectedCount === num ? '#8b5cf6' : 'rgba(255,255,255,0.08)',
-                            border: selectedCount === num ? '2px solid #8b5cf6' : '1px solid rgba(255,255,255,0.1)',
+                            background: selectedCount === num ? '#22d3ee' : 'rgba(255,255,255,0.08)',
+                            border: selectedCount === num ? '2px solid #22d3ee' : '1px solid rgba(255,255,255,0.1)',
                           }}
                         >
                           {num}个
@@ -1335,6 +1434,49 @@ export default function GamePage() {
         )}
       </div>
 
+      {showReveal && gameOver && lastBid && (
+        <div onClick={() => setShowReveal(false)} style={{ position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.72)', backdropFilter:'blur(4px)', WebkitBackdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width:'100%', maxWidth:'420px', maxHeight:'82vh', background:'linear-gradient(160deg,#1c1430,#120c20)', border:'1px solid rgba(34,211,238,0.4)', borderRadius:'20px', padding:'18px 16px', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)', animation:'fadeIn 0.3s ease' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+              <div style={{ color:'#22d3ee', fontSize:'16px', fontWeight:'bold' }}>🎴 摊牌 · 自己数数够不够</div>
+              <button onClick={() => setShowReveal(false)} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
+            </div>
+            <div style={{ textAlign:'center', color:'rgba(255,255,255,0.5)', fontSize:'11px', marginBottom:'10px' }}>
+              金框 = 叫的 {rvBidVal} 点　青框 = 百搭1️⃣（{rvWildOn ? '算入' : '已封印不算'}）
+            </div>
+            <div style={{ overflowY:'auto', flex:'1 1 auto', display:'flex', flexDirection:'column', gap:'8px', paddingRight:'2px' }}>
+              {players.filter(p => p.dice && p.dice.length > 0).map((p, i) => (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'center', flexWrap:'wrap' }}>
+                  <span style={{ minWidth:'52px', textAlign:'right', fontSize:'13px', color: p.name === playerName ? '#22d3ee' : '#ddd', fontWeight: p.name === playerName ? 'bold' : 'normal' }}>
+                    {p.name === playerName ? '你' : p.name}
+                    {isStraight(p.dice) ? ' 🎯顺子归零' : ''}
+                  </span>
+                  <div style={{ display:'flex', gap:'4px' }}>
+                    {p.dice.map((d: number, di: number) => {
+                      const isMatch = d === rvBidVal;
+                      const isWild = d === 1 && rvWildOn && !isStraight(p.dice);
+                      return (
+                        <span key={di} style={{ display:'inline-block', padding:'3px', borderRadius:'9px', border: isMatch ? '2px solid #fbbf24' : isWild ? '2px solid #22d3ee' : '2px solid transparent', boxShadow: isMatch ? '0 0 10px rgba(251,191,36,0.5)' : isWild ? '0 0 8px rgba(34,211,238,0.4)' : 'none' }}>
+                          <DiceSVG value={d} size={27} />
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ textAlign:'center', marginTop:'12px', fontSize:'14px', color:'#fff', borderTop:'1px solid rgba(255,255,255,0.1)', paddingTop:'10px' }}>
+              全场共 <strong style={{ color:'#fbbf24', fontSize:'18px' }}>{rvTotal}</strong> 个 {rvBidVal}
+              {!rvAnyStraight ? (
+                <span>　|　叫 {rvBidCnt ?? 0} 个 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong></span>
+              ) : (
+                <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'12px' }}>　（有人是顺子，按规则判，见上方结论 · {rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         .table-container.shake-warning {
           animation: shakeRed 0.5s ease-in-out 3;
@@ -1364,12 +1506,12 @@ export default function GamePage() {
 // ==================== 样式（无重复属性） ====================
 const styles: any = {
   container: {
-    minHeight: "100vh",
+    minHeight: "100dvh",
     background: "radial-gradient(ellipse at 20% 50%, #1a0a2e 0%, #0f0f1a 50%, #0a0a12 100%)",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
-    padding: "8px",
+    padding: "0",
     fontFamily: "system-ui, sans-serif",
     position: "relative",
     overflow: "hidden",
@@ -1378,7 +1520,7 @@ const styles: any = {
     position: "absolute",
     top: "-20%", right: "-10%",
     width: "500px", height: "500px",
-    background: "radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)",
+    background: "radial-gradient(circle, rgba(236,72,153,0.22), transparent 70%)",
     borderRadius: "50%",
     pointerEvents: "none" as const,
     animation: "pulse 4s ease-in-out infinite",
@@ -1387,7 +1529,7 @@ const styles: any = {
     position: "absolute",
     bottom: "-30%", left: "-10%",
     width: "400px", height: "400px",
-    background: "radial-gradient(circle, rgba(251,191,36,0.08), transparent 70%)",
+    background: "radial-gradient(circle, rgba(34,211,238,0.16), transparent 70%)",
     borderRadius: "50%",
     pointerEvents: "none" as const,
     animation: "pulse 5s ease-in-out infinite reverse",
@@ -1399,8 +1541,8 @@ const styles: any = {
     padding: "32px 24px",
     maxWidth: "400px",
     width: "100%",
-    border: "1px solid rgba(255,255,255,0.06)",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
+    border: "1px solid rgba(34,211,238,0.35)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 40px rgba(34,211,238,0.15)",
     position: "relative",
     zIndex: 1,
   },
@@ -1411,9 +1553,7 @@ const styles: any = {
     fontSize: "32px",
     fontWeight: "800",
     marginBottom: "4px",
-    background: "linear-gradient(135deg, #fbbf24, #f59e0b)",
-    WebkitBackgroundClip: "text",
-    WebkitTextFillColor: "transparent",
+    textShadow: "0 0 8px rgba(34,211,238,0.9), 0 0 18px rgba(236,72,153,0.7), 0 0 34px rgba(236,72,153,0.4)",
   },
   subtitle: { textAlign: "center" as const, color: "rgba(255,255,255,0.4)", fontSize: "13px", marginBottom: "24px" },
   input: {
@@ -1435,20 +1575,20 @@ const styles: any = {
     padding: "12px",
     borderRadius: "12px",
     border: "none",
-    background: "linear-gradient(135deg, #8b5cf6, #6d28d9)",
-    color: "#fff",
+    background: "linear-gradient(135deg, #22d3ee, #0ea5e9)",
+    color: "#0f0f1a",
     fontSize: "15px",
-    fontWeight: "600",
+    fontWeight: "700",
     cursor: "pointer",
-    boxShadow: "0 4px 20px rgba(139,92,246,0.3)",
+    boxShadow: "0 4px 20px rgba(34,211,238,0.5)",
   },
   btnSecondary: {
     flex: 1,
     padding: "12px",
     borderRadius: "12px",
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.04)",
-    color: "#fff",
+    border: "1px solid rgba(236,72,153,0.55)",
+    background: "rgba(236,72,153,0.08)",
+    color: "#f9a8d4",
     fontSize: "15px",
     fontWeight: "600",
     cursor: "pointer",
@@ -1457,24 +1597,30 @@ const styles: any = {
     position: "relative",
     zIndex: 1,
     width: "100%",
-    maxWidth: "500px",
+    maxWidth: "100%",
+    height: "100dvh",
+    boxSizing: "border-box" as const,
+    display: "flex",
+    flexDirection: "column" as const,
     background: "rgba(255,255,255,0.04)",
     backdropFilter: "blur(30px)",
-    borderRadius: "24px",
-    padding: "12px 10px",
-    border: "1px solid rgba(255,255,255,0.06)",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
+    borderRadius: "0",
+    padding: "10px 8px",
+    border: "none",
+    boxShadow: "none",
+    overflowY: "auto",
   },
   table: {
     position: "relative",
     width: "100%",
-    aspectRatio: "16/9",
-    background: "linear-gradient(180deg, #2a1f3d 0%, #1a1329 100%)",
+    flex: 1,
+    minHeight: 0,
+    background: "linear-gradient(180deg, #2a1840 0%, #160d2b 100%)",
     borderRadius: "18px",
-    border: "2px solid rgba(139,92,246,0.2)",
-    boxShadow: "inset 0 0 40px rgba(0,0,0,0.5)",
-    marginBottom: "16px",
-    overflow: "visible",
+    border: "2px solid rgba(34,211,238,0.45)",
+    boxShadow: "inset 0 0 40px rgba(0,0,0,0.4), 0 0 26px rgba(34,211,238,0.18)",
+    marginBottom: "8px",
+    overflow: "hidden",
   },
   roomInfo: {
     position: "absolute",
@@ -1502,12 +1648,12 @@ const styles: any = {
   },
   diceBase: {
     position: 'relative',
-    width: '160px',
-    height: '160px',
-    background: 'radial-gradient(ellipse at 40% 40%, #4a3a5a, #1a0a2a)',
+    width: '172px',
+    height: '172px',
+    background: 'radial-gradient(ellipse at 50% 36%, #2a1745 0%, #160d2b 68%, #0f0820 100%)',
     borderRadius: '50%',
-    border: '3px solid rgba(139,92,246,0.2)',
-    boxShadow: 'inset 0 -10px 30px rgba(0,0,0,0.6), 0 10px 40px rgba(0,0,0,0.4)',
+    border: '2px solid rgba(34,211,238,0.4)',
+    boxShadow: '0 0 30px rgba(34,211,238,0.3), inset 0 -12px 30px rgba(0,0,0,0.6)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1524,12 +1670,12 @@ const styles: any = {
     justifyContent: 'center',
     width: '100%',
     height: '100%',
-    padding: '15px',
+    padding: '12px',
     boxSizing: 'border-box' as const,
   },
   diceRow: {
     display: 'flex',
-    gap: '8px',
+    gap: '6px',
     justifyContent: 'center',
     alignItems: 'center',
     flexWrap: 'wrap' as const,
@@ -1542,39 +1688,50 @@ const styles: any = {
   },
   diceLid: {
     position: 'absolute',
-    top: '-5px',
-    left: '-5px',
-    right: '-5px',
-    bottom: '-5px',
-    borderRadius: '50%',
-    background: 'radial-gradient(ellipse at 30% 20%, #6a5a7a, #2a1a3a)',
-    border: '2px solid rgba(139,92,246,0.2)',
+    top: '50%',
+    left: '50%',
+    width: '152px',
+    height: '152px',
+    transform: 'translate(-50%, -50%)',
+    borderRadius: '50% 50% 46% 46% / 60% 60% 40% 40%',
+    background: 'linear-gradient(155deg, rgba(255,255,255,0.22) 0%, rgba(167,139,250,0.55) 38%, rgba(109,40,217,0.95) 100%)',
+    border: '2px solid rgba(196,181,253,0.6)',
+    boxShadow: '0 0 26px rgba(167,139,250,0.55), inset 0 4px 14px rgba(255,255,255,0.35), inset 0 -20px 36px rgba(0,0,0,0.55)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 0,
-    transformOrigin: 'bottom center',
-    transition: 'transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease',
+    zIndex: 2,
+    transformOrigin: 'center bottom',
+    transition: 'transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease, box-shadow 0.3s ease',
     cursor: 'pointer',
-    clipPath: 'polygon(20% 0%, 80% 0%, 95% 90%, 5% 90%)',
-    boxShadow: '0 8px 30px rgba(0,0,0,0.6), inset 0 -20px 30px rgba(0,0,0,0.4), inset 0 10px 20px rgba(255,255,255,0.1)',
+  },
+  lidGloss: {
+    position: 'absolute',
+    top: '14%',
+    left: '24%',
+    width: '38%',
+    height: '24%',
+    background: 'radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.5), rgba(255,255,255,0) 70%)',
+    borderRadius: '50%',
+    pointerEvents: 'none',
   },
   lidInner: {
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: '-10px',
+    gap: '2px',
+    zIndex: 1,
   },
   lidHandle: {
-    fontSize: '30px',
-    opacity: 0.5,
+    fontSize: '34px',
+    filter: 'drop-shadow(0 0 8px rgba(255,255,255,0.7))',
   },
   lidLabel: {
     fontSize: '10px',
-    color: 'rgba(255,255,255,0.2)',
-    marginTop: '2px',
-    letterSpacing: '2px',
+    color: 'rgba(255,255,255,0.75)',
+    letterSpacing: '3px',
+    textShadow: '0 1px 3px rgba(0,0,0,0.5)',
   },
   diceStats: {
     marginTop: '6px',
@@ -1736,12 +1893,12 @@ const styles: any = {
     padding: '4px 16px',
     borderRadius: '16px',
     border: 'none',
-    background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
-    color: '#fff',
+    background: 'linear-gradient(135deg, #22d3ee, #0ea5e9)',
+    color: '#0f0f1a',
     fontSize: '14px',
-    fontWeight: '600',
+    fontWeight: '700',
     cursor: 'pointer',
-    boxShadow: '0 4px 12px rgba(139,92,246,0.3)',
+    boxShadow: '0 4px 16px rgba(34,211,238,0.5)',
   },
   bidPreview: {
     color: '#fbbf24',
@@ -1774,7 +1931,7 @@ const styles: any = {
     fontSize: "14px",
     fontWeight: "600",
     cursor: "pointer",
-    boxShadow: "0 4px 16px rgba(244,63,94,0.3)",
+    boxShadow: "0 4px 16px rgba(244,63,94,0.5), 0 0 20px rgba(244,63,94,0.35)",
   },
   btnOpenSmall: {
     padding: "3px 12px",
@@ -1847,6 +2004,35 @@ if (typeof document !== 'undefined') {
       0%, 100% { opacity: 0.4; transform: scale(1); }
       50% { opacity: 0.8; transform: scale(1.1); }
     }
+    @keyframes diceRoll {
+      0% { transform: rotate(0deg) scale(1); filter: blur(0); }
+      25% { transform: rotate(90deg) scale(1.12); filter: blur(1.5px); }
+      50% { transform: rotate(200deg) scale(0.92); filter: blur(2.5px); }
+      75% { transform: rotate(300deg) scale(1.06); filter: blur(1.5px); }
+      100% { transform: rotate(360deg) scale(1); filter: blur(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes turnPulse {
+      0%, 100% { border-color: rgba(251,191,36,0.5); box-shadow: 0 0 10px rgba(251,191,36,0.2); }
+      50% { border-color: #fbbf24; box-shadow: 0 0 22px rgba(251,191,36,0.55); }
+    }
+    @keyframes cupShake {
+      0%, 100% { transform: translate(-50%, -50%) rotate(0deg); }
+      20% { transform: translate(-50%, -52%) rotate(-6deg); }
+      40% { transform: translate(-50%, -47%) rotate(6deg); }
+      60% { transform: translate(-50%, -51%) rotate(-4deg); }
+      80% { transform: translate(-50%, -49%) rotate(4deg); }
+    }
+    .dice-roll-anim { animation: diceRoll 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
+    .fade-in { animation: fadeIn 0.35s ease; }
+    .turn-highlight { animation: turnPulse 1.2s ease-in-out infinite; }
+    .cup-glass { cursor: pointer; }
+    .cup-glass:active { filter: brightness(1.12); }
+    button { transition: transform 0.12s ease, filter 0.12s ease; }
+    button:active { transform: scale(0.95); filter: brightness(1.12); }
   `;
   document.head.appendChild(style);
 }
