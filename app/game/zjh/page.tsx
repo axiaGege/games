@@ -3197,13 +3197,36 @@ export default function ZhaJinHuaPage() {
           }}>
             <div style={{
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: '12px',
-              marginBottom: '8px',
-              padding: '2px 6px',
             }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>公牌</span>
+              {dealerId && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  marginBottom: '10px',
+                  padding: '3px 14px',
+                  borderRadius: '12px',
+                  background: 'rgba(251,191,36,0.12)',
+                  border: '1px solid rgba(251,191,36,0.35)',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: '#fbbf24',
+                }}>
+                  👑 庄家：{dealerId}
+                </div>
+              )}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                marginBottom: '8px',
+                padding: '2px 6px',
+              }}>
+                <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>公牌</span>
               {communityCard ? (
                 <div style={{ animation: 'dealIn 0.4s ease' }}><PokerCard card={communityCard} hidden={false} size="medium" /></div>
               ) : (
@@ -3215,6 +3238,7 @@ export default function ZhaJinHuaPage() {
                   <span style={{ color: '#f87171', marginLeft: '6px' }}>⚠️牌堆不足</span>
                 )}
               </span>
+            </div>
             </div>
 
             {compareData && compareData.showResult && (allCompareData.length > 0 || isDealer || (compareData.playerName && compareData.playerName === playerName)) ? (
@@ -3356,7 +3380,6 @@ export default function ZhaJinHuaPage() {
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <span>👥 {players.filter(p => p.status === 'playing' || p.status === 'watching').length}/{12}</span>
-              {dealerId && <span>👑 {dealerId}</span>}
               {phase === "betting" && currentPlayer && !isDealer && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
               {phase === "betting" && currentPlayer && isDealer && currentPlayer.name === playerName && <span style={{ color: '#fbbf24', fontSize: '12px' }}>⏳ 等待压酒</span>}
               {phase === "betting" && currentPlayer && isDealer && currentPlayer.name !== playerName && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
