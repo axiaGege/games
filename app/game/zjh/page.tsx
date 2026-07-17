@@ -3131,7 +3131,7 @@ export default function ZhaJinHuaPage() {
             style={styles.input}
           />
           <div style={styles.btnGroup}>
-            <button onClick={createRoom} style={styles.btnPrimary}>🃏 创建房间</button>
+            <button onClick={createRoom} style={styles.btnPrimary}>🃏 开房</button>
             <button onClick={joinRoom} style={styles.btnSecondary}>♢ 加入房间</button>
           </div>
           {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}

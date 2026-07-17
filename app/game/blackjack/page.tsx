@@ -122,7 +122,7 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
         width: s.width,
         height: s.height,
         borderRadius: 4,
-        background: 'linear-gradient(135deg, #1a237e 0%, #0d1442 100%)',
+        background: 'linear-gradient(135deg, #3a1030 0%, #1a0512 100%)',
         border: '1.5px solid rgba(255,255,255,0.15)',
         boxShadow: '0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)',
         display: 'flex',
@@ -257,6 +257,7 @@ export default function BlackjackPage() {
   const [newDealerName, setNewDealerName] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{show:boolean, message:string, callback:any}>({show:false, message:'', callback:null});
   const [spectators, setSpectators] = useState<string[]>([]);
+  const [showRules, setShowRules] = useState(false);
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
   const isSettlingRef = useRef(false);
@@ -267,11 +268,11 @@ export default function BlackjackPage() {
     if (!confirmDialog.show) return null;
     return (
       <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", backgroundColor: "rgba(0,0,0,0.6)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 9999 }}>
-        <div style={{ background: "linear-gradient(145deg, #1e1b4b, #1a1a2e)", borderRadius: "16px", padding: "24px", maxWidth: "320px", width: "90%", textAlign: "center", border: "1px solid rgba(139,92,246,0.4)" }}>
+        <div style={{ background: "linear-gradient(145deg, #2a0f24, #1a0512)", borderRadius: "16px", padding: "24px", maxWidth: "320px", width: "90%", textAlign: "center", border: "1px solid rgba(214,140,170,0.4)" }}>
           <p style={{ color: "#fff", fontSize: "15px", marginBottom: "20px" }}>{confirmDialog.message}</p>
           <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
             <button onClick={() => setConfirmDialog({ show: false, message: "", callback: null })} style={{ padding: "8px 24px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.1)", color: "#fff", cursor: "pointer" }}>取消</button>
-            <button onClick={async () => { if (confirmDialog.callback) await confirmDialog.callback(); setConfirmDialog({ show: false, message: "", callback: null }); }} style={{ padding: "8px 24px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #22d3ee, #0891b2)", color: "#fff", fontWeight: "600", cursor: "pointer" }}>确认</button>
+            <button onClick={async () => { if (confirmDialog.callback) await confirmDialog.callback(); setConfirmDialog({ show: false, message: "", callback: null }); }} style={{ padding: "8px 24px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #e879a8, #be185d)", color: "#fff", fontWeight: "600", cursor: "pointer" }}>确认</button>
           </div>
         </div>
       </div>
@@ -2172,10 +2173,10 @@ for (const r of results) {
           justifyContent: 'center',
           width: '60px',
           minHeight: '50px',
-          background: isActive ? 'rgba(251,191,36,0.2)' : (isDealerFlag ? 'rgba(251,191,36,0.1)' : (player ? 'rgba(255,255,255,0.04)' : 'transparent')),
+          background: isActive ? 'rgba(214,140,170,0.22)' : (isDealerFlag ? 'rgba(214,140,170,0.12)' : (player ? 'rgba(255,255,255,0.04)' : 'transparent')),
           borderRadius: '10px',
-          border: isActive ? '2px solid #fbbf24' : (isDealerFlag ? '2px solid #fbbf24' : (player ? '1px solid rgba(255,255,255,0.06)' : 'none')),
-          boxShadow: isActive ? '0 0 20px rgba(251,191,36,0.3)' : (isDealerFlag ? '0 0 15px rgba(251,191,36,0.15)' : 'none'),
+          border: isActive ? '2px solid #f0a8c4' : (isDealerFlag ? '2px solid #f0a8c4' : (player ? '1px solid rgba(255,255,255,0.06)' : 'none')),
+          boxShadow: isActive ? '0 0 20px rgba(214,140,170,0.3)' : (isDealerFlag ? '0 0 15px rgba(214,140,170,0.15)' : 'none'),
           padding: '2px 4px',
           transition: 'all 0.3s',
           cursor: 'default',
@@ -2192,22 +2193,22 @@ for (const r of results) {
                 gap: '1px',
                 fontSize: '10px',
                 fontWeight: isMe ? 'bold' : 'normal',
-                color: isMe ? '#fbbf24' : '#ddd',
+                color: isMe ? '#f0a8c4' : '#ddd',
                 maxWidth: '100%',
                 textAlign: 'center' as const,
                 lineHeight: 1.2,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                  {isDealerFlag && <span style={{ fontSize: '12px', color: '#fbbf24' }}>👑</span>}
+                  {isDealerFlag && <span style={{ fontSize: '12px', color: '#f0a8c4' }}>👑</span>}
                   <span>{isMe ? '你' : displayName}</span>
                   {player?.status === 'watching' && <span style={{ fontSize: '8px', color: '#888' }}>（观战）</span>}
                 </div>
                 <div style={{ display: 'flex', gap: '1px', fontSize: '9px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                  {isReady && phase === "waiting" && <span style={{ color: '#22d3ee' }}>✅</span>}
-                  {isStanding && phase !== "waiting_for_dealer" && <span style={{ color: '#22d3ee' }}>✅</span>}
+                  {isReady && phase === "waiting" && <span style={{ color: '#e879a8' }}>✅</span>}
+                  {isStanding && phase !== "waiting_for_dealer" && <span style={{ color: '#e879a8' }}>✅</span>}
                   {isBust && phase === "waiting_for_dealer" && <span style={{ color: '#ef4444' }}>💥</span>}
-                  {isFive && phase === "waiting_for_dealer" && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                  {isBlackjackFlag && phase === "waiting_for_dealer" && <span style={{ color: '#fbbf24' }}>♠</span>}
+                  {isFive && phase === "waiting_for_dealer" && <span style={{ color: '#f0a8c4' }}>🐉</span>}
+                  {isBlackjackFlag && phase === "waiting_for_dealer" && <span style={{ color: '#f0a8c4' }}>♠</span>}
                   {hasCards && <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '8px' }}>{player.cardCount}张</span>}
                 </div>
               </div>
@@ -2250,6 +2251,29 @@ for (const r of results) {
 
   return (
         <div style={styles.container}>
+      {showRules && (
+        <div onClick={() => setShowRules(false)} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(15,3,11,0.82)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, padding: '16px' }}>
+          <div onClick={(e: any) => e.stopPropagation()} style={{ position: 'relative', width: '100%', maxWidth: '420px', maxHeight: '82vh', overflowY: 'auto', background: 'linear-gradient(160deg, #2a0f24, #1a0512)', borderRadius: '20px', border: '1px solid rgba(240,168,196,0.4)', boxShadow: '0 0 60px rgba(180,60,110,0.35)', padding: '22px 20px' }}>
+            <button onClick={() => setShowRules(false)} style={{ position: 'absolute', top: '10px', right: '12px', background: 'transparent', border: 'none', color: '#f0a8c4', fontSize: '20px', cursor: 'pointer', lineHeight: 1 }}>✕</button>
+            <div style={{ color: '#f7d3e0', fontSize: '20px', fontWeight: 800, textAlign: 'center', marginBottom: '2px' }}>📖 黑杰克玩法</div>
+            <div style={{ color: 'rgba(235,195,215,0.5)', fontSize: '12px', textAlign: 'center', marginBottom: '16px' }}>酒桌 21 点</div>
+            {[
+              ['🎯 目标', '手牌凑到尽量接近 21 点'],
+              ['🃏 点数', '2~10 按牌面，J/Q/K 算 10，A 算 11 或 1'],
+              ['🎮 你的回合', '可以「要牌」「停牌」'],
+              ['💥 爆了怎么罚', '认爆喝 1 杯；偷鸡（装没爆）：庄家也爆→你免罚、庄家喝 2 杯，庄家没爆→你喝 2 杯；硬凑第 5 张爆了（五小龙失败）喝 3 杯'],
+              ['👑 王炸', '黑杰克(10/J/Q/K + A) 或 五小龙(5 张不爆，不超过 21 点)'],
+              ['⚖️ 比大小', '五小龙 > 黑杰克 > 没爆的 > 比点数 > 同点比张数(少者胜) > 真平局都不喝'],
+              ['🍺 谁喝', '庄家黑杰克→闲家各 2 杯；玩家黑杰克→庄家 2 杯；五小龙同理 3 杯；普通比牌输家 1 杯。庄家罚酒取玩家最大的：有五小龙喝 3 杯，有黑杰克喝 2 杯，正常喝 1 杯'],
+            ].map((row: any, i: number) => (
+              <div key={i} style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: i < 6 ? '1px solid rgba(240,168,196,0.12)' : 'none' }}>
+                <div style={{ color: '#f0a8c4', fontSize: '14px', fontWeight: 700, marginBottom: '3px' }}>{row[0]}</div>
+                <div style={{ color: 'rgba(243,212,224,0.85)', fontSize: '13px', lineHeight: 1.5 }}>{row[1]}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={styles.glowOrb}></div>
       <div style={styles.glowOrb2}></div>
 
@@ -2293,12 +2317,12 @@ for (const r of results) {
       else if (isFive) icon = '🐉';
       else if (isBj) icon = '♠';
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(251,191,36,0.15)', padding: '4px 10px', borderRadius: '6px', flexWrap: 'wrap', justifyContent: 'center', border: '1px solid rgba(251,191,36,0.2)', fontSize: '11px' }}>
-          <span style={{ fontWeight: 'bold', color: '#fbbf24' }}>庄家 {d.name}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(214,140,170,0.15)', padding: '4px 10px', borderRadius: '6px', flexWrap: 'wrap', justifyContent: 'center', border: '1px solid rgba(214,140,170,0.2)', fontSize: '11px' }}>
+          <span style={{ fontWeight: 'bold', color: '#f0a8c4' }}>庄家 {d.name}</span>
           <span style={{ color: '#ddd' }}>
             {cards.map((c: any, i: number) => {
               const isRed = c.suit === '♥' || c.suit === '♦';
-              const color = isRed ? '#ff6b6b' : '#d308ee';
+              const color = isRed ? '#ff8aa8' : '#c9a9d6';
               return <span key={i} style={{ margin: '0 1px', fontWeight: 700, color }}>{c.rank}{c.suit}</span>;
             })}
           </span>
@@ -2330,11 +2354,11 @@ for (const r of results) {
             <span style={{ color: '#ddd' }}>
               {cards.map((c: any, i: number) => {
                 const isRed = c.suit === '♥' || c.suit === '♦';
-                const color = isRed ? '#ff6b6b' : '#d308ee';
+                const color = isRed ? '#ff8aa8' : '#c9a9d6';
                 return <span key={i} style={{ margin: '0 1px', fontWeight: 700, color }}>{c.rank}{c.suit}</span>;
               })}
             </span>
-            <span style={{ color: '#aaa' }}>点数：{displayTotal}</span>
+            <span style={{ color: 'rgba(235,195,215,0.6)' }}>点数：{displayTotal}</span>
             {icon && <span style={{ fontSize: '14px' }}>{icon}</span>}
           </div>
         );
@@ -2374,18 +2398,18 @@ for (const r of results) {
                           flexWrap: 'wrap' as const,
                           padding: '1px 4px',
                           borderRadius: '4px',
-                          background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
+                          background: isMe ? 'rgba(214,140,170,0.08)' : 'transparent',
                         }}>
                           <span style={{
                             fontSize: '11px',
                             fontWeight: isMe ? 'bold' : 'normal',
-                            color: isMe ? '#fbbf24' : '#ddd',
+                            color: isMe ? '#f0a8c4' : '#ddd',
                             minWidth: '40px',
                             textAlign: 'right' as const,
                             whiteSpace: 'nowrap' as const,
                           }}>
                             {isMe ? '你' : displayName}
-                            {isDealer && <span style={{ color: '#fbbf24', fontSize: '10px', marginLeft: '1px' }}>（庄家）</span>}
+                            {isDealer && <span style={{ color: '#f0a8c4', fontSize: '10px', marginLeft: '1px' }}>（庄家）</span>}
                           </span>
                           <div style={{
                             display: 'flex',
@@ -2398,19 +2422,24 @@ for (const r of results) {
                                 if (!isSettlement) {
                                   return (
                                     <span key={idx2} style={{
-                                      fontSize: '15px',
-                                      fontWeight: 'bold',
-                                      color: 'rgba(255,255,255,0.15)',
-                                      background: 'rgba(255,255,255,0.04)',
+                                      display: 'inline-block',
+                                      width: '14px',
+                                      height: '20px',
+                                      fontSize: '10px',
                                       borderRadius: '3px',
-                                      padding: '0 3px',
-                                      minWidth: '18px',
+                                      backgroundColor: '#2a0f1f',
+                                      backgroundImage: `repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(240,168,196,0.14) 3px, rgba(240,168,196,0.14) 4px), repeating-linear-gradient(-45deg, transparent, transparent 3px, rgba(240,168,196,0.14) 3px, rgba(240,168,196,0.14) 4px), radial-gradient(circle at 50% 50%, rgba(240,168,196,0.35) 0%, rgba(240,168,196,0.35) 2px, transparent 2px), linear-gradient(135deg, #2a0f1f, #3a152a)`,
+                                      border: '1px solid rgba(240,168,196,0.35)',
+                                      boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3)',
+                                      color: 'transparent',
+                                      overflow: 'hidden',
+                                      verticalAlign: 'middle',
                                       textAlign: 'center',
                                     }}>🂠</span>
                                   );
                                 } else {
                                   const isRed = card.suit === '♥' || card.suit === '♦';
-                                  const color = isRed ? '#ff6b6b' : '#d308ee';
+                                  const color = isRed ? '#ff8aa8' : '#c9a9d6';
                                   const rankDisplay = card.rank === '10' ? '10' : card.rank;
                                   return (
                                     <span key={idx2} style={{
@@ -2439,10 +2468,10 @@ for (const r of results) {
                             fontSize: '9px',
                             minWidth: '16px',
                           }}>
-                            {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
+                            {p.isStanding && !isSettlement && <span style={{ color: '#e879a8' }}>✅</span>}
                             {p.isBust && isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
-                            {p.isFiveCard && isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                            {p.isBlackjack && isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                            {p.isFiveCard && isSettlement && <span style={{ color: '#f0a8c4' }}>🐉</span>}
+                            {p.isBlackjack && isSettlement && <span style={{ color: '#f0a8c4' }}>♠</span>}
                           </div>
                         </div>
                       </div>
@@ -2473,12 +2502,12 @@ for (const r of results) {
                           flexWrap: 'wrap' as const,
                           padding: '1px 4px',
                           borderRadius: '4px',
-                          background: isMe ? 'rgba(251,191,36,0.08)' : 'transparent',
+                          background: isMe ? 'rgba(214,140,170,0.08)' : 'transparent',
                         }}>
                           <span style={{
                             fontSize: '11px',
                             fontWeight: isMe ? 'bold' : 'normal',
-                            color: isMe ? '#fbbf24' : '#ddd',
+                            color: isMe ? '#f0a8c4' : '#ddd',
                             minWidth: '40px',
                             textAlign: 'right' as const,
                             whiteSpace: 'nowrap' as const,
@@ -2497,13 +2526,18 @@ for (const r of results) {
                                 if (!isSettlement) {
                                   return (
                                     <span key={idx2} style={{
-                                      fontSize: '15px',
-                                      fontWeight: 'bold',
-                                      color: 'rgba(255,255,255,0.15)',
-                                      background: 'rgba(255,255,255,0.04)',
+                                      display: 'inline-block',
+                                      width: '14px',
+                                      height: '20px',
+                                      fontSize: '10px',
                                       borderRadius: '3px',
-                                      padding: '0 3px',
-                                      minWidth: '18px',
+                                      backgroundColor: '#2a0f1f',
+                                      backgroundImage: `repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(240,168,196,0.14) 3px, rgba(240,168,196,0.14) 4px), repeating-linear-gradient(-45deg, transparent, transparent 3px, rgba(240,168,196,0.14) 3px, rgba(240,168,196,0.14) 4px), radial-gradient(circle at 50% 50%, rgba(240,168,196,0.35) 0%, rgba(240,168,196,0.35) 2px, transparent 2px), linear-gradient(135deg, #2a0f1f, #3a152a)`,
+                                      border: '1px solid rgba(240,168,196,0.35)',
+                                      boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3)',
+                                      color: 'transparent',
+                                      overflow: 'hidden',
+                                      verticalAlign: 'middle',
                                       textAlign: 'center',
                                     }}>🂠</span>
                                   );
@@ -2538,10 +2572,10 @@ for (const r of results) {
                             fontSize: '9px',
                             minWidth: '16px',
                           }}>
-                            {p.isStanding && !isSettlement && <span style={{ color: '#22d3ee' }}>✅</span>}
+                            {p.isStanding && !isSettlement && <span style={{ color: '#e879a8' }}>✅</span>}
                             {p.isBust && !isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
-                            {p.isFiveCard && !isSettlement && <span style={{ color: '#fbbf24' }}>🐉</span>}
-                            {p.isBlackjack && !isSettlement && <span style={{ color: '#fbbf24' }}>♠</span>}
+                            {p.isFiveCard && !isSettlement && <span style={{ color: '#f0a8c4' }}>🐉</span>}
+                            {p.isBlackjack && !isSettlement && <span style={{ color: '#f0a8c4' }}>♠</span>}
                           </div>
                         </div>
                       </div>
@@ -2557,8 +2591,9 @@ for (const r of results) {
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
               <span>👥 {players.length}/12</span>
               {dealerId && <span>👑 {dealerId}</span>}
-              {phase === "player_turn" && currentPlayer && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
+              {phase === "player_turn" && currentPlayer && <span style={{ color: '#f0a8c4', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
             </span>
+            <button onClick={() => setShowRules(true)} style={{ background: 'transparent', border: '1px solid rgba(240,168,196,0.5)', color: '#f0a8c4', fontSize: '12px', borderRadius: '10px', padding: '2px 8px', cursor: 'pointer' }}>❓规则</button>
           </div>
         </div>
 
@@ -2569,38 +2604,64 @@ for (const r of results) {
               ⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length} 已准备）` : '（至少2人）'}
             </span>
           )}
-          {phase === "waiting_for_dealer" && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center', width: '100%', padding: '4px 0' }}>
-              <div style={{ color: "#fbbf24", fontSize: "14px", fontWeight: "bold" }}>
-                📊 结算完成 - 轮庄家【{dealerId}】请点击开始抽牌
+          {phase === "waiting_for_dealer" && (() => {
+            const allEvent = resultDetails.find(d => d.who === 'all_players');
+            const dealerRow = resultDetails.find(d => d.name === dealerId && d.who === 'dealer');
+            let overview = '';
+            if (allEvent) {
+              const ev = allEvent.result.replace(/^庄家/, '').replace(/！$/, '');
+              overview = `庄家【${dealerId}】${ev}，全场玩家各喝 ${allEvent.penalty} 杯 🍺（庄家不罚）`;
+            } else if (dealerRow) {
+              overview = `庄家【${dealerId}】${dealerRow.result.replace(/^庄家/, '')}`;
+            }
+            return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'stretch', width: '100%', padding: '4px 0' }}>
+              <div style={{ background: 'rgba(214,140,170,0.12)', border: '1px solid rgba(214,140,170,0.3)', borderRadius: '10px', padding: '8px 10px', color: '#f3d4e0', fontSize: '13px', fontWeight: '600', textAlign: 'center' }}>
+                📊 本局结算：{overview}
               </div>
-              {resultDetails.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', width: '100%' }}>
-                  {resultDetails.map((d, idx) => {
-                    let resultColor = '#888';
-                    if (d.result.includes('赢') || d.result === '庄家赢') resultColor = '#22d3ee';
-                    else if (d.result.includes('输') || d.result === '庄家输') resultColor = '#f87171';
-                    else if (d.result.includes('平局')) resultColor = '#888';
-                    let penaltyText = '';
-                    if (d.penalty > 0) {
-                      if (d.who === 'dealer') penaltyText = `庄家喝 ${d.penalty}杯`;
-                      else if (d.who === 'all_players') penaltyText = `所有玩家各喝 ${d.penalty}杯`;
-                      else if (d.who !== 'none') penaltyText = `${d.name} 喝 ${d.penalty}杯`;
-                    } else if (d.who === 'none' && d.result.includes('平局')) {
-                      penaltyText = '不喝';
-                    }
+              <div style={{ maxHeight: '34vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', display: 'flex', flexDirection: 'column', gap: '4px', padding: '2px 4px' }}>
+                {resultDetails.map((d, idx) => {
+                  if (d.name === dealerId && d.who === 'dealer') {
                     return (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.06)', padding: '4px 12px', borderRadius: '6px', fontSize: '12px', flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
-                        <span style={{ color: resultColor, fontWeight: '600' }}>{d.result}</span>
-                        {penaltyText && <span style={{ color: '#fbbf24' }}>🍺 {penaltyText}</span>}
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+                        <span style={{ fontWeight: 'bold', color: '#e879a8' }}>{d.name}（庄家）</span>
+                        <span style={{ color: '#f3d4e0' }}>{d.result}</span>
                       </div>
                     );
-                  })}
-                </div>
-              )}
+                  }
+                  if (d.who === 'all_players') {
+                    return (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
+                        <span style={{ color: '#f87171' }}>输</span>
+                      </div>
+                    );
+                  }
+                  if (d.who === 'dealer') {
+                    return (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
+                        <span style={{ color: '#e879a8' }}>赢 · 庄家喝 {d.penalty} 杯</span>
+                      </div>
+                    );
+                  }
+                  let txt = d.result;
+                  if (d.who === 'none') txt = `${d.result}（不喝）`;
+                  else if (d.who && d.who !== 'none') txt = `${d.result}，喝 ${d.penalty} 杯`;
+                  return (
+                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                      <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
+                      <span style={{ color: '#f3d4e0' }}>{txt}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: '12px', color: 'rgba(235,195,215,0.6)', textAlign: 'center', paddingTop: '2px' }}>
+                🎲 轮到【{dealerId}】当庄，点「开始抽牌」选下一局庄家
+              </div>
             </div>
-          )}
+            );
+          })()}
           {phase === "dealing" && <span style={styles.statusText}>🃏 发牌中...</span>}
           {phase === "player_turn" && !gameOver && (
             <span style={styles.statusText}>
@@ -2624,7 +2685,7 @@ for (const r of results) {
           {phase === "waiting" && (
             <>
               {myPlayer?.status === "watching" && (
-                <button onClick={rejoinGame} style={{...styles.btnReady, background: "#8b5cf6"}}>重新加入本局</button>
+                <button onClick={rejoinGame} style={{...styles.btnReady, background: "#e879a8"}}>重新加入本局</button>
               )}
               <button onClick={toggleReady} style={readyPlayers.includes(playerName) ? styles.btnReady : styles.btnNotReady}>
                 {readyPlayers.includes(playerName) ? '✅ 已准备' : '⏳ 准备'}
@@ -2638,7 +2699,7 @@ for (const r of results) {
             <>
               <button onClick={handleHit} style={styles.btnBid}>要牌</button>
               <button onClick={() => handleStand(false)} style={styles.btnBid}>停牌</button>
-              {myPlayer?.isBust && !myPlayer?.isStanding && (myPlayer.cardCount === 3 || myPlayer.cardCount === 4) && (
+              {myPlayer?.isBust && !myPlayer?.isStanding && (myPlayer.cardCount === 3 || myPlayer.cardCount === 4) && playerName !== dealerId && (
                 <>
                   <button onClick={handleConfess} style={{ ...styles.btnBid, background: 'rgba(239,68,68,0.15)', border: '1px solid #ef4444', color: '#f87171' }}>认爆1杯</button>
                   <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '12px' }}>或继续要牌迷惑</span>
@@ -2659,7 +2720,7 @@ for (const r of results) {
           )}
           {phase === "wheel" && isDealer && drawSubPhase === "choose" && (
             <>
-              <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.2)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '13px', padding: '6px 14px' }}>👑 大庄</button>
+              <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(214,140,170,0.2)', border: '1px solid #f0a8c4', color: '#f0a8c4', fontSize: '13px', padding: '6px 14px' }}>👑 大庄</button>
               <button onClick={() => chooseDrawRule("small")} style={{ ...styles.btnBid, background: 'rgba(16,185,129,0.2)', border: '1px solid #10b981', color: '#10b981', fontSize: '13px', padding: '6px 14px' }}>🌱 小庄</button>
             </>
           )}
@@ -2667,7 +2728,7 @@ for (const r of results) {
             <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>⏳ 等待庄家选大庄/小庄...</span>
           )}
           {phase === "wheel" && drawSubPhase === "reveal" && (
-            <span style={{ color: '#fbbf24', fontSize: '13px' }}>
+            <span style={{ color: '#f0a8c4', fontSize: '13px' }}>
               🃏 亮牌倒计时 {drawCountdown}s
             </span>
           )}
@@ -2728,8 +2789,8 @@ for (const r of results) {
               <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.7)', fontSize: '15px', padding: '20px' }}>
                 {isDealer ? (
                   <div>
-                    <div style={{ marginBottom: '14px', color: '#fbbf24' }}>请选择庄家规则：</div>
-                    <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.15)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '14px', padding: '8px 18px', marginRight: '10px' }}>👑 大庄（点数大者当庄）</button>
+                    <div style={{ marginBottom: '14px', color: '#f0a8c4' }}>请选择庄家规则：</div>
+                    <button onClick={() => chooseDrawRule("big")} style={{ ...styles.btnBid, background: 'rgba(214,140,170,0.15)', border: '1px solid #f0a8c4', color: '#f0a8c4', fontSize: '14px', padding: '8px 18px', marginRight: '10px' }}>👑 大庄（点数大者当庄）</button>
                     <button onClick={() => chooseDrawRule("small")} style={{ ...styles.btnBid, background: 'rgba(16,185,129,0.15)', border: '1px solid #10b981', color: '#10b981', fontSize: '14px', padding: '8px 18px' }}>🌱 小庄（点数小者当庄）</button>
                   </div>
                 ) : (
@@ -2751,14 +2812,14 @@ for (const r of results) {
                     const isRed = d.card.suit === '♥' || d.card.suit === '♦';
                     return (
                       <div key={d.name} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                        <div style={{ fontSize: '12px', color: isMe ? '#fbbf24' : 'rgba(255,255,255,0.6)', marginBottom: '2px' }}>{d.name}{isMe ? ' (你)' : ''}</div>
+                        <div style={{ fontSize: '12px', color: isMe ? '#f0a8c4' : 'rgba(255,255,255,0.6)', marginBottom: '2px' }}>{d.name}{isMe ? ' (你)' : ''}</div>
                         {isRevealed ? (
                           <div style={{ width: 44, height: 60, borderRadius: 6, background: '#ffffff', border: '1.5px solid rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
                             <span style={{ fontSize: '13px', fontWeight: 700, color: isRed ? '#e53935' : '#1a1a1a' }}>{rankDisplay}</span>
                             <span style={{ fontSize: '16px', color: isRed ? '#e53935' : '#1a1a1a' }}>{d.card.suit}</span>
                           </div>
                         ) : (
-                          <div style={{ width: 44, height: 60, borderRadius: 6, background: 'linear-gradient(135deg, #1a237e, #0d1442)', border: '1.5px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <div style={{ width: 44, height: 60, borderRadius: 6, background: 'linear-gradient(135deg, #3a1030, #1a0512)', border: '1.5px solid rgba(214,140,170,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             <span style={{ fontSize: '18px', opacity: 0.4 }}>🃏</span>
                           </div>
                         )}
@@ -2767,7 +2828,7 @@ for (const r of results) {
                   })}
                 </div>
                 {!drawRevealed.has(playerName) && drawCountdown > 0 && (
-                  <button onClick={revealOwnCard} style={{ ...styles.btnBid, background: 'rgba(251,191,36,0.2)', border: '1px solid #fbbf24', color: '#fbbf24', fontSize: '13px', padding: '6px 16px' }}>🃏 亮牌</button>
+                  <button onClick={revealOwnCard} style={{ ...styles.btnBid, background: 'rgba(214,140,170,0.2)', border: '1px solid #f0a8c4', color: '#f0a8c4', fontSize: '13px', padding: '6px 16px' }}>🃏 亮牌</button>
                 )}
                 {drawRevealed.has(playerName) && (
                   <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>✅ 已亮牌</div>
@@ -2778,7 +2839,7 @@ for (const r of results) {
             {drawSubPhase === "done" && drawWinner && (
               <div style={{ textAlign: 'center', padding: '16px' }}>
                 <div style={{ fontSize: '28px', marginBottom: '8px' }}>👑</div>
-                <div style={{ color: '#fbbf24', fontSize: '20px', fontWeight: 'bold', textShadow: '0 0 12px rgba(251,191,36,0.5)', animation: 'pulse 1s ease-in-out infinite' }}>
+                <div style={{ color: '#f0a8c4', fontSize: '20px', fontWeight: 'bold', textShadow: '0 0 12px rgba(214,140,170,0.5)', animation: 'pulse 1s ease-in-out infinite' }}>
                   {drawWinner} 成为新庄家！
                 </div>
                 <div style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>即将开始新一局...</div>
@@ -2802,125 +2863,128 @@ for (const r of results) {
 const styles: any = {
   container: {
     minHeight: "100vh",
-    background: "radial-gradient(ellipse at 20% 50%, #1a0a2e 0%, #0f0f1a 50%, #0a0a12 100%)",
+    background: "radial-gradient(ellipse at 30% 12%, #2a0820 0%, #1a0512 48%, #0c0308 100%)",
     display: "flex", justifyContent: "center", alignItems: "center", padding: "8px",
     fontFamily: "system-ui, sans-serif", position: "relative", overflow: "hidden",
   },
   glowOrb: {
     position: "absolute", top: "-20%", right: "-10%", width: "500px", height: "500px",
-    background: "radial-gradient(circle, rgba(139,92,246,0.15), transparent 70%)",
+    background: "radial-gradient(circle, rgba(200,80,130,0.20), transparent 70%)",
     borderRadius: "50%", pointerEvents: "none" as const, animation: "pulse 4s ease-in-out infinite",
   },
   glowOrb2: {
     position: "absolute", bottom: "-30%", left: "-10%", width: "400px", height: "400px",
-    background: "radial-gradient(circle, rgba(251,191,36,0.08), transparent 70%)",
+    background: "radial-gradient(circle, rgba(220,170,120,0.12), transparent 70%)",
     borderRadius: "50%", pointerEvents: "none" as const, animation: "pulse 5s ease-in-out infinite reverse",
   },
   card: {
-    background: "rgba(255,255,255,0.04)", backdropFilter: "blur(30px)", borderRadius: "28px",
+    background: "linear-gradient(160deg, rgba(60,18,46,0.95), rgba(28,8,22,0.97))",
+    backdropFilter: "blur(30px)", borderRadius: "28px",
     padding: "32px 24px", maxWidth: "400px", width: "100%",
-    border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
+    border: "1px solid rgba(214,140,170,0.35)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 50px rgba(180,60,110,0.15)",
     position: "relative", zIndex: 1,
   },
   logo: { fontSize: "48px", textAlign: "center" as const, marginBottom: "8px" },
   title: {
     textAlign: "center" as const, color: "#fff", fontSize: "32px", fontWeight: "800",
-    marginBottom: "4px", background: "linear-gradient(135deg, #fbbf24, #f59e0b)",
+    marginBottom: "4px", background: "linear-gradient(135deg, #f3b0c8, #d4779a)",
     WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
   },
-  subtitle: { textAlign: "center" as const, color: "rgba(255,255,255,0.4)", fontSize: "13px", marginBottom: "24px" },
+  subtitle: { textAlign: "center" as const, color: "rgba(235,195,215,0.5)", fontSize: "13px", marginBottom: "24px" },
   input: {
     width: "100%", padding: "12px 16px", marginBottom: "10px", borderRadius: "12px",
-    border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(214,140,170,0.22)", background: "rgba(255,255,255,0.05)",
     color: "#fff", fontSize: "15px", outline: "none", transition: "all 0.3s",
     boxSizing: "border-box" as const,
   },
   btnGroup: { display: "flex", gap: "10px", marginTop: "4px" },
   btnPrimary: {
     flex: 1, padding: "12px", borderRadius: "12px", border: "none",
-    background: "linear-gradient(135deg, #8b5cf6, #6d28d9)", color: "#fff",
-    fontSize: "15px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 20px rgba(139,92,246,0.3)",
+    background: "linear-gradient(135deg, #c2416c, #881337)", color: "#fff",
+    fontSize: "15px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 20px rgba(194,65,108,0.35)",
   },
   btnSecondary: {
-    flex: 1, padding: "12px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.04)", color: "#fff", fontSize: "15px", fontWeight: "600", cursor: "pointer",
+    flex: 1, padding: "12px", borderRadius: "12px", border: "1px solid rgba(214,140,170,0.3)",
+    background: "rgba(255,255,255,0.04)", color: "#f3d4e0", fontSize: "15px", fontWeight: "600", cursor: "pointer",
   },
   tableContainer: {
     position: "relative", zIndex: 1, width: "100%", maxWidth: "500px",
-    background: "rgba(255,255,255,0.04)", backdropFilter: "blur(30px)", borderRadius: "24px",
-    padding: "12px 10px", border: "1px solid rgba(255,255,255,0.06)",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
+    background: "linear-gradient(160deg, rgba(46,12,34,0.7), rgba(20,6,16,0.8))",
+    backdropFilter: "blur(30px)", borderRadius: "24px",
+    padding: "12px 10px", border: "1px solid rgba(214,140,170,0.18)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.5), 0 0 30px rgba(180,60,110,0.1)",
   },
   table: {
-    position: "relative", width: "100%", aspectRatio: "16/9",
-    background: "linear-gradient(180deg, #2a1f3d 0%, #1a1329 100%)",
-    borderRadius: "18px", border: "2px solid rgba(139,92,246,0.2)",
-    boxShadow: "inset 0 0 40px rgba(0,0,0,0.5)", marginBottom: "16px", overflow: "visible",
+    position: "relative", width: "100%", aspectRatio: "3/4",
+    background: "linear-gradient(180deg, #3a1230 0%, #1a0512 100%)",
+    borderRadius: "18px", border: "2px solid rgba(214,140,170,0.35)",
+    boxShadow: "inset 0 0 40px rgba(0,0,0,0.5), 0 0 30px rgba(180,60,110,0.12)", marginBottom: "16px", overflow: "visible",
   },
   roomInfo: {
     position: "absolute", top: "6px", right: "10px", left: "10px",
-    color: "rgba(255,255,255,0.5)", fontSize: "11px",
+    color: "rgba(235,195,215,0.55)", fontSize: "11px",
     display: "flex", justifyContent: "space-between", alignItems: "center",
-    background: "rgba(0,0,0,0.3)", padding: "4px 10px", borderRadius: "14px", zIndex: 3,
+    background: "rgba(20,4,14,0.5)", padding: "4px 10px", borderRadius: "14px", zIndex: 3,
   },
   statusBar: {
-    background: "rgba(255,255,255,0.04)", borderRadius: "12px", padding: "8px 12px",
+    background: "rgba(255,255,255,0.05)", borderRadius: "12px", padding: "8px 12px",
     textAlign: "center" as const, marginBottom: "10px", minHeight: "36px",
     display: "flex", alignItems: "center", justifyContent: "center",
-    border: "1px solid rgba(255,255,255,0.04)", fontSize: "13px",
+    border: "1px solid rgba(214,140,170,0.12)", fontSize: "13px",
   },
-  statusText: { color: "rgba(255,255,255,0.6)", fontSize: "13px" },
-  resultText: { color: "#fbbf24", fontSize: "15px", fontWeight: "600", whiteSpace: "pre-wrap" as const, textAlign: "center" as const },
+  statusText: { color: "rgba(235,195,215,0.6)", fontSize: "13px" },
+  resultText: { color: "#f0a8c4", fontSize: "15px", fontWeight: "600", whiteSpace: "pre-wrap" as const, textAlign: "center" as const },
   actionBar: {
     display: "flex", flexWrap: "wrap" as const, gap: "8px", justifyContent: "center", marginTop: "8px",
     alignItems: "center",
   },
   btnBid: {
-    padding: "8px 16px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: "pointer",
+    padding: "8px 16px", borderRadius: "10px", border: "1px solid rgba(214,140,170,0.3)",
+    background: "rgba(255,255,255,0.08)", color: "#f3d4e0", fontSize: "14px", fontWeight: "600", cursor: "pointer",
   },
   btnReady: {
-    padding: "6px 16px", borderRadius: "16px", border: "none", background: "#22d3ee",
-    color: "#0f0f1a", fontSize: "13px", fontWeight: "600", cursor: "pointer",
+    padding: "6px 16px", borderRadius: "16px", border: "none", background: "#e879a8",
+    color: "#2a0512", fontSize: "13px", fontWeight: "600", cursor: "pointer",
   },
   btnNotReady: {
-    padding: "6px 16px", borderRadius: "16px", border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(255,255,255,0.05)", color: "#fff", fontSize: "13px", fontWeight: "600", cursor: "pointer",
+    padding: "6px 16px", borderRadius: "16px", border: "1px solid rgba(214,140,170,0.25)",
+    background: "rgba(255,255,255,0.05)", color: "#f3d4e0", fontSize: "13px", fontWeight: "600", cursor: "pointer",
   },
   btnStart: {
     padding: "8px 24px", borderRadius: "10px", border: "none",
-    background: "linear-gradient(135deg, #22d3ee, #0891b2)", color: "#fff",
-    fontSize: "14px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 16px rgba(34,211,238,0.25)",
+    background: "linear-gradient(135deg, #e879a8, #be185d)", color: "#fff",
+    fontSize: "14px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 16px rgba(232,121,168,0.25)",
   },
   btnReset: {
     padding: "8px 24px", borderRadius: "10px", border: "none",
-    background: "linear-gradient(135deg, #fbbf24, #f59e0b)", color: "#0f0f1a",
-    fontSize: "14px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 16px rgba(251,191,36,0.2)",
+    background: "linear-gradient(135deg, #e0a96d, #b9742f)", color: "#2a0512",
+    fontSize: "14px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 16px rgba(224,169,109,0.2)",
   },
   myCardsArea: {
-    marginTop: "10px", padding: "8px 12px", background: "rgba(0,0,0,0.3)",
+    marginTop: "10px", padding: "8px 12px", background: "rgba(20,4,14,0.5)",
     borderRadius: "10px", textAlign: "center" as const,
   },
-  myCardsLabel: { fontSize: "12px", color: "rgba(255,255,255,0.5)", marginBottom: "4px" },
+  myCardsLabel: { fontSize: "12px", color: "rgba(235,195,215,0.5)", marginBottom: "4px" },
   myCardsContainer: { cursor: "pointer", display: "flex", justifyContent: "center", alignItems: "center", minHeight: "40px" },
   myCardsRow: { display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" as const, justifyContent: "center" },
   myCard: { fontSize: "20px", padding: "2px 6px", background: "rgba(255,255,255,0.08)", borderRadius: "4px" },
 
   wheelOverlay: {
     position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(15,3,11,0.78)',
     display: 'flex', justifyContent: 'center', alignItems: 'center',
     zIndex: 999,
   },
   wheelContainer: {
-    background: 'linear-gradient(145deg, #1e1b4b, #1a1a2e)',
+    background: 'linear-gradient(145deg, #2a0f24, #1a0512)',
     borderRadius: '32px', padding: '24px',
     maxWidth: '420px', width: '90%',
-    boxShadow: '0 0 80px rgba(139,92,246,0.4), 0 0 40px rgba(251,191,36,0.15), 0 20px 60px rgba(0,0,0,0.8)',
-    border: '1px solid rgba(139,92,246,0.4)',
+    boxShadow: '0 0 80px rgba(180,60,110,0.4), 0 0 40px rgba(220,170,120,0.15), 0 20px 60px rgba(0,0,0,0.8)',
+    border: '1px solid rgba(214,140,170,0.4)',
     textAlign: 'center',
   },
-  wheelTitle: { color: '#fff', fontSize: '26px', marginBottom: '20px', letterSpacing: '2px', textShadow: '0 0 20px rgba(139,92,246,0.5)' },
+  wheelTitle: { color: '#fff', fontSize: '26px', marginBottom: '20px', letterSpacing: '2px', textShadow: '0 0 20px rgba(214,140,170,0.5)' },
   wheelWrapper: {
     position: 'relative', width: '300px', height: '300px',
     margin: '0 auto 20px',
@@ -2928,8 +2992,8 @@ const styles: any = {
   wheel: {
     width: '100%', height: '100%', borderRadius: '50%',
     overflow: 'hidden',
-    border: '3px solid rgba(251,191,36,0.6)',
-    boxShadow: '0 0 50px rgba(251,191,36,0.25), 0 0 30px rgba(139,92,246,0.2), inset 0 0 40px rgba(0,0,0,0.4)',
+    border: '3px solid rgba(214,140,170,0.6)',
+    boxShadow: '0 0 50px rgba(214,140,170,0.25), 0 0 30px rgba(180,60,110,0.2), inset 0 0 40px rgba(0,0,0,0.4)',
     position: 'relative',
   },
   wheelSegment: {

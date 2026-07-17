@@ -1068,9 +1068,40 @@ export default function GamePage() {
         <div style={styles.glowOrb}></div>
         <div style={styles.glowOrb2}></div>
         <div style={styles.card}>
-          <div style={styles.logo}>🎲</div>
+          <div style={styles.slotMachine}>
+            <div style={styles.slotReel}>
+              <div style={styles.slotReelInner}>
+                <span style={styles.slotSymbol}>🍒</span>
+                <span style={styles.slotSymbol}>7️⃣</span>
+                <span style={styles.slotSymbol}>💎</span>
+                <span style={styles.slotSymbol}>🎲</span>
+                <span style={styles.slotSymbol}>⭐</span>
+                <span style={styles.slotSymbol}>🍒</span>
+              </div>
+            </div>
+            <div style={styles.slotReel}>
+              <div style={styles.slotReelInner2}>
+                <span style={styles.slotSymbol}>🔔</span>
+                <span style={styles.slotSymbol}>🍋</span>
+                <span style={styles.slotSymbol}>🎲</span>
+                <span style={styles.slotSymbol}>💎</span>
+                <span style={styles.slotSymbol}>7️⃣</span>
+                <span style={styles.slotSymbol}>🔔</span>
+              </div>
+            </div>
+            <div style={styles.slotReel}>
+              <div style={styles.slotReelInner3}>
+                <span style={styles.slotSymbol}>⭐</span>
+                <span style={styles.slotSymbol}>🍒</span>
+                <span style={styles.slotSymbol}>🔔</span>
+                <span style={styles.slotSymbol}>🍋</span>
+                <span style={styles.slotSymbol}>🎲</span>
+                <span style={styles.slotSymbol}>⭐</span>
+              </div>
+            </div>
+          </div>
           <h1 style={styles.title}>零六七</h1>
-          <p style={styles.subtitle}>酒桌吹牛 · 经典骰子</p>
+          <p style={styles.subtitle}>🎲 八个一 我劈！</p>
           <input
             placeholder="👤 输入你的名字"
             value={playerName}
@@ -1090,6 +1121,12 @@ export default function GamePage() {
           {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
           {disconnected && <div style={{ color: "#f87171", marginTop: 8, fontSize: 14 }}>⚠️ 网络连接断开，请检查网络</div>}
         </div>
+        <style>{`
+          @keyframes slotSpin {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-240px); }
+          }
+        `}</style>
       </div>
     );
   }
@@ -1535,14 +1572,14 @@ const styles: any = {
     animation: "pulse 5s ease-in-out infinite reverse",
   },
   card: {
-    background: "rgba(255,255,255,0.04)",
+    background: "rgba(20,8,30,0.55)",
     backdropFilter: "blur(30px)",
     borderRadius: "28px",
-    padding: "32px 24px",
+    padding: "30px 24px 34px",
     maxWidth: "400px",
     width: "100%",
-    border: "1px solid rgba(34,211,238,0.35)",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 40px rgba(34,211,238,0.15)",
+    border: "1px solid rgba(236,72,153,0.45)",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 50px rgba(236,72,153,0.25)",
     position: "relative",
     zIndex: 1,
   },
@@ -1550,48 +1587,85 @@ const styles: any = {
   title: {
     textAlign: "center" as const,
     color: "#fff",
-    fontSize: "32px",
-    fontWeight: "800",
-    marginBottom: "4px",
-    textShadow: "0 0 8px rgba(34,211,238,0.9), 0 0 18px rgba(236,72,153,0.7), 0 0 34px rgba(236,72,153,0.4)",
+    fontSize: "40px",
+    fontWeight: "900",
+    letterSpacing: "2px",
+    marginBottom: "6px",
+    textShadow: "0 0 10px rgba(236,72,153,1), 0 0 22px rgba(236,72,153,0.85), 0 0 40px rgba(168,85,247,0.6), 0 0 64px rgba(236,72,153,0.4)",
   },
-  subtitle: { textAlign: "center" as const, color: "rgba(255,255,255,0.4)", fontSize: "13px", marginBottom: "24px" },
+  subtitle: { textAlign: "center" as const, color: "#f9a8d4", fontSize: "14px", marginBottom: "22px", letterSpacing: "1px", textShadow: "0 0 8px rgba(236,72,153,0.6)" },
   input: {
     width: "100%",
     padding: "12px 16px",
     marginBottom: "10px",
     borderRadius: "12px",
-    border: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(236,72,153,0.35)",
+    background: "rgba(0,0,0,0.35)",
     color: "#fff",
     fontSize: "15px",
     outline: "none",
     transition: "all 0.3s",
     boxSizing: "border-box" as const,
+    boxShadow: "inset 0 0 12px rgba(236,72,153,0.12)",
   },
   btnGroup: { display: "flex", gap: "10px", marginTop: "4px" },
   btnPrimary: {
     flex: 1,
-    padding: "12px",
-    borderRadius: "12px",
+    padding: "14px",
+    borderRadius: "14px",
     border: "none",
-    background: "linear-gradient(135deg, #22d3ee, #0ea5e9)",
-    color: "#0f0f1a",
-    fontSize: "15px",
-    fontWeight: "700",
+    background: "linear-gradient(135deg, #ec4899, #a855f7)",
+    color: "#fff",
+    fontSize: "16px",
+    fontWeight: "800",
     cursor: "pointer",
-    boxShadow: "0 4px 20px rgba(34,211,238,0.5)",
+    boxShadow: "0 4px 24px rgba(236,72,153,0.6), 0 0 12px rgba(168,85,247,0.5)",
+    textShadow: "0 0 8px rgba(255,255,255,0.5)",
   },
   btnSecondary: {
     flex: 1,
-    padding: "12px",
-    borderRadius: "12px",
-    border: "1px solid rgba(236,72,153,0.55)",
-    background: "rgba(236,72,153,0.08)",
-    color: "#f9a8d4",
+    padding: "14px",
+    borderRadius: "14px",
+    border: "1.5px solid rgba(34,211,238,0.6)",
+    background: "rgba(34,211,238,0.08)",
+    color: "#67e8f9",
     fontSize: "15px",
-    fontWeight: "600",
+    fontWeight: "700",
     cursor: "pointer",
+    boxShadow: "0 0 14px rgba(34,211,238,0.25)",
+  },
+  slotMachine: {
+    display: "flex",
+    justifyContent: "center",
+    gap: "8px",
+    margin: "0 auto 16px",
+    padding: "10px 14px",
+    borderRadius: "16px",
+    background: "rgba(0,0,0,0.45)",
+    border: "2px solid rgba(236,72,153,0.55)",
+    boxShadow: "0 0 24px rgba(236,72,153,0.35), inset 0 0 18px rgba(168,85,247,0.2)",
+    width: "fit-content",
+  },
+  slotReel: {
+    width: "44px",
+    height: "48px",
+    overflow: "hidden",
+    borderRadius: "10px",
+    border: "2px solid rgba(251,191,36,0.7)",
+    background: "linear-gradient(180deg, rgba(40,10,50,0.9), rgba(10,5,20,0.9))",
+    position: "relative",
+    boxShadow: "inset 0 6px 10px rgba(0,0,0,0.6), inset 0 -6px 10px rgba(0,0,0,0.6)",
+  },
+  slotReelInner: { display: "flex", flexDirection: "column", animation: "slotSpin 1.1s linear infinite" },
+  slotReelInner2: { display: "flex", flexDirection: "column", animation: "slotSpin 1.45s linear infinite" },
+  slotReelInner3: { display: "flex", flexDirection: "column", animation: "slotSpin 0.85s linear infinite" },
+  slotSymbol: {
+    height: "48px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "26px",
+    lineHeight: "48px",
   },
   tableContainer: {
     position: "relative",

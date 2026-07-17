@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "聚会游戏厅",
-  description: "067骰子、炸金花、21点、小姐牌",
+  title: "不醉不归",
+  description: "067骰子、炸金花、21点黑杰克",
 };
 
 export const viewport: Viewport = {
