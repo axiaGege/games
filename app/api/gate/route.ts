@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  // 未配置 SITE_PASSWORD → 口令门关闭（开放），直接放行、不弹框
+  if (!process.env.SITE_PASSWORD) {
+    return NextResponse.json({ ok: true });
+  }
   const ok = req.cookies.get("site_unlocked")?.value === "1";
   return NextResponse.json({ ok });
 }
