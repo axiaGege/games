@@ -3109,10 +3109,10 @@ export default function ZhaJinHuaPage() {
           @keyframes zjhBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
           @keyframes zjhFlow { 0%{background-position:0% 50%} 100%{background-position:300% 50%} }
           .zjh-scan{position:absolute;inset:0;background:repeating-linear-gradient(to bottom,rgba(255,255,255,0.04) 0 1px,transparent 1px 3px);pointer-events:none;}
-          .zjh-noise{position:absolute;inset:0;opacity:0.05;background-image:radial-gradient(#fff 0.5px,transparent 0.5px);background-size:4px 4px;}
+          .zjh-noise{position:absolute;inset:0;opacity:0.05;background-image:radial-gradient(#fff 0.5px,transparent 0.5px);background-size:4px 4px;pointer-events:none;}
           .zjh-title{font-size:66px;font-weight:900;letter-spacing:8px;color:#fff;text-shadow:-3px 0 #ff2b2b,3px 0 #00e5ff;animation:zjhFlick 4s infinite;margin:0;}
           .zjh-flow{font-size:24px;font-weight:700;letter-spacing:5px;background:linear-gradient(90deg,#ff3b6b,#ffd24d,#00e5ff,#ff3b6b);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:zjhFlow 4s linear infinite;margin-top:14px;}
-          .zjh-term{border:1px solid #555;background:rgba(0,0,0,0.55);padding:18px 20px;width:100%;max-width:420px;box-sizing:border-box;}
+          .zjh-term{border:1px solid #555;background:rgba(0,0,0,0.55);padding:18px 20px;width:100%;max-width:420px;box-sizing:border-box;position:relative;z-index:1;}
           .zjh-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:22px;color:#d2d2d2;}
           .zjh-prompt{color:#888;font-weight:bold;}
           .zjh-input{flex:1;background:transparent;border:none;border-bottom:1px solid #444;color:#e8e8e8;font-family:inherit;font-size:22px;padding:4px 2px;outline:none;}
