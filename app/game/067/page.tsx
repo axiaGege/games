@@ -282,6 +282,17 @@ export default function GamePage() {
       setDisconnected(true);
       setErrorMsg('⚠️ 连接断开，请检查网络后重试');
     }
+    // 双通道同步：实时广播之外，同时把整局状态落库到 rooms 表的 resultdetails 字段。
+    // 这样断网/刷新重连后能从数据库把进行中的对局读回来续上（沿用 chosen/blackjack 的做法）。
+    try {
+      const { players, ...rest } = state;
+      await supabase.from("rooms").update({
+        players,
+        resultdetails: JSON.stringify(rest),
+      }).eq("id", roomId);
+    } catch (e) {
+      console.error('❌ 数据库同步失败:', e);
+    }
   };
 
   const leaveRoom = async () => {
@@ -430,6 +441,32 @@ export default function GamePage() {
       setRoomId(data.id);
       setPlayers(currentPlayers);
       setJoined(true);
+      // 双通道恢复：从数据库读出进行中的对局状态，断网/刷新后接回原局（与订阅回调恢复逻辑一致）
+      try {
+        const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+        if (saved) {
+          setGameStarted(saved.gameStarted || false);
+          setGameOver(saved.gameOver || false);
+          if (saved.gameOver) { setShowReveal(true); setIsLidOpen(false); } else setShowReveal(false);
+          setRvOpenerName(saved.opener || "");
+          setRvIsSnapOpen(saved.isSnapOpen || false);
+          setResult(saved.result || "");
+          setCurrentPlayer(saved.currentPlayer || "");
+          setLastBid(saved.lastBid || null);
+          setPhase(saved.phase || "waiting");
+          setHasRolled(saved.hasRolled || false);
+          setOneSealed(saved.oneSealed || false);
+          setBidHistory(saved.bidHistory || []);
+          setWarning(saved.warning || "");
+          setCupOpened(saved.cupOpened || false);
+          setSelectedTarget(saved.selectedTarget || null);
+          setNextStarter(saved.nextStarter || null);
+          setDiceShaking(saved.diceShaking || false);
+          if (saved.lastBid) setLastBidDisplay({ count: saved.lastBid.count, value: saved.lastBid.value });
+          else setLastBidDisplay(null);
+          if (saved.phase === "waiting" || saved.phase === "ended") { setSelectedCount(null); setSelectedValue(null); }
+        }
+      } catch (e) { console.error('❌ 恢复对局状态失败:', e); }
       try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
       return;
     }
@@ -807,26 +844,12 @@ export default function GamePage() {
     let winner = "";
     let loser = "";
 
-    // 情况1：双方都是顺子 → 开牌者输
+    // 情况1：双方都是顺子 → 开牌者输（特殊规则保留）
     if (targetIsStraight && callerIsStraight) {
       loser = caller;
       winner = bidder;
-    } 
-    // 情况2：被开者是顺子，开牌者不是顺子 → 只统计开牌者
-    else if (targetIsStraight) {
-      if (callerData && callerData.dice && callerData.dice.length > 0) {
-        const count = countForValue(callerData.dice, lastBid.value, oneSealed);
-        totalCount = count;
-      }
-      if (totalCount >= calledCount) {
-        winner = bidder;
-        loser = caller;
-      } else {
-        winner = caller;
-        loser = bidder;
-      }
     }
-    // 情况3：被开者不是顺子 → 统计所有玩家（直接用面值统计）
+    // 通用：遍历所有玩家，各自按规则算有效个数（顺子手自动归零、豹子加成、封印1），求和判定；任意人数都适用
     else {
       let total = 0;
       for (const p of players) {
@@ -854,8 +877,6 @@ export default function GamePage() {
     const cupLabel = isSnapOpen ? '（抢开×2杯）' : '（顺开×1杯）';
     if (targetIsStraight && callerIsStraight) {
       resultMsg = `🍺 ${loser} 输了！（双方都是顺子，谁开谁喝）`;
-    } else if (targetIsStraight) {
-      resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，${caller}的骰子实际有 ${totalCount} 个${lastBid.value}`;
     } else {
       resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，全场实际有 ${totalCount} 个${lastBid.value}`;
     }
@@ -890,7 +911,7 @@ export default function GamePage() {
   };
 
   const resetGame = async () => {
-    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: p.seatId === 0 ? true : false }));
+    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false }));
     setPlayers(resetPlayers);
     setGameStarted(false);
     setGameOver(false);
@@ -914,8 +935,7 @@ export default function GamePage() {
     setSelectedValue(null);
     setDiceShaking(false);
     setLastBidDisplay(null);
-    setNextStarter(null);  // 清空 nextStarter
-    
+
     await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
     
     await broadcastState(roomId, {
@@ -932,7 +952,7 @@ export default function GamePage() {
       warning: "",
       cupOpened: false,
       selectedTarget: null,
-      nextStarter: null,
+      nextStarter: nextStarter,
       diceShaking: false,
     });
   };
@@ -1245,7 +1265,7 @@ export default function GamePage() {
         >
           {!gameStarted && phase !== "rolling" ? (
             <span style={styles.statusText}>
-              ⏳ 等待开始 {players.length >= 2 ? '（房主点击"开始游戏"）' : '（至少2人）'}
+              ⏳ 等待开始 {players.length >= 2 ? `（${(nextStarter || '房主')}点击"开始游戏"）` : '（至少2人）'}
             </span>
           ) : gameOver ? (
             <span style={styles.resultText}>{result}</span>
@@ -1302,7 +1322,7 @@ export default function GamePage() {
                   {players.find(p => p.name === playerName)?.ready ? '✅ 已准备' : '⏳ 准备'}
                 </button>
               )}
-              {players.length >= 2 && players.find(p => p.name === playerName)?.seatId === 0 && (
+              {players.length >= 2 && playerName === (nextStarter || players.find(p => p.seatId === 0)?.name) && (
                 <button onClick={startGame} style={styles.btnStart} disabled={diceShaking}>
                   {diceShaking ? '摇骰中...' : '🚀 开始游戏'}
                 </button>

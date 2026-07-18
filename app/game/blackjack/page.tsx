@@ -2641,7 +2641,7 @@ for (const r of results) {
                     return (
                       <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
                         <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
-                        <span style={{ color: '#e879a8' }}>赢 · 庄家喝 {d.penalty} 杯</span>
+                        <span style={{ color: '#e879a8' }}>赢 · 庄家喝 {d.dealerPenalty ?? d.penalty} 杯</span>
                       </div>
                     );
                   }

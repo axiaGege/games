@@ -3102,41 +3102,48 @@ export default function ZhaJinHuaPage() {
 
   if (!joined) {
     return (
-      <div style={styles.container}>
-        <div style={styles.cardGlow1}></div>
-        <div style={styles.cardGlow2}></div>
-        <div style={styles.cardGlow3}></div>
-        <div style={styles.card}>
-          <div style={styles.logoContainer}>
-            <span style={styles.logoEmoji}>♠</span>
-            <span style={styles.logoEmoji}>♥</span>
-            <span style={styles.logoEmoji}>♣</span>
-            <span style={styles.logoEmoji}>♦</span>
+      <div style={{ position:'relative', minHeight:'100dvh', width:'100%', background:'#060606', overflow:'hidden', fontFamily:"'Courier New',Courier,monospace", color:'#e8e8e8', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', boxSizing:'border-box', padding:'24px' }}>
+        <style>{`
+          @keyframes zjhDrift { 0%{top:28%} 100%{top:56%} }
+          @keyframes zjhFlick { 0%,100%{opacity:1} 92%{opacity:1} 94%{opacity:0.35} 96%{opacity:1} }
+          @keyframes zjhBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+          @keyframes zjhFlow { 0%{background-position:0% 50%} 100%{background-position:300% 50%} }
+          .zjh-scan{position:absolute;inset:0;background:repeating-linear-gradient(to bottom,rgba(255,255,255,0.04) 0 1px,transparent 1px 3px);pointer-events:none;}
+          .zjh-noise{position:absolute;inset:0;opacity:0.05;background-image:radial-gradient(#fff 0.5px,transparent 0.5px);background-size:4px 4px;}
+          .zjh-title{font-size:66px;font-weight:900;letter-spacing:8px;color:#fff;text-shadow:-3px 0 #ff2b2b,3px 0 #00e5ff;animation:zjhFlick 4s infinite;margin:0;}
+          .zjh-flow{font-size:24px;font-weight:700;letter-spacing:5px;background:linear-gradient(90deg,#ff3b6b,#ffd24d,#00e5ff,#ff3b6b);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:zjhFlow 4s linear infinite;margin-top:14px;}
+          .zjh-term{border:1px solid #555;background:rgba(0,0,0,0.55);padding:18px 20px;width:100%;max-width:420px;box-sizing:border-box;}
+          .zjh-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:22px;color:#d2d2d2;}
+          .zjh-prompt{color:#888;font-weight:bold;}
+          .zjh-input{flex:1;background:transparent;border:none;border-bottom:1px solid #444;color:#e8e8e8;font-family:inherit;font-size:22px;padding:4px 2px;outline:none;}
+          .zjh-input:focus{border-bottom-color:#ff3b3b;box-shadow:0 2px 8px -2px rgba(255,59,59,0.6);}
+          .zjh-input::placeholder{color:#666;}
+          .zjh-cursor{display:inline-block;width:11px;height:22px;background:#e8e8e8;vertical-align:-3px;animation:zjhBlink 1s step-end infinite;}
+          .zjh-btn{border:2px solid #ff3b3b;color:#ff5b5b;font-size:26px;font-weight:700;padding:14px 28px;background:rgba(255,43,43,0.08);letter-spacing:4px;cursor:pointer;font-family:inherit;margin-top:28px;}
+          .zjh-btn:active{background:rgba(255,43,43,0.22);}
+          .zjh-sub{font-size:16px;color:#7fd9e8;letter-spacing:1px;margin-top:18px;cursor:pointer;background:none;border:none;font-family:inherit;}
+          .zjh-band{position:absolute;left:0;right:0;height:70px;background:linear-gradient(to bottom,transparent,rgba(255,255,255,0.10),transparent);animation:zjhDrift 6s infinite alternate;pointer-events:none;}
+        `}</style>
+        <div className="zjh-scan"></div>
+        <div className="zjh-noise"></div>
+        <div className="zjh-band"></div>
+        <h1 className="zjh-title">炸金花</h1>
+        <div className="zjh-flow">第三张,想象为王</div>
+        <div className="zjh-term">
+          <div className="zjh-row">
+            <span className="zjh-prompt">&gt;</span>
+            <input className="zjh-input" placeholder="代号" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
+            <span className="zjh-cursor"></span>
           </div>
-          <h1 style={styles.title}>
-            <span style={styles.titleRed}>公牌</span>
-            <span style={styles.titleGold}>炸金花</span>
-          </h1>
-          <p style={styles.subtitle}>♢ 第三张牌 · 想象为王 ♢</p>
-          <input
-            placeholder="👤 输入你的名字"
-            value={playerName}
-            onChange={(e) => setPlayerName(e.target.value)}
-            style={styles.input}
-          />
-          <input
-            placeholder="🔐 房间密码(设置或加入)"
-            value={roomPassword}
-            onChange={(e) => setRoomPassword(e.target.value)}
-            style={styles.input}
-          />
-          <div style={styles.btnGroup}>
-            <button onClick={createRoom} style={styles.btnPrimary}>🃏 开房</button>
-            <button onClick={joinRoom} style={styles.btnSecondary}>♢ 加入房间</button>
+          <div className="zjh-row">
+            <span className="zjh-prompt">&gt;</span>
+            <input className="zjh-input" placeholder="暗号" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} />
           </div>
-          {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
-          {disconnected && <div style={{ color: "#f87171", marginTop: 8, fontSize: 14 }}>⚠️ 网络连接断开,请检查网络</div>}
         </div>
+        <button className="zjh-btn" onClick={joinRoom}>▶ 我要验牌</button>
+        <button className="zjh-sub" onClick={createRoom}>没有房间？点这里开桌</button>
+        {errorMsg && <div style={{ color:"#f87171", marginTop:16, fontSize:14 }}>{errorMsg}</div>}
+        {disconnected && <div style={{ color:"#f87171", marginTop:8, fontSize:14 }}>⚠️ 网络连接断开,请检查网络</div>}
       </div>
     );
   }
