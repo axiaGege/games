@@ -5,6 +5,7 @@ const games = [
   { name: "炸金花", icon: "🃏", desc: "三人扑克，比牌运气", route: "/game/zjh", theme: "gzjh" },
   { name: "21点黑杰克", icon: "🂡", desc: "接近21点，不许超", route: "/game/blackjack", theme: "gbj" },
   { name: "天选之子", icon: "🍷", desc: "转盘抽签，天命人喝", route: "/game/chosen", theme: "gtxzz" },
+  { name: "小姐牌", icon: "🍸", desc: "抽牌罚酒，今夜你做主", route: "/game/misspai", theme: "gmiss" },
 ];
 
 const styleCss = `
@@ -37,6 +38,12 @@ a[class^="g"] { transition: transform .25s, box-shadow .25s; }
 .gtxzz:hover { transform:translateY(-8px); box-shadow:0 18px 40px rgba(0,0,0,0.5), 0 0 40px rgba(212,175,55,0.5), inset 0 0 22px rgba(196,30,58,0.18); }
 .gtxzz .home-icon { filter:drop-shadow(0 0 10px rgba(212,175,55,0.9)); }
 .gtxzz .home-name { text-shadow:0 0 10px rgba(212,175,55,0.8); }
+
+.gmiss { background:rgba(255,79,139,0.10); border:1.5px solid rgba(255,79,139,0.5);
+  box-shadow:0 10px 30px rgba(0,0,0,0.4), 0 0 24px rgba(255,79,139,0.25), inset 0 0 18px rgba(226,89,126,0.12); }
+.gmiss:hover { transform:translateY(-8px); box-shadow:0 18px 40px rgba(0,0,0,0.5), 0 0 40px rgba(255,79,139,0.5), inset 0 0 22px rgba(226,89,126,0.18); }
+.gmiss .home-icon { filter:drop-shadow(0 0 10px rgba(255,79,139,0.9)); }
+.gmiss .home-name { text-shadow:0 0 10px rgba(255,79,139,0.8); }
 `;
 
 export default function Home() {
