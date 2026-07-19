@@ -111,7 +111,7 @@ const parsePlayers = (raw: any): any[] => {
 const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' }) => {
   const sizeMap = {
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14 },
-    medium: { width: 30, height: 42, fontSize: 11, symbolSize: 13 },
+    medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24 },
   };
   const s = sizeMap[size] || sizeMap.medium;
@@ -1499,7 +1499,12 @@ export default function BlackjackPage() {
     }
 
     let dealerResult = '';
-    if (dealerLosses > 0 && dealerWins > 0) dealerResult = '庄家输（部分赢）';
+    let dealerSelfPenalty = 0;
+    if (isBust(dealer.cards)) {
+      // 庄家爆牌：庄家喝 2 杯（与偷鸡/普通爆牌规则一致），不再误判为「平局」
+      dealerResult = '庄家爆牌';
+      dealerSelfPenalty = 2;
+    } else if (dealerLosses > 0 && dealerWins > 0) dealerResult = '庄家输（部分赢）';
     else if (dealerLosses > 0) dealerResult = '庄家输';
     else if (dealerWins > 0 && dealerTies === 0) dealerResult = '庄家赢';
     else if (dealerWins === 0 && dealerTies > 0 && dealerLosses === 0) dealerResult = '庄家平局';
@@ -1511,7 +1516,7 @@ export default function BlackjackPage() {
       name: dealer.name,
       cards: dealer.cards,
       result: dealerResult,
-      penalty: 0,
+      penalty: dealerSelfPenalty,
       who: 'dealer'
     });
 
@@ -2913,7 +2918,7 @@ const styles: any = {
     position: "relative", zIndex: 1, width: "100%", maxWidth: "500px",
     background: "linear-gradient(160deg, rgba(46,12,34,0.7), rgba(20,6,16,0.8))",
     backdropFilter: "blur(30px)", borderRadius: "24px",
-    padding: "12px 10px", border: "1px solid rgba(214,140,170,0.18)",
+    padding: "12px 10px", paddingBottom: "88px", border: "1px solid rgba(214,140,170,0.18)",
     boxShadow: "0 30px 80px rgba(0,0,0,0.5), 0 0 30px rgba(180,60,110,0.1)",
   },
   table: {
@@ -2963,8 +2968,12 @@ const styles: any = {
     fontSize: "14px", fontWeight: "600", cursor: "pointer", boxShadow: "0 4px 16px rgba(224,169,109,0.2)",
   },
   myCardsArea: {
-    marginTop: "10px", padding: "8px 12px", background: "rgba(20,4,14,0.5)",
-    borderRadius: "10px", textAlign: "center" as const,
+    position: "fixed" as const, left: "50%", transform: "translateX(-50%)",
+    bottom: 0, width: "100%", maxWidth: "500px", zIndex: 50,
+    background: "rgba(20,4,14,0.94)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+    borderTop: "1px solid rgba(214,140,170,0.3)", boxShadow: "0 -6px 24px rgba(0,0,0,0.45)",
+    padding: "8px 12px", paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
+    textAlign: "center" as const,
   },
   myCardsLabel: { fontSize: "12px", color: "rgba(235,195,215,0.5)", marginBottom: "4px" },
   myCardsContainer: { cursor: "pointer", display: "flex", justifyContent: "center", alignItems: "center", minHeight: "40px" },
