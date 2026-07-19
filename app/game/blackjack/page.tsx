@@ -111,7 +111,7 @@ const parsePlayers = (raw: any): any[] => {
 const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' }) => {
   const sizeMap = {
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14 },
-    medium: { width: 28, height: 40, fontSize: 11, symbolSize: 18 },
+    medium: { width: 30, height: 42, fontSize: 11, symbolSize: 13 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24 },
   };
   const s = sizeMap[size] || sizeMap.medium;
@@ -2594,6 +2594,7 @@ for (const r of results) {
               {phase === "player_turn" && currentPlayer && <span style={{ color: '#f0a8c4', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
             </span>
             <button onClick={() => setShowRules(true)} style={{ background: 'transparent', border: '1px solid rgba(240,168,196,0.5)', color: '#f0a8c4', fontSize: '12px', borderRadius: '10px', padding: '2px 8px', cursor: 'pointer' }}>❓规则</button>
+            <button onClick={() => setConfirmDialog({ show: true, message: '确定退出房间吗？退出后将返回登录页。', callback: leaveRoom })} style={{ background: 'transparent', border: '1px solid rgba(255,120,120,0.5)', color: '#ff8a8a', fontSize: '12px', borderRadius: '10px', padding: '2px 8px', cursor: 'pointer', marginLeft: '8px' }}>🚪退出</button>
           </div>
         </div>
 
