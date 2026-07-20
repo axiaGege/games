@@ -437,6 +437,12 @@ export default function BlackjackPage() {
         });
 
         setPhase(prevPhase => {
+          // 防回退：已进入发牌/玩家回合/庄家回合时，拒绝被迟到旧广播拉回 抽庄/等待
+          // （合法流程里对局阶段只会自动走向下一局 dealing，从不回退 wheel/waiting）
+          const _protected = prevPhase === "dealing" || prevPhase === "player_turn" || prevPhase === "dealer_turn";
+          if (_protected && (state.phase === "wheel" || state.phase === "waiting" || state.phase === "waiting_for_dealer")) {
+            return prevPhase;
+          }
           if (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn") {
             return state.phase;
           }
@@ -486,7 +492,8 @@ export default function BlackjackPage() {
             setDrawOwner(ctrl.owner || null);
             setDrawRule(ctrl.rule || null);
             setDrawSubPhase(ctrl.rule ? "reveal" : "choose");
-            setDrawDeadline(ctrl.deadline || null);
+            // 倒计时改为各自本地起算，避免各手机时钟偏差导致显示不一致
+            setDrawDeadline(ctrl.deadline ? Date.now() + 8000 : null);
             const revealed = ctrl.revealed ? new Set<string>(ctrl.revealed) : new Set<string>();
             setDrawRevealed(revealed);
             const cards = unpackDrawCards(state.wheelSegments);
@@ -2065,6 +2072,11 @@ for (const r of results) {
     }, 250);
     return () => clearInterval(timer);
   }, [drawDeadline, drawSubPhase, handleDrawRevealTimeout]);
+
+  // 兜底：只要不在抽庄阶段，强制关闭抽庄遮罩（防止迟到旧广播把遮罩卡在“等待庄家选择”）
+  useEffect(() => {
+    if (phase !== "wheel") setWheelVisible(false);
+  }, [phase]);
 
   // 进入选庄阶段
   const enterDrawPhase = async () => {
