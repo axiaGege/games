@@ -110,9 +110,9 @@ const parsePlayers = (raw: any): any[] => {
 // ==================== 🃏 扑克牌组件 ====================
 const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' }) => {
   const sizeMap = {
-    small: { width: 22, height: 32, fontSize: 9, symbolSize: 14 },
-    medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10 },
-    large: { width: 36, height: 50, fontSize: 14, symbolSize: 24 },
+    small: { width: 22, height: 32, fontSize: 9, symbolSize: 14, corner: 3 },
+    medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10, corner: 5 },
+    large: { width: 36, height: 50, fontSize: 14, symbolSize: 24, corner: 7 },
   };
   const s = sizeMap[size] || sizeMap.medium;
 
@@ -121,9 +121,9 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
       <div style={{
         width: s.width,
         height: s.height,
-        borderRadius: 4,
-        background: 'linear-gradient(135deg, #3a1030 0%, #1a0512 100%)',
-        border: '1.5px solid rgba(255,255,255,0.15)',
+        borderRadius: s.corner,
+        background: 'linear-gradient(135deg, #7a1f2b 0%, #4a0e18 100%)',
+        border: '1.5px solid rgba(255,215,190,0.25)',
         boxShadow: '0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)',
         display: 'flex',
         alignItems: 'center',
@@ -135,33 +135,33 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
         <div style={{
           position: 'absolute',
           inset: 0,
-          background: 'repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)',
+          background: 'repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,220,200,0.06) 4px, rgba(255,220,200,0.06) 8px)',
         }} />
         <div style={{
           position: 'absolute',
           inset: 3,
           borderRadius: 2,
-          border: '1px solid rgba(255,255,255,0.08)',
+          border: '1px solid rgba(255,220,200,0.12)',
         }} />
-        <span style={{ fontSize: s.symbolSize, opacity: 0.3, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>🃏</span>
-        <span style={{ position: 'absolute', top: 2, left: 3, fontSize: 5, color: 'rgba(255,255,255,0.15)' }}>♠</span>
-        <span style={{ position: 'absolute', bottom: 2, right: 3, fontSize: 5, color: 'rgba(255,255,255,0.15)', transform: 'rotate(180deg)' }}>♠</span>
+        <span style={{ fontSize: s.symbolSize, opacity: 0.35, color: '#ffe8e0', textShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>♠</span>
+        <span style={{ position: 'absolute', top: 2, left: 3, fontSize: 5, color: 'rgba(255,220,200,0.25)' }}>♠</span>
+        <span style={{ position: 'absolute', bottom: 2, right: 3, fontSize: 5, color: 'rgba(255,220,200,0.25)', transform: 'rotate(180deg)' }}>♠</span>
       </div>
     );
   }
 
   if (!card) return null;
   const isRed = card.suit === '♥' || card.suit === '♦';
-  const color = isRed ? '#e53935' : '#1a1a1a';
+  const color = isRed ? '#A32D2D' : '#2C2C2A';
   const rankDisplay = card.rank === '10' ? '10' : card.rank;
 
   return (
     <div style={{
       width: s.width,
       height: s.height,
-      borderRadius: 4,
+      borderRadius: s.corner,
       background: '#ffffff',
-      border: '1.5px solid rgba(0,0,0,0.12)',
+      border: '1.5px solid #D3D1C7',
       boxShadow: '0 2px 8px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.8)',
       display: 'flex',
       flexDirection: 'column',
@@ -1027,7 +1027,8 @@ export default function BlackjackPage() {
   // ==================== 玩家操作 ====================
   const handleHit = async () => {
   console.log('🔥 handleHit 被调用');
-  if (phase !== "player_turn") return;
+  // 玩家回合或庄家回合（庄家也自由拿牌，无17点限制）均可要牌
+  if (phase !== "player_turn" && phase !== "dealer_turn") return;
   const pNow = playersRef.current;
   const me = pNow.find(p => p.name === playerName);
   if (!me) { console.warn('⛔ 找不到自己'); return; }
@@ -1128,7 +1129,8 @@ export default function BlackjackPage() {
   const handleStand = async (auto: boolean = false) => {
     console.log('🔥 handleStand 被调用, auto:', auto);
 
-    if (phase !== "player_turn") return;
+    // 玩家回合或庄家回合（庄家也自由拿牌，无17点限制）均可停牌
+    if (phase !== "player_turn" && phase !== "dealer_turn") return;
 
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
@@ -1499,26 +1501,25 @@ export default function BlackjackPage() {
     }
 
     let dealerResult = '';
-    let dealerSelfPenalty = 0;
     if (isBust(dealer.cards)) {
-      // 庄家爆牌：庄家喝 2 杯（与偷鸡/普通爆牌规则一致），不再误判为「平局」
+      // 庄家爆牌：不再误判为「平局」，杯数按"取最大一份"口径稍后回填
       dealerResult = '庄家爆牌';
-      dealerSelfPenalty = 2;
-    } else if (dealerLosses > 0 && dealerWins > 0) dealerResult = '庄家输（部分赢）';
-    else if (dealerLosses > 0) dealerResult = '庄家输';
+    } else if (dealerLosses > 0 && dealerWins > 0) { dealerResult = '庄家输（部分赢）'; }
+    else if (dealerLosses > 0) { dealerResult = '庄家输'; }
     else if (dealerWins > 0 && dealerTies === 0) dealerResult = '庄家赢';
     else if (dealerWins === 0 && dealerTies > 0 && dealerLosses === 0) dealerResult = '庄家平局';
     else if (dealerWins > 0 && dealerTies > 0) dealerResult = '庄家赢（部分平局）';
     else dealerResult = '庄家';
 
-    // 添加庄家自己的牌面
-    results.push({
+    // 添加庄家自己的牌面（penalty 稍后按"取最大一份"口径回填）
+    const dealerRecord: any = {
       name: dealer.name,
       cards: dealer.cards,
       result: dealerResult,
-      penalty: dealerSelfPenalty,
+      penalty: 0,
       who: 'dealer'
-    });
+    };
+    results.push(dealerRecord);
 
     for (const player of activeNonDealerPlayers) {
       if (player.cardCount === 0 || !player.cards || player.cards.length === 0) continue;
@@ -1582,13 +1583,27 @@ export default function BlackjackPage() {
 
       const cmp = compareHands(player.cards, dealer.cards);
       if (cmp === 1) {
-        results.push({ name: player.name, cards: player.cards, result: '赢', penalty: 1, who: 'dealer' });
+        results.push({ name: player.name, cards: player.cards, result: '赢', penalty: 0, who: 'dealer', dealerPenalty: 1 });
       } else if (cmp === -1) {
         results.push({ name: player.name, cards: player.cards, result: '输', penalty: 1, who: player.name });
       } else {
         results.push({ name: player.name, cards: player.cards, result: '平局', penalty: 0, who: 'none' });
       }
     }
+
+    // 按"取最大一份"口径回填庄家自己该喝的杯数：
+    // 取所有让庄家喝酒的玩家记录中最大的一份（五小龙3 / 黑杰克2 / 普通比牌赢1 / 庄家爆玩家赢2 / 庄家第5张爆3）
+    let dealerDrink = 0;
+    for (const r of results) {
+      if (r === dealerRecord) continue;
+      if (r.who === 'dealer') {
+        const dp = r.dealerPenalty !== undefined ? r.dealerPenalty : r.penalty;
+        if (dp > dealerDrink) dealerDrink = dp;
+      }
+    }
+    // 庄家爆牌兜底：即使无人比牌赢（比如都认爆），庄家爆牌自罚 2 杯
+    if (isBust(dealer.cards)) dealerDrink = Math.max(dealerDrink, 2);
+    dealerRecord.penalty = dealerDrink;
 
     setResultDetails(results);
 
@@ -1622,6 +1637,9 @@ for (const r of results) {
     }
     if (hasDealerPenalty) {
       summary += `→ 庄家共喝 ${maxDealerPenalty} 杯（最高，由 ${maxDealerName} 触发）`;
+    } else if (dealerRecord.penalty > 0) {
+      // 全员认爆+庄家爆等场景：无 who:'dealer' 记录，但庄家自己 penalty 已含杯数，补打一致
+      summary += `→ 庄家共喝 ${dealerRecord.penalty} 杯`;
     } else {
       summary = summary.trim();
     }
@@ -2137,93 +2155,242 @@ for (const r of results) {
   };
 
   // ==================== 座位渲染 ====================
-  const renderSeats = () => {
-    const seatPositions = [
-      { seatId: 0, left: 12, top: 5 },
-      { seatId: 1, left: 37, top: 5 },
-      { seatId: 2, left: 63, top: 5 },
-      { seatId: 3, left: 88, top: 5 },
-      { seatId: 4, left: 4, top: 28 },
-      { seatId: 5, left: 4, top: 56 },
-      { seatId: 6, left: 12, top: 86 },
-      { seatId: 7, left: 37, top: 86 },
-      { seatId: 10, left: 63, top: 86 },
-      { seatId: 11, left: 88, top: 86 },
-      { seatId: 8, left: 96, top: 28 },
-      { seatId: 9, left: 96, top: 56 },
-    ];
+  const renderBoard = () => {
+    const isSettle = phase === "waiting_for_dealer";
+    const isWaiting = phase === "waiting";
+    const isMyTurnFlag = phase === "player_turn" && currentPlayer?.name === playerName && !gameOver;
 
-    return seatPositions.map((pos) => {
-      const player = players.find(p => p.seatId === pos.seatId) || null;
-      const isMe = player?.name === playerName;
-      const isDealerFlag = player?.isDealer || false;
-      const isActive = phase === "player_turn" && player?.name === currentPlayer?.name && !gameOver;
-      const hasCards = player && player.cardCount > 0;
-      const isStanding = player?.isStanding || false;
-      const isBust = player?.isBust || false;
-      const isFive = player?.isFiveCard || false;
-      const isBlackjackFlag = player?.isBlackjack || false;
-      const isReady = readyPlayers.includes(player?.name || "");
-      const displayName = player ? (player.name.length > 4 ? player.name.slice(0, 4) + '..' : player.name) : '';
+    const dealerP = players.find((p) => p.isDealer) || players.find((p) => p.name === dealerId);
+    const dealerRD = resultDetails.find((d) => d.name === dealerId);
+    const dealerName = dealerRD?.name || dealerP?.name || dealerId || '';
+    const dealerIsMe = dealerName === playerName;
 
-      return (
-        <div key={pos.seatId} style={{
-          position: 'absolute',
-          left: `${pos.left}%`,
-          top: `${pos.top}%`,
-          transform: 'translate(-50%, -50%)',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '60px',
-          minHeight: '50px',
-          background: isActive ? 'rgba(214,140,170,0.22)' : (isDealerFlag ? 'rgba(214,140,170,0.12)' : (player ? 'rgba(255,255,255,0.04)' : 'transparent')),
-          borderRadius: '10px',
-          border: isActive ? '2px solid #f0a8c4' : (isDealerFlag ? '2px solid #f0a8c4' : (player ? '1px solid rgba(255,255,255,0.06)' : 'none')),
-          boxShadow: isActive ? '0 0 20px rgba(214,140,170,0.3)' : (isDealerFlag ? '0 0 15px rgba(214,140,170,0.15)' : 'none'),
-          padding: '2px 4px',
-          transition: 'all 0.3s',
-          cursor: 'default',
-          zIndex: 2,
-          pointerEvents: 'none' as const,
-        }}>
-          {player ? (
-            <>
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '1px',
-                fontSize: '10px',
-                fontWeight: isMe ? 'bold' : 'normal',
-                color: isMe ? '#f0a8c4' : '#ddd',
-                maxWidth: '100%',
-                textAlign: 'center' as const,
-                lineHeight: 1.2,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                  {isDealerFlag && <span style={{ fontSize: '12px', color: '#f0a8c4' }}>👑</span>}
-                  <span>{isMe ? '你' : displayName}</span>
-                  {player?.status === 'watching' && <span style={{ fontSize: '8px', color: '#888' }}>（观战）</span>}
+    let dealerCards: any[] = [];
+    let dealerPt = '';
+    let dealerBj = false;
+    let dealerBust = false;
+    let dealerFive = false;
+    if (isSettle && dealerRD?.cards) {
+      dealerCards = dealerRD.cards;
+      const total = calculateHand(dealerCards);
+      dealerBj = isBlackjack(dealerCards);
+      dealerBust = total > 21;
+      dealerFive = dealerCards.length === 5 && total <= 21;
+      dealerPt = dealerBj ? '黑杰克' : String(total);
+    } else if (dealerP) {
+      dealerPt = dealerP.cardCount > 0 ? dealerP.cardCount + '张' : '—';
+    }
+
+    const dealerCard = (
+      <div style={{
+        width: '100%', maxWidth: '360px', borderRadius: '14px', padding: '7px 11px',
+        background: 'linear-gradient(160deg, rgba(255,210,122,0.12), rgba(46,12,34,0.5))',
+        border: `1px solid ${dealerBj ? '#ffd27a' : 'rgba(255,210,122,0.35)'}`,
+        boxShadow: dealerBj ? '0 0 24px rgba(255,210,122,0.3)' : 'none',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px'
+      }}>
+        <div style={{ fontSize: '11px', color: '#ffd27a', letterSpacing: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '13px' }}>👑</span>
+          <span>庄家 {dealerIsMe ? '（你）' : dealerName}</span>
+          {dealerBj && <span style={{ background: 'linear-gradient(120deg,#ffd27a,#d89a2a)', color: '#2a0820', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px', boxShadow: '0 0 12px rgba(255,210,122,0.6)' }}>黑杰克</span>}
+          {dealerBust && <span style={{ background: 'rgba(255,90,122,0.2)', color: '#ff7a93', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>爆</span>}
+          {dealerFive && <span style={{ background: 'rgba(120,170,255,0.2)', color: '#9ec4ff', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>五小龙</span>}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '9px', marginTop: '3px' }}>
+          <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffd27a', lineHeight: 1, textShadow: '0 0 16px rgba(255,210,122,0.5)', minWidth: '44px' }}>
+            {dealerPt}<small style={{ fontSize: '12px', color: '#d9b9c8', fontWeight: 400 }}>{isSettle && !dealerBj ? '点' : ''}</small>
+          </div>
+          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+            {isSettle && dealerCards.length > 0 ? (
+              dealerCards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="small" />)
+            ) : dealerP && dealerP.cardCount > 0 ? (
+              Array.from({ length: dealerP.cardCount }).map((_, i) => (
+                <div key={i} style={{ width: '22px', height: '31px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+              ))
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+
+    const myRD = resultDetails.find((d) => d.name === playerName);
+    let myIcon = '🤝';
+    let myBig = '';
+    let mySub = '';
+    let myWin = false;
+    let myLose = false;
+    if (isSettle && myRD) {
+      if (playerName === dealerId) {
+        // 我是庄家：看庄家自己的记录（penalty = 庄家该喝的杯数）
+        const cups = (myRD as any).penalty || 0;
+        if (cups > 0) {
+          myIcon = '😢'; myBig = `你这局 输 · 喝 ${cups} 杯`; mySub = myRD.result || ''; myLose = true;
+        } else {
+          myIcon = '🎉'; myBig = '你这局 赢 · 免喝'; mySub = myRD.result || ''; myWin = true;
+        }
+      } else if (myRD.who === 'none') {
+        myIcon = '🤝'; myBig = '你这局 平局 · 免喝'; mySub = myRD.result || '';
+      } else if (myRD.who === 'dealer') {
+        myIcon = '🎉'; myBig = '你这局 赢 · 免喝'; mySub = `你 ${calculateHand(myRD.cards)} > 庄家 ${dealerPt}`; myWin = true;
+      } else if (myRD.who === 'all_players') {
+        myIcon = '😢'; myBig = `你这局 输 · 喝 ${myRD.penalty || 0} 杯`; mySub = myRD.result || ''; myLose = true;
+      } else if (myRD.penalty > 0) {
+        myIcon = '😢'; myBig = `你这局 输 · 喝 ${myRD.penalty} 杯`; mySub = myRD.result || ''; myLose = true;
+      } else {
+        myIcon = '🎉'; myBig = '你这局 赢 · 免喝'; mySub = myRD.result || ''; myWin = true;
+      }
+    } else if (isMyTurnFlag) {
+      myIcon = '🎯'; myBig = '轮到你了'; mySub = '请决定：要牌 或 停牌'; myWin = true;
+    } else if (isWaiting) {
+      myIcon = '⏳'; myBig = '等待开始'; mySub = players.length >= 2 ? `${readyPlayers.length}/${players.length} 已准备` : '至少2人';
+    }
+
+    const resultBar = myBig ? (
+      <div style={{
+        margin: '6px 0 2px', borderRadius: '12px', padding: '8px 14px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', textAlign: 'center',
+        background: myWin ? 'linear-gradient(120deg, rgba(91,224,138,0.18), rgba(255,210,122,0.1))' : (myLose ? 'linear-gradient(120deg, rgba(255,90,122,0.18), rgba(255,210,122,0.1))' : 'linear-gradient(120deg, rgba(255,90,122,0.18), rgba(255,210,122,0.1))'),
+        border: `1px solid ${myWin ? 'rgba(123,240,160,0.5)' : (myLose ? 'rgba(255,90,122,0.6)' : 'rgba(255,210,122,0.4)')}`,
+        boxShadow: '0 0 14px rgba(255,90,122,0.12)'
+      }}>
+        <span style={{ fontSize: '22px', lineHeight: 1, marginBottom: '1px' }}>{myIcon}</span>
+        <span style={{ fontSize: '13.5px', fontWeight: 800, color: myWin ? '#7bf0a0' : (myLose ? '#ff7a93' : '#ffd9e6') }}>{myBig}</span>
+        {mySub && <span style={{ fontSize: '11px', color: '#d9b9c8', marginTop: '2px' }}>{mySub}</span>}
+      </div>
+    ) : null;
+
+    const vs = (
+      <div style={{
+        width: '100%', textAlign: 'center', margin: '10px 0', fontSize: '12px', letterSpacing: '4px', color: '#ff7a93',
+        display: 'flex', alignItems: 'center', gap: '10px'
+      }}>
+        <span style={{ flex: 1, height: '1px', background: 'linear-gradient(90deg, transparent, rgba(255,122,147,0.5), transparent)' }}></span>
+        <span>VS</span>
+        <span style={{ flex: 1, height: '1px', background: 'linear-gradient(90deg, transparent, rgba(255,122,147,0.5), transparent)' }}></span>
+      </div>
+    );
+
+    const others = isSettle
+      ? resultDetails.filter((d) => d.name !== dealerName)
+      : players.filter((p) => p.name !== dealerName);
+
+    const grid = (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(108px, 1fr))', gap: '7px', width: '100%' }}>
+        {others.map((p, idx) => {
+          const isMe = p.name === playerName;
+          const isDealer = p.name === dealerId || p.isDealer;
+          const isActive = phase === "player_turn" && p.name === currentPlayer?.name && !gameOver;
+          const isWatching = p.status === 'watching';
+          const avatar = (p.name || '？')[0];
+
+          let cards: any[] = [];
+          let total = '';
+          let badge = '';
+          let badgeClass = '';
+          let specialIcon = '';   // 结算特殊牌型图标（纯图标，放在结论徽章旁）
+          let specialClass = '';
+          let cupTxt = '';
+          if (isSettle) {
+            cards = (p as any).cards || [];
+            const rawTotal = calculateHand(cards);
+            total = isBlackjack(cards) ? '黑杰克' : String(rawTotal);
+            // 网格是公共视图：所有人只看「赢/输/平局」结论，不写喝几杯（喝几杯只在各自顶部那行大字显示）
+            if (p.who === 'all_players') { badge = '输'; badgeClass = 'b-lose'; }
+            else if (p.who === 'dealer') { badge = '赢'; badgeClass = 'b-stand'; }
+            else if (p.who === 'none') { badge = '平局'; badgeClass = 'b-wait'; }
+            else {
+              const win = (p.result || '').includes('赢') || p.penalty === 0;
+              badge = win ? '赢' : '输'; badgeClass = win ? 'b-stand' : 'b-lose';
+            }
+            // 特殊牌型图标（用户选纯图标 B 方案；爆了统一 💥）
+            // 从"玩家自己的牌"推导，避免把描述庄家的文字(如"庄家爆牌")误贴到玩家格
+            const myCards = (p as any).cards || [];
+            if (isFiveCardCharlie(myCards)) { specialIcon = '🐉'; specialClass = 's-drag'; }
+            else if (isBust(myCards)) { specialIcon = '💥'; specialClass = 's-bust'; }
+            else if (isBlackjack(myCards)) { specialIcon = '🃏'; specialClass = 's-bj'; }
+            cupTxt = '';
+          } else {
+            total = p.cardCount > 0 ? String(p.cardCount) : '—';
+            if (isMe) {
+              // 自己的牌自己看得到牌型
+              if (p.isBust) { badge = '爆'; badgeClass = 'b-bust'; }
+              else if (p.isFiveCard) { badge = '五小龙'; badgeClass = 'b-drag'; }
+              else if (p.isBlackjack) { badge = '黑杰克'; badgeClass = 'b-bj'; }
+              else if (p.isStanding) { badge = '停牌'; badgeClass = 'b-stand'; }
+              else if (isActive) { badge = '你的回合'; badgeClass = 'b-stand'; }
+              else if (isWatching) { badge = '观战'; badgeClass = 'b-wait'; }
+              else if (readyPlayers.indexOf(p.name) >= 0 && isWaiting) { badge = '已准备'; badgeClass = 'b-stand'; }
+              else { badge = '等待'; badgeClass = 'b-wait'; }
+            } else {
+              // 暗牌制：别人看不到你的牌型（爆/五小龙/黑杰克），只显示公开动作与状态
+              if (p.isStanding) { badge = '停牌'; badgeClass = 'b-stand'; }
+              else if (isActive) { badge = '他的回合'; badgeClass = 'b-stand'; }
+              else if (isWatching) { badge = '观战'; badgeClass = 'b-wait'; }
+              else if (readyPlayers.indexOf(p.name) >= 0 && isWaiting) { badge = '已准备'; badgeClass = 'b-stand'; }
+              else { badge = '等待'; badgeClass = 'b-wait'; }
+            }
+          }
+
+          const badgeStyle = badgeClass === 'b-stand' ? { background: 'rgba(91,224,138,0.18)', color: '#7bf0a0' } :
+            badgeClass === 'b-bust' ? { background: 'rgba(255,90,122,0.2)', color: '#ff7a93' } :
+            badgeClass === 'b-lose' ? { background: 'rgba(255,90,122,0.2)', color: '#ff7a93' } :
+            badgeClass === 'b-bj' ? { background: 'rgba(255,210,122,0.2)', color: '#ffd27a' } :
+            badgeClass === 'b-drag' ? { background: 'rgba(120,170,255,0.2)', color: '#9ec4ff' } :
+            { background: 'rgba(255,255,255,0.1)', color: '#b89aaa' };
+
+          return (
+            <div key={p.name || idx} style={{
+              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '6px', position: 'relative',
+              border: `1px solid ${isMe ? '#ff5a7a' : (isActive ? '#ffd27a' : 'rgba(255,255,255,0.1)')}`,
+              boxShadow: isMe ? '0 0 0 1px rgba(255,90,122,0.4), 0 0 16px rgba(255,90,122,0.2)' : (isActive ? '0 0 0 1px rgba(255,210,122,0.5)' : 'none')
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(160deg,#ff5a7a,#a0204a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>{avatar}</div>
+                <div style={{ fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isMe ? '#f0a8c4' : '#ddd' }}>
+                  {isMe ? '你' : p.name}
+                  {isDealer && <span style={{ fontSize: '10px', color: '#ffd27a' }}> 👑</span>}
                 </div>
-                <div style={{ display: 'flex', gap: '1px', fontSize: '9px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                  {isReady && phase === "waiting" && <span style={{ color: '#e879a8' }}>✅</span>}
-                  {isStanding && phase !== "waiting_for_dealer" && <span style={{ color: '#e879a8' }}>✅</span>}
-                  {isBust && phase === "waiting_for_dealer" && <span style={{ color: '#ef4444' }}>💥</span>}
-                  {isFive && phase === "waiting_for_dealer" && <span style={{ color: '#f0a8c4' }}>🐉</span>}
-                  {isBlackjackFlag && phase === "waiting_for_dealer" && <span style={{ color: '#f0a8c4' }}>♠</span>}
-                  {hasCards && <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '8px' }}>{player.cardCount}张</span>}
+                <div style={{ marginLeft: 'auto', fontSize: total === '黑杰克' ? '11px' : '18px', fontWeight: 800, color: '#ffd9e6', lineHeight: 1 }}>
+                  {total}<span style={{ fontSize: '10px', color: '#d9b9c8' }}>{isSettle && total !== '黑杰克' ? '点' : (!isSettle && total !== '—' ? '张' : '')}</span>
                 </div>
               </div>
-            </>
-          ) : (
-            <span style={{ fontSize: '16px', color: 'rgba(255,255,255,0.12)' }}>+</span>
-          )}
-        </div>
-      );
-    });
+              <div style={{ fontSize: '10px', marginTop: '3px', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                {badge && <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: '6px', fontSize: '10px', ...badgeStyle }}>{badge}</span>}
+                {specialIcon && (
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: '18px', height: '15px', borderRadius: '6px', fontSize: '11px', lineHeight: 1,
+                    background: specialClass === 's-drag' ? 'rgba(120,170,255,0.22)' : specialClass === 's-bust' ? 'rgba(255,90,122,0.22)' : 'rgba(255,210,122,0.22)',
+                    color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
+                  }}>{specialIcon}</span>
+                )}
+                {cupTxt && <span style={{ color: '#d9b9c8' }}>· {cupTxt}</span>}
+              </div>
+              <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', marginTop: '5px' }}>
+                {isSettle && cards.length > 0 ? (
+                  cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="small" />)
+                ) : (
+                  p.cardCount > 0 && !isSettle ? (
+                    Array.from({ length: p.cardCount }).map((_, i) => (
+                      <div key={i} style={{ width: '22px', height: '31px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                    ))
+                  ) : null
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px' }}>
+        {dealerCard}
+        {resultBar}
+        {vs}
+        {grid}
+      </div>
+    );
   };
 
   // ==================== 登录界面 ====================
@@ -2283,30 +2450,11 @@ for (const r of results) {
       <div style={styles.glowOrb2}></div>
 
       <div style={styles.tableContainer} className="table-container">
-        <div style={styles.table}>
-          {renderSeats()}
-
-          {/* ====== 中央区域 ====== */}
-          <div style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            width: '85%',
-            maxHeight: '60%',
-            background: 'rgba(0,0,0,0.4)',
-            borderRadius: '12px',
-            padding: '4px 8px',
-            zIndex: 1,
-            pointerEvents: 'none' as const,
-            overflowY: 'auto' as const,
-            scrollbarWidth: 'thin' as const,
-          }}>
-            {(phase === "waiting_for_dealer" && resultDetails.length > 0) ? (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px', paddingBottom: '8px' }}>
+          {renderBoard()}
+          {/* ====== 中央区域（已改由 renderBoard 统一渲染，旧绝对定位遮罩块整段停用，避免重叠） ====== */}
+          <div style={{ display: 'none' }}>
+            {(false) ? (
   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', width: '100%', fontSize: '11px' }}>
     {/* 庄家行：只显示 dealerId 对应的真正庄家 */}
     {resultDetails.find(d => d.name === dealerId) && (() => {
@@ -2322,7 +2470,7 @@ for (const r of results) {
       else if (isFive) icon = '🐉';
       else if (isBj) icon = '♠';
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(214,140,170,0.15)', padding: '4px 10px', borderRadius: '6px', flexWrap: 'wrap', justifyContent: 'center', border: '1px solid rgba(214,140,170,0.2)', fontSize: '11px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'linear-gradient(120deg, rgba(214,140,170,0.22), rgba(255,210,122,0.12))', padding: '6px 12px', borderRadius: '10px', flexWrap: 'wrap', justifyContent: 'center', border: '1px solid rgba(255,210,122,0.4)', boxShadow: '0 0 14px rgba(214,140,170,0.25)', fontSize: '12px' }}>
           <span style={{ fontWeight: 'bold', color: '#f0a8c4' }}>庄家 {d.name}</span>
           <span style={{ color: '#ddd' }}>
             {cards.map((c: any, i: number) => {
@@ -2548,7 +2696,7 @@ for (const r of results) {
                                   );
                                 } else {
                                   const isRed = card.suit === '♥' || card.suit === '♦';
-                                  const color = isRed ? '#e53935' : '#1a1a1a';
+                                  const color = isRed ? '#A32D2D' : '#2C2C2A';
                                   const rankDisplay = card.rank === '10' ? '10' : card.rank;
                                   return (
                                     <span key={idx2} style={{
@@ -2593,13 +2741,16 @@ for (const r of results) {
 
           {/* 房间信息 */}
           <div style={styles.roomInfo}>
-            <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <span>👥 {players.length}/12</span>
-              {dealerId && <span>👑 {dealerId}</span>}
-              {phase === "player_turn" && currentPlayer && <span style={{ color: '#f0a8c4', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
+            <span style={{ display: 'flex', gap: '8px', alignItems: 'center', minWidth: 0 }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#5fd38a', boxShadow: '0 0 6px #5fd38a', flex: 'none' }}></span>
+              <span>{players.length} 人在玩</span>
+              {dealerId && <span style={{ color: '#ffd27a' }}>庄家：{dealerId}</span>}
+              {phase === "player_turn" && currentPlayer && <span style={{ color: '#f0a8c4', fontSize: '11px', whiteSpace: 'nowrap' }}>🎯 {currentPlayer.name}</span>}
             </span>
-            <button onClick={() => setShowRules(true)} style={{ background: 'transparent', border: '1px solid rgba(240,168,196,0.5)', color: '#f0a8c4', fontSize: '12px', borderRadius: '10px', padding: '2px 8px', cursor: 'pointer' }}>❓规则</button>
-            <button onClick={() => setConfirmDialog({ show: true, message: '确定退出房间吗？退出后将返回登录页。', callback: leaveRoom })} style={{ background: 'transparent', border: '1px solid rgba(255,120,120,0.5)', color: '#ff8a8a', fontSize: '12px', borderRadius: '10px', padding: '2px 8px', cursor: 'pointer', marginLeft: '8px' }}>🚪退出</button>
+            <span style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: 'none' }}>
+              <button onClick={() => setShowRules(true)} style={{ background: 'transparent', border: '1px solid rgba(240,168,196,0.5)', color: '#f0a8c4', fontSize: '12px', borderRadius: '10px', padding: '3px 10px', cursor: 'pointer' }}>❓规则</button>
+              <button onClick={() => setConfirmDialog({ show: true, message: '确定退出房间吗？退出后将返回登录页。', callback: leaveRoom })} style={{ background: 'transparent', border: '1px solid rgba(255,120,120,0.5)', color: '#ff8a8a', fontSize: '12px', borderRadius: '10px', padding: '3px 10px', cursor: 'pointer' }}>🚪退出</button>
+            </span>
           </div>
         </div>
 
@@ -2620,13 +2771,23 @@ for (const r of results) {
             } else if (dealerRow) {
               overview = `庄家【${dealerId}】${dealerRow.result.replace(/^庄家/, '')}`;
             }
+            const meRow = resultDetails.find(d => d.name === playerName);
+            let myWin = false, myCups = 0, myTxt = '';
+            if (meRow) {
+              if (meRow.who === 'all_players') { myWin = false; myCups = meRow.penalty || 0; myTxt = `你这局 输 · 喝 ${myCups} 杯`; }
+              else if (meRow.who === 'dealer') { myWin = true; myCups = meRow.dealerPenalty ?? meRow.penalty ?? 0; myTxt = `你这局 赢 · 庄家喝 ${myCups} 杯`; }
+              else if (meRow.who === 'none') { myWin = false; myCups = 0; myTxt = '你这局 平局 · 免喝'; }
+              else { myCups = meRow.penalty || 0; myWin = (meRow.result || '').includes('赢'); myTxt = `你这局 ${myWin ? '赢' : '输'} · ${myCups > 0 ? '喝 ' + myCups + ' 杯' : '免喝'}`; }
+            }
             return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'stretch', width: '100%', padding: '4px 0' }}>
-              <div style={{ background: 'rgba(214,140,170,0.12)', border: '1px solid rgba(214,140,170,0.3)', borderRadius: '10px', padding: '8px 10px', color: '#f3d4e0', fontSize: '13px', fontWeight: '600', textAlign: 'center' }}>
+              {false && (<>
+              <div style={{ background: 'rgba(214,140,170,0.10)', border: '1px solid rgba(214,140,170,0.2)', borderRadius: '10px', padding: '6px 10px', color: '#e7c4d4', fontSize: '12px', fontWeight: '500', textAlign: 'center' }}>
                 📊 本局结算：{overview}
               </div>
               <div style={{ maxHeight: '34vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', display: 'flex', flexDirection: 'column', gap: '4px', padding: '2px 4px' }}>
                 {resultDetails.map((d, idx) => {
+                  if (d.name === playerName) return null;
                   if (d.name === dealerId && d.who === 'dealer') {
                     return (
                       <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
@@ -2665,6 +2826,7 @@ for (const r of results) {
               <div style={{ fontSize: '12px', color: 'rgba(235,195,215,0.6)', textAlign: 'center', paddingTop: '2px' }}>
                 🎲 轮到【{dealerId}】当庄，点「开始抽牌」选下一局庄家
               </div>
+              </>)}
             </div>
             );
           })()}
@@ -2720,8 +2882,8 @@ for (const r of results) {
           )}
           {phase === "dealer_turn" && isDealerTurn && !myPlayer?.isStanding && (
             <>
-              <button onClick={handleDealerHit} style={styles.btnBid}>要牌</button>
-              <button onClick={() => handleDealerStand(false)} style={styles.btnBid}>停牌</button>
+              <button onClick={handleHit} style={styles.btnBid}>要牌</button>
+              <button onClick={() => handleStand(false)} style={styles.btnBid}>停牌</button>
             </>
           )}
           {phase === "wheel" && isDealer && drawSubPhase === "choose" && (
@@ -2821,8 +2983,8 @@ for (const r of results) {
                         <div style={{ fontSize: '12px', color: isMe ? '#f0a8c4' : 'rgba(255,255,255,0.6)', marginBottom: '2px' }}>{d.name}{isMe ? ' (你)' : ''}</div>
                         {isRevealed ? (
                           <div style={{ width: 44, height: 60, borderRadius: 6, background: '#ffffff', border: '1.5px solid rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
-                            <span style={{ fontSize: '13px', fontWeight: 700, color: isRed ? '#e53935' : '#1a1a1a' }}>{rankDisplay}</span>
-                            <span style={{ fontSize: '16px', color: isRed ? '#e53935' : '#1a1a1a' }}>{d.card.suit}</span>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: isRed ? '#A32D2D' : '#2C2C2A' }}>{rankDisplay}</span>
+                            <span style={{ fontSize: '16px', color: isRed ? '#A32D2D' : '#2C2C2A' }}>{d.card.suit}</span>
                           </div>
                         ) : (
                           <div style={{ width: 44, height: 60, borderRadius: 6, background: 'linear-gradient(135deg, #3a1030, #1a0512)', border: '1.5px solid rgba(214,140,170,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2928,10 +3090,12 @@ const styles: any = {
     boxShadow: "inset 0 0 40px rgba(0,0,0,0.5), 0 0 30px rgba(180,60,110,0.12)", marginBottom: "16px", overflow: "visible",
   },
   roomInfo: {
-    position: "absolute", top: "6px", right: "10px", left: "10px",
-    color: "rgba(235,195,215,0.55)", fontSize: "11px",
+    order: -1,
+    width: "100%",
+    color: "rgba(235,195,215,0.7)", fontSize: "12px",
     display: "flex", justifyContent: "space-between", alignItems: "center",
-    background: "rgba(20,4,14,0.5)", padding: "4px 10px", borderRadius: "14px", zIndex: 3,
+    background: "rgba(20,4,14,0.5)", padding: "6px 12px", borderRadius: "14px",
+    marginBottom: "8px",
   },
   statusBar: {
     background: "rgba(255,255,255,0.05)", borderRadius: "12px", padding: "8px 12px",
