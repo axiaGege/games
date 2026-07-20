@@ -108,12 +108,13 @@ const parsePlayers = (raw: any): any[] => {
 };
 
 // ==================== 🃏 扑克牌组件 ====================
-const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' | 'tiny' }) => {
+const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' | 'tiny' | 'dealer' }) => {
   const sizeMap = {
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14, corner: 3 },
     medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10, corner: 5 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24, corner: 7 },
-    tiny: { width: 16, height: 24, fontSize: 7, symbolSize: 10, corner: 2 },
+    tiny: { width: 16, height: 24, fontSize: 7, symbolSize: 7, corner: 2 },
+    dealer: { width: 32, height: 46, fontSize: 11, symbolSize: 13, corner: 5 },
   };
   const s = sizeMap[size] || sizeMap.medium;
 
@@ -2265,7 +2266,7 @@ for (const r of results) {
           </div>
           <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
             {isSettle && dealerCards.length > 0 ? (
-              dealerCards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="small" />)
+              dealerCards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="dealer" />)
             ) : dealerP && dealerP.cardCount > 0 ? (
               Array.from({ length: dealerP.cardCount }).map((_, i) => (
                 <div key={i} style={{ width: '22px', height: '31px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
