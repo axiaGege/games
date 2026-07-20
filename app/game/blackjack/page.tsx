@@ -268,6 +268,7 @@ export default function BlackjackPage() {
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
   const seedRef = useRef<number | null>(null);
+  const deckOffsetRef = useRef(0);
   const isSettlingRef = useRef(false);
   const drawTimeoutFiredRef = useRef(false);
 
@@ -471,9 +472,9 @@ export default function BlackjackPage() {
         setSeed(state.seed || null);
         {
           const _inc = state.deckOffset || 0;
-          if (state.seed === null) setDeckOffset(0);
-          else if (state.seed !== seedRef.current) setDeckOffset(_inc);
-          else setDeckOffset(prev => Math.max(prev, _inc));
+          if (state.seed === null) { setDeckOffset(0); deckOffsetRef.current = 0; }
+          else if (state.seed !== seedRef.current) { setDeckOffset(_inc); deckOffsetRef.current = _inc; }
+          else { setDeckOffset(prev => Math.max(prev, _inc)); deckOffsetRef.current = Math.max(deckOffsetRef.current, _inc); }
           seedRef.current = state.seed ?? null;
         }
         // —— 处理抽牌选庄同步 ——
@@ -661,9 +662,9 @@ export default function BlackjackPage() {
       setSettlementStep(roomData.settlementstep || 0);
       {
         const _inc = roomData.deckoffset || 0;
-        if (roomData.seed === null) setDeckOffset(0);
-        else if (roomData.seed !== seedRef.current) setDeckOffset(_inc);
-        else setDeckOffset(prev => Math.max(prev, _inc));
+        if (roomData.seed === null) { setDeckOffset(0); deckOffsetRef.current = 0; }
+        else if (roomData.seed !== seedRef.current) { setDeckOffset(_inc); deckOffsetRef.current = _inc; }
+        else { setDeckOffset(prev => Math.max(prev, _inc)); deckOffsetRef.current = Math.max(deckOffsetRef.current, _inc); }
         seedRef.current = roomData.seed ?? null;
       }
       setWheelVisible(roomData.wheelvisible || false);
@@ -762,9 +763,9 @@ export default function BlackjackPage() {
     setSettlementStep(roomData.settlementstep || 0);
     {
       const _inc = roomData.deckoffset || 0;
-      if (roomData.seed === null) setDeckOffset(0);
-      else if (roomData.seed !== seedRef.current) setDeckOffset(_inc);
-      else setDeckOffset(prev => Math.max(prev, _inc));
+      if (roomData.seed === null) { setDeckOffset(0); deckOffsetRef.current = 0; }
+      else if (roomData.seed !== seedRef.current) { setDeckOffset(_inc); deckOffsetRef.current = _inc; }
+      else { setDeckOffset(prev => Math.max(prev, _inc)); deckOffsetRef.current = Math.max(deckOffsetRef.current, _inc); }
       seedRef.current = roomData.seed ?? null;
     }
     setWheelVisible(roomData.wheelvisible || false);
@@ -1111,6 +1112,13 @@ export default function BlackjackPage() {
   console.log('🔥 handleHit 被调用');
   // 玩家回合或庄家回合（庄家也自由拿牌，无17点限制）均可要牌
   if (phase !== "player_turn" && phase !== "dealer_turn") return;
+  // 🔒 回合制：仅"当前玩家"(player_turn)或"庄家"(dealer_turn)可拿牌，杜绝多人同刻抽同一张牌导致重复
+  if (phase === "player_turn") {
+    const cur = players[currentPlayerIndex];
+    if (cur && cur.name !== playerName) { setErrorMsg("还没轮到你拿牌"); return; }
+  } else if (phase === "dealer_turn") {
+    if (!isDealer) { setErrorMsg("庄家回合，你无法操作"); return; }
+  }
   const pNow = playersRef.current;
   const me = pNow.find(p => p.name === playerName);
   if (!me) { console.warn('⛔ 找不到自己'); return; }
@@ -1124,7 +1132,7 @@ export default function BlackjackPage() {
   }
 
   let deck = localDeck;
-  let offset = deckOffset;
+  let offset = deckOffsetRef.current;
   // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
   if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，自动停牌");
@@ -1134,6 +1142,7 @@ export default function BlackjackPage() {
 
   const card = deck[offset];
   offset++;
+  deckOffsetRef.current = offset;
   setDeckOffset(offset);
   const newCards = [...myCards, card];
   const newCount = newCards.length;
@@ -1392,7 +1401,7 @@ export default function BlackjackPage() {
   }
 
   let deck = localDeck;
-  let offset = deckOffset;
+  let offset = deckOffsetRef.current;
   // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
   if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，庄家自动停牌");
@@ -1402,6 +1411,7 @@ export default function BlackjackPage() {
 
   const card = deck[offset];
   offset++;
+  deckOffsetRef.current = offset;
   setDeckOffset(offset);
   const newCards = [...dealer.cards, card];
   const newCount = newCards.length;
@@ -1593,13 +1603,16 @@ export default function BlackjackPage() {
     else if (dealerWins > 0 && dealerTies > 0) dealerResult = '庄家赢（部分平局）';
     else dealerResult = '庄家';
 
+    // 庄家黑杰克且无任何闲家黑杰克 → 纯通杀（双黑杰克时庄家输，不算通杀）
+    const dealerSweep = isBlackjack(dealer.cards) && !activeNonDealerPlayers.some((p: any) => p.cards && isBlackjack(p.cards));
     // 添加庄家自己的牌面（penalty 稍后按"取最大一份"口径回填）
     const dealerRecord: any = {
       name: dealer.name,
       cards: dealer.cards,
-      result: dealerResult,
+      result: dealerSweep ? '庄家黑杰克·通杀' : dealerResult,
       penalty: 0,
-      who: 'dealer'
+      who: 'dealer',
+      sweep: dealerSweep
     };
     results.push(dealerRecord);
 
@@ -2278,6 +2291,11 @@ for (const r of results) {
           {dealerBj && <span style={{ background: 'linear-gradient(120deg,#ffd27a,#d89a2a)', color: '#2a0820', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px', boxShadow: '0 0 12px rgba(255,210,122,0.6)' }}>黑杰克</span>}
           {dealerBust && <span style={{ background: 'rgba(255,90,122,0.2)', color: '#ff7a93', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>爆</span>}
           {dealerFive && <span style={{ background: 'rgba(120,170,255,0.2)', color: '#9ec4ff', fontSize: '13px', fontWeight: 800, padding: '1px 6px', borderRadius: '6px', letterSpacing: '1px' }}>🐉</span>}
+          {isSettle && dealerRD && (
+            <span style={{ background: (dealerRD.penalty > 0) ? 'rgba(255,90,122,0.2)' : 'rgba(91,224,138,0.18)', color: (dealerRD.penalty > 0) ? '#ff7a93' : '#7bf0a0', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>
+              {dealerRD.penalty > 0 ? `庄家喝 ${dealerRD.penalty} 杯` : '庄家免喝'}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '9px', marginTop: '3px' }}>
           <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffd27a', lineHeight: 1, textShadow: '0 0 16px rgba(255,210,122,0.5)', minWidth: '44px' }}>
@@ -2305,11 +2323,15 @@ for (const r of results) {
     if (isSettle && myRD) {
       if (playerName === dealerId) {
         // 我是庄家：看庄家自己的记录（penalty = 庄家该喝的杯数）
-        const cups = (myRD as any).penalty || 0;
-        if (cups > 0) {
-          myIcon = '😢'; myBig = `你这局 输 · 喝 ${cups} 杯`; mySub = myRD.result || ''; myLose = true;
+        if ((myRD as any).sweep) {
+          myIcon = '🔥'; myBig = '通杀全场！'; mySub = '所有玩家各喝 2 杯'; myWin = true;
         } else {
-          myIcon = '🎉'; myBig = '你这局 赢 · 免喝'; mySub = myRD.result || ''; myWin = true;
+          const cups = (myRD as any).penalty || 0;
+          if (cups > 0) {
+            myIcon = '😢'; myBig = `你这局 输 · 喝 ${cups} 杯`; mySub = myRD.result || ''; myLose = true;
+          } else {
+            myIcon = '🎉'; myBig = '你这局 赢 · 免喝'; mySub = myRD.result || ''; myWin = true;
+          }
         }
       } else if (myRD.who === 'none') {
         myIcon = '🤝'; myBig = '你这局 平局 · 免喝'; mySub = myRD.result || '';
@@ -2373,6 +2395,7 @@ for (const r of results) {
           let specialIcon = '';   // 结算特殊牌型图标（纯图标，放在结论徽章旁）
           let specialClass = '';
           let cupTxt = '';
+          let cupColor = '#d9b9c8';
           if (isSettle) {
             cards = (p as any).cards || [];
             const rawTotal = calculateHand(cards);
@@ -2391,7 +2414,14 @@ for (const r of results) {
             if (isFiveCardCharlie(myCards)) { specialIcon = '🐉'; specialClass = 's-drag'; }
             else if (isBust(myCards)) { specialIcon = '💥'; specialClass = 's-bust'; }
             else if (isBlackjack(myCards)) { specialIcon = '♠'; specialClass = 's-bj'; }
-            cupTxt = '';
+            // 杯数：仅结算显示（广播给所有人）。该玩家实际喝的杯数：
+            // who==='dealer' → 玩家赢、庄家喝，该玩家免喝；who==='none' → 平局免喝；
+            // who==='all_players' → 庄家特殊牌型，所有玩家各喝 penalty；其余 → 玩家输/认爆/偷鸡，喝 penalty
+            let cups = 0;
+            if (p.who === 'dealer' || p.who === 'none') cups = 0;
+            else cups = p.penalty || 0;
+            cupTxt = cups > 0 ? `喝 ${cups} 杯` : '免喝';
+            cupColor = cups > 0 ? '#ff7a93' : '#7bf0a0';
           } else {
             total = p.cardCount > 0 ? String(p.cardCount) : '—';
             if (isMe) {
@@ -2436,6 +2466,11 @@ for (const r of results) {
                 <div style={{ marginLeft: 'auto', fontSize: total === '黑杰克' ? '11px' : '18px', fontWeight: 800, color: '#ffd9e6', lineHeight: 1 }}>
                   {total}<span style={{ fontSize: '10px', color: '#d9b9c8' }}>{isSettle && total !== '黑杰克' ? '点' : (!isSettle && total !== '—' ? '张' : '')}</span>
                 </div>
+                {isSettle && cupTxt && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 5px', borderRadius: '6px', flexShrink: 0, marginLeft: '2px',
+                    background: cupColor === '#ff7a93' ? 'rgba(255,90,122,0.2)' : 'rgba(91,224,138,0.18)',
+                    color: cupColor }}>{cupTxt}</span>
+                )}
               </div>
               <div style={{ fontSize: '10px', marginTop: '3px', display: 'flex', gap: '4px', alignItems: 'center' }}>
                 {badge && <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: '6px', fontSize: '10px', ...badgeStyle }}>{badge}</span>}
@@ -2447,7 +2482,6 @@ for (const r of results) {
                     color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
                   }}>{specialIcon}</span>
                 )}
-                {cupTxt && <span style={{ color: '#d9b9c8' }}>· {cupTxt}</span>}
               </div>
               <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '5px', justifyContent: 'center' }}>
                 {isSettle && cards.length > 0 ? (
