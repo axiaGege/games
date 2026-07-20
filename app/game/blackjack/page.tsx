@@ -173,7 +173,7 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
       justifyContent: 'center',
       position: 'relative',
       flexShrink: 0,
-      fontFamily: '"Segoe UI", "Helvetica Neue", "Apple Color Emoji", system-ui, sans-serif',
+      fontFamily: '"Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif',
     }}>
       <div style={{
         position: 'absolute',
@@ -196,8 +196,10 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
         opacity: 0.9,
         textShadow: '0 1px 2px rgba(0,0,0,0.05)',
         marginTop: isCompact ? 4 : 0,
+        lineHeight: 1,
+        display: 'block',
       }}>
-        {card.suit}
+        {card.suit + '\uFE0E'}
       </span>
       {!isCompact && (
         <div style={{
@@ -3158,8 +3160,8 @@ const styles: any = {
   container: {
     minHeight: "100vh",
     background: "radial-gradient(ellipse at 30% 12%, #2a0820 0%, #1a0512 48%, #0c0308 100%)",
-    display: "flex", justifyContent: "center", alignItems: "center", padding: "8px",
-    fontFamily: "system-ui, sans-serif", position: "relative", overflow: "hidden",
+    display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "8px 8px 76px 8px",
+    fontFamily: "system-ui, sans-serif", position: "relative", overflowX: "hidden", overflowY: "auto",
   },
   glowOrb: {
     position: "absolute", top: "-20%", right: "-10%", width: "500px", height: "500px",
