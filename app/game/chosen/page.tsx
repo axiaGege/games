@@ -452,6 +452,40 @@ export default function Chosen() {
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); channelRef.current = null; };
   }, [roomId]);
 
+  // ---------- 定时对账：每 3 秒以数据库权威账本兜底，漏听广播最多 3 秒自动追平 ----------
+  // 天选已有版本号单调闸 + 重连恢复，独缺这道"定时翻账本"。与黑杰克 syncFromDB 同思路，
+  // 直接从 rooms 表读最新权威状态应用到本地（DB 即公共账本，永远最新，故不比较版本号）。
+  useEffect(() => {
+    if (!roomId) return;
+    const id = setInterval(async () => {
+      try {
+        const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
+        if (error || !data) return;
+        const ps = parseArray(data.players);
+        if (ps.length > 0) { setPlayers(ps); playersRef.current = ps; }
+        if (data.phase) { setPhase(data.phase); phaseRef.current = data.phase; }
+        if (data.dealerid !== undefined) setDealerId(data.dealerid);
+        if (data.seed !== undefined) setSeed(data.seed);
+        if (data.deckoffset !== undefined) setDeckOffset(data.deckoffset);
+        if (data.wheelsegments) setWheelSegments(data.wheelsegments);
+        if (data.wheelselected !== undefined) setWheelSelected(data.wheelselected);
+        if (data.wheelvisible !== undefined) setWheelVisible(data.wheelvisible);
+        if (data.communitycard) { try { roundSeatsRef.current = JSON.parse(data.communitycard); } catch (_) {} }
+        if (data.readyplayers) setReadyPlayers(data.readyplayers);
+        if (data.resultdetails) {
+          try {
+            const rd = JSON.parse(data.resultdetails);
+            if (rd.round) setRound(rd.round);
+            if (rd.excluded) setExcluded(rd.excluded);
+          } catch (_) {}
+        }
+        if (data.result !== undefined) setResult(data.result);
+        if (data.drinkers) setDrinkers(parseArray(data.drinkers));
+      } catch (_) {}
+    }, 3000);
+    return () => clearInterval(id);
+  }, [roomId]);
+
   // 转盘停稳后：结果先盖着（揭晓中），延迟翻面亮出
   useEffect(() => {
     if (wheelSpinning) { setResultRevealed(false); setWheelRevealed(false); return; }

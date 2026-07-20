@@ -146,6 +146,7 @@ export default function GamePage() {
   const [rolling, setRolling] = useState(false);
   const [rollingDice, setRollingDice] = useState<number[]>([]);
   const rollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 叫牌面板
@@ -202,51 +203,14 @@ export default function GamePage() {
     const channel = supabase
       .channel(`room:${roomId}`, { config: { broadcast: { ack: true } } })
       .on('broadcast', { event: 'gameState' }, (payload) => {
-        console.log('📩 收到广播:', payload);
         const state = payload.payload;
-        const parsedPlayers = parsePlayers(state.players);
-        setPlayers(parsedPlayers);
-        setGameStarted(state.gameStarted || false);
-        setGameOver(state.gameOver || false);
-        if (state.gameOver) { setShowReveal(true); setIsLidOpen(false); }
-        else setShowReveal(false);
-        setRvOpenerName(state.opener || "");
-        setRvIsSnapOpen(state.isSnapOpen || false);
-        setResult(state.result || "");
-        setCurrentPlayer(state.currentPlayer || "");
-        setLastBid(state.lastBid || null);
-        // 关键修复：对局进行中(rolling/bidding)时，拒绝被迟到/错误的 "waiting" 广播拉回准备阶段；
-        // 仅"再来一局"(resetGame→waiting) 或 全员离开 才允许回到 waiting。
-        setPhase((prevPhase) => {
-          if ((prevPhase === "rolling" || prevPhase === "bidding") && state.phase === "waiting") {
-            return prevPhase;
-          }
-          return state.phase || "waiting";
-        });
-        setHasRolled(state.hasRolled || false);
-        setOneSealed(state.oneSealed || false);
-        setBidHistory(state.bidHistory || []);
-        setWarning(state.warning || "");
-        setCupOpened(state.cupOpened || false);
-        setSelectedTarget(state.selectedTarget || null);
-        setNextStarter(state.nextStarter || null);
-        setDiceShaking(state.diceShaking || false);
-        if (state.lastBid) {
-          setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
-        } else {
-          setLastBidDisplay(null);
+        // 版本号单调闸：迟到/乱序的旧消息整条丢弃，绝不被旧进度覆盖当前状态
+        if (state.version != null && state.version < gVersionRef.current) {
+          console.log('📩 丢弃过期消息 v=', state.version, '< 本地', gVersionRef.current);
+          return;
         }
-        if (state.phase === "waiting" || state.phase === "ended") {
-          setSelectedCount(null);
-          setSelectedValue(null);
-        }
-        const me = parsedPlayers.find((p: any) => p.name === playerName);
-        if (me) {
-          setMyDice(me.dice || []);
-          setMySeatId(me.seatId !== undefined ? me.seatId : null);
-          setHasRolledLocal(me.dice && me.dice.length > 0);
-        }
-        setDisconnected(false);
+        if (state.version != null) gVersionRef.current = Math.max(gVersionRef.current, state.version);
+        applyRemoteState(state);
       })
       .subscribe((status) => {
         console.log('📡 订阅状态:', status);
@@ -273,14 +237,87 @@ export default function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ============ 远端状态应用（广播接收 + 定时对账共用，逻辑只写一处） ============
+  const applyRemoteState = (state: any) => {
+    const parsedPlayers = parsePlayers(state.players);
+    setPlayers(parsedPlayers);
+    setGameStarted(state.gameStarted || false);
+    setGameOver(state.gameOver || false);
+    if (state.gameOver) { setShowReveal(true); setIsLidOpen(false); }
+    else setShowReveal(false);
+    setRvOpenerName(state.opener || "");
+    setRvIsSnapOpen(state.isSnapOpen || false);
+    setResult(state.result || "");
+    setCurrentPlayer(state.currentPlayer || "");
+    setLastBid(state.lastBid || null);
+    // 对局进行中(rolling/bidding)时，拒绝被迟到/错误的 "waiting" 广播拉回准备阶段；
+    // 仅"再来一局"(resetGame→waiting) 或 全员离开 才允许回到 waiting。
+    setPhase((prevPhase) => {
+      if ((prevPhase === "rolling" || prevPhase === "bidding") && state.phase === "waiting") {
+        return prevPhase;
+      }
+      return state.phase || "waiting";
+    });
+    setHasRolled(state.hasRolled || false);
+    setOneSealed(state.oneSealed || false);
+    setBidHistory(state.bidHistory || []);
+    setWarning(state.warning || "");
+    setCupOpened(state.cupOpened || false);
+    setSelectedTarget(state.selectedTarget || null);
+    setNextStarter(state.nextStarter || null);
+    setDiceShaking(state.diceShaking || false);
+    if (state.lastBid) {
+      setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
+    } else {
+      setLastBidDisplay(null);
+    }
+    if (state.phase === "waiting" || state.phase === "ended") {
+      setSelectedCount(null);
+      setSelectedValue(null);
+    }
+    const me = parsedPlayers.find((p: any) => p.name === playerName);
+    if (me) {
+      setMyDice(me.dice || []);
+      setMySeatId(me.seatId !== undefined ? me.seatId : null);
+      setHasRolledLocal(me.dice && me.dice.length > 0);
+    }
+    setDisconnected(false);
+  };
+
+  // ============ 定时对账：每3秒从数据库账本核对，弥补广播丢失，绝不永久掉队 ============
+  useEffect(() => {
+    if (!roomId) return;
+    const t = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from("rooms")
+          .select("players, resultdetails")
+          .eq("id", roomId)
+          .maybeSingle();
+        if (!data) return;
+        const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+        const remoteVersion = saved?.version ?? 0;
+        // 账本版本不旧于本地才应用，避免用更旧的数据把本地进度覆盖回去
+        if (remoteVersion < gVersionRef.current) return;
+        if (remoteVersion > gVersionRef.current) gVersionRef.current = remoteVersion;
+        applyRemoteState({ ...saved, players: data.players });
+      } catch (_) {}
+    }, 3000);
+    return () => clearInterval(t);
+  }, [roomId]);
+
   // ============ 修改1: broadcastState 接收 roomId 参数 ============
   const broadcastState = async (roomId: string, state: any) => {
+    // 版本号单调闸：每次操作编号+1，接收端凭此丢弃迟到/乱序的旧消息，避免进度被旧数据覆盖
+    const v = gVersionRef.current + 1;
+    gVersionRef.current = v;
+    const st = { ...state, version: v };
     try {
-      console.log('📤 发送广播:', state);
+      console.log('📤 发送广播 v=', v);
       const result = await supabase.channel(`room:${roomId}`).send({
         type: 'broadcast',
         event: 'gameState',
-        payload: state,
+        payload: st,
       });
       console.log('📤 广播结果:', result);
       setDisconnected(false);
@@ -292,7 +329,7 @@ export default function GamePage() {
     // 双通道同步：实时广播之外，同时把整局状态落库到 rooms 表的 resultdetails 字段。
     // 这样断网/刷新重连后能从数据库把进行中的对局读回来续上（沿用 chosen/blackjack 的做法）。
     try {
-      const { players, ...rest } = state;
+      const { players, ...rest } = st;
       await supabase.from("rooms").update({
         players,
         resultdetails: JSON.stringify(rest),
@@ -482,6 +519,7 @@ export default function GamePage() {
           else setLastBidDisplay(null);
           if (saved.phase === "waiting" || saved.phase === "ended") { setSelectedCount(null); setSelectedValue(null); }
         }
+        gVersionRef.current = saved?.version || 0; // 重连后把本地版本号对齐到账本，避免后续消息误判过期
       } catch (e) { console.error('❌ 恢复对局状态失败:', e); }
       try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
       return;

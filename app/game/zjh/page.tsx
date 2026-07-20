@@ -821,6 +821,46 @@ export default function ZhaJinHuaPage() {
     };
   }, [roomId, playerName]);
 
+  // ---------- 定时对账：每 3 秒以数据库权威账本兜底（漏听广播最多 3 秒自动追平） ----------
+  // 复用已存在的命名名单收敛函数，再补阶段/轮次/转盘/公牌等标量状态对账。
+  // 与黑杰克 syncFromDB 同思路：DB 即公共账本，永远最新，故对账直接以 DB 为准应用。
+  useEffect(() => {
+    if (!roomId) return;
+    const id = setInterval(async () => {
+      try {
+        const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
+        if (error || !data) return;
+        await reconcilePlayersFromDB(); // 名单收敛（已有函数，零风险）
+        // 阶段防护：沿用接收端 forwardPhases 逻辑，避免把对局中状态拉回 waiting
+        const prevPhase = phaseRef.current;
+        const forwardPhases = ["dealing", "betting", "reveal", "settlement", "wheel"];
+        const cur = forwardPhases.indexOf(prevPhase);
+        const nxt = forwardPhases.indexOf(data.phase || "waiting");
+        let eff = data.phase || "waiting";
+        if (!(eff === "waiting" || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
+          eff = prevPhase;
+        }
+        setPhase(eff); phaseRef.current = eff;
+        setDealerId(data.dealerid || null);
+        setCurrentPlayerIndex(data.currentplayerindex || 0);
+        setSeed(data.seed);
+        if (data.deckoffset !== undefined && data.deckoffset !== null) setDeckOffset(data.deckoffset);
+        setWheelVisible(data.wheelvisible || false);
+        setWheelSelected(data.wheelselected || null);
+        setWheelSegments(data.wheelsegments || []);
+        if (data.communitycard !== undefined) setCommunityCard(data.communitycard);
+        setResult(data.result || "");
+        setResultDetails(data.resultdetails || []);
+        setReadyPlayers(data.readyplayers || []);
+        setBettingComplete(data.bettingcomplete !== undefined ? data.bettingcomplete : false);
+        bettingCompleteRef.current = data.bettingcomplete || false;
+        if (data.revealtargets) setRevealTargets(data.revealtargets);
+        if (data.deckoffset !== undefined) setRemainingCards(52 - data.deckoffset);
+      } catch (_) {}
+    }, 3000);
+    return () => clearInterval(id);
+  }, [roomId]);
+
   // ===== 新增：远程客户端自动同步转盘动画 =====
   useEffect(() => {
     // 当收到 wheelSpinning = true 且 wheelRotation = 0 时（表示开始旋转），所有客户端用相同的 seed 和 segments 计算目标角度
