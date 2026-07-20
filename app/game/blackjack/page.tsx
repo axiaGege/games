@@ -155,8 +155,8 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
   const isRed = card.suit === '♥' || card.suit === '♦';
   const color = isRed ? '#A32D2D' : '#2C2C2A';
   const rankDisplay = card.rank === '10' ? '10' : card.rank;
-  // 小尺寸牌(small/tiny)太窄，放不下「角标+中间大符号」，只留左上角标避免重叠；中/大牌保留完整三件套
-  const isCompact = size === 'small' || size === 'tiny';
+  // tiny 牌（网格 16×24）太窄，放不下完整三件套，用"左上点数 + 中心花色"；small/medium/large 保留完整三件套
+  const isCompact = size === 'tiny';
 
   return (
     <div style={{
@@ -176,8 +176,8 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
     }}>
       <div style={{
         position: 'absolute',
-        top: 2,
-        left: 3,
+        top: 1,
+        left: 2,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -187,23 +187,22 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
         color: color,
       }}>
         <span>{rankDisplay}</span>
-        <span style={{ fontSize: s.fontSize * 0.7 }}>{card.suit}</span>
+        {!isCompact && <span style={{ fontSize: s.fontSize * 0.7 }}>{card.suit}</span>}
       </div>
-      {!isCompact && (
-        <span style={{
-          fontSize: s.symbolSize,
-          color: color,
-          opacity: 0.9,
-          textShadow: '0 1px 2px rgba(0,0,0,0.05)',
-        }}>
-          {card.suit}
-        </span>
-      )}
+      <span style={{
+        fontSize: s.symbolSize,
+        color: color,
+        opacity: 0.9,
+        textShadow: '0 1px 2px rgba(0,0,0,0.05)',
+        marginTop: isCompact ? 4 : 0,
+      }}>
+        {card.suit}
+      </span>
       {!isCompact && (
         <div style={{
           position: 'absolute',
-          bottom: 2,
-          right: 3,
+          bottom: 1,
+          right: 2,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -1664,8 +1663,9 @@ export default function BlackjackPage() {
         if (dp > dealerDrink) dealerDrink = dp;
       }
     }
-    // 庄家爆牌兜底：即使无人比牌赢（比如都认爆），庄家爆牌自罚 2 杯
-    if (isBust(dealer.cards)) dealerDrink = Math.max(dealerDrink, 2);
+    // 庄家爆牌兜底：第5张爆自罚 3 杯（与玩家第5张爆一致），普通爆自罚 2 杯
+    const dealerBustFive = dealer.cards.length === 5 && isBust(dealer.cards);
+    if (isBust(dealer.cards)) dealerDrink = Math.max(dealerDrink, dealerBustFive ? 3 : 2);
     dealerRecord.penalty = dealerDrink;
 
     setResultDetails(results);
@@ -2257,7 +2257,7 @@ for (const r of results) {
           <span>庄家 {dealerIsMe ? '（你）' : dealerName}</span>
           {dealerBj && <span style={{ background: 'linear-gradient(120deg,#ffd27a,#d89a2a)', color: '#2a0820', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px', boxShadow: '0 0 12px rgba(255,210,122,0.6)' }}>黑杰克</span>}
           {dealerBust && <span style={{ background: 'rgba(255,90,122,0.2)', color: '#ff7a93', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>爆</span>}
-          {dealerFive && <span style={{ background: 'rgba(120,170,255,0.2)', color: '#9ec4ff', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>五小龙</span>}
+          {dealerFive && <span style={{ background: 'rgba(120,170,255,0.2)', color: '#9ec4ff', fontSize: '13px', fontWeight: 800, padding: '1px 6px', borderRadius: '6px', letterSpacing: '1px' }}>🐉</span>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '9px', marginTop: '3px' }}>
           <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffd27a', lineHeight: 1, textShadow: '0 0 16px rgba(255,210,122,0.5)', minWidth: '44px' }}>
@@ -2685,8 +2685,6 @@ for (const r of results) {
                             minWidth: '16px',
                           }}>
                             {p.isStanding && !isSettlement && <span style={{ color: '#e879a8' }}>✅</span>}
-                            {p.isBust && isSettlement && <span style={{ color: '#ef4444' }}>💥</span>}
-                            {p.isFiveCard && isSettlement && <span style={{ color: '#f0a8c4' }}>🐉</span>}
                             {p.isBlackjack && isSettlement && <span style={{ color: '#f0a8c4' }}>♠</span>}
                           </div>
                         </div>
