@@ -113,7 +113,7 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14, corner: 3 },
     medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10, corner: 5 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24, corner: 7 },
-    tiny: { width: 16, height: 24, fontSize: 7, symbolSize: 7, corner: 2 },
+    tiny: { width: 14, height: 20, fontSize: 7, symbolSize: 7, corner: 2 },
     dealer: { width: 32, height: 46, fontSize: 11, symbolSize: 13, corner: 5 },
   };
   const s = sizeMap[size] || sizeMap.medium;
@@ -2466,7 +2466,7 @@ for (const r of results) {
 
           return (
             <div key={p.name || idx} style={{
-              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '6px', position: 'relative',
+              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '5px', position: 'relative',
               border: `1px solid ${isMe ? '#ff5a7a' : (isActive ? '#ffd27a' : 'rgba(255,255,255,0.1)')}`,
               boxShadow: isMe ? '0 0 0 1px rgba(255,90,122,0.4), 0 0 16px rgba(255,90,122,0.2)' : (isActive ? '0 0 0 1px rgba(255,210,122,0.5)' : 'none')
             }}>
@@ -2485,7 +2485,7 @@ for (const r of results) {
                     color: cupColor }}>{cupTxt}</span>
                 )}
               </div>
-              <div style={{ fontSize: '10px', marginTop: '3px', display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <div style={{ fontSize: '10px', marginTop: '2px', display: 'flex', gap: '4px', alignItems: 'center' }}>
                 {badge && <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: '6px', fontSize: '10px', ...badgeStyle }}>{badge}</span>}
                 {specialIcon && (
                   <span style={{
@@ -2496,13 +2496,13 @@ for (const r of results) {
                   }}>{specialIcon}</span>
                 )}
               </div>
-              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '5px', justifyContent: 'center' }}>
+              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '3px', justifyContent: 'center' }}>
                 {isSettle && cards.length > 0 ? (
                   cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="tiny" />)
                 ) : (
                   p.cardCount > 0 && !isSettle ? (
                     Array.from({ length: p.cardCount }).map((_, i) => (
-                      <div key={i} style={{ width: '16px', height: '24px', borderRadius: '2px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                      <div key={i} style={{ width: '14px', height: '20px', borderRadius: '2px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
                     ))
                   ) : null
                 )}
