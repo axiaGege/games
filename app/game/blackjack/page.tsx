@@ -108,11 +108,12 @@ const parsePlayers = (raw: any): any[] => {
 };
 
 // ==================== 🃏 扑克牌组件 ====================
-const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' }) => {
+const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boolean; size?: 'small' | 'medium' | 'large' | 'tiny' }) => {
   const sizeMap = {
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14, corner: 3 },
     medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10, corner: 5 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24, corner: 7 },
+    tiny: { width: 16, height: 24, fontSize: 7, symbolSize: 10, corner: 2 },
   };
   const s = sizeMap[size] || sizeMap.medium;
 
@@ -154,6 +155,8 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
   const isRed = card.suit === '♥' || card.suit === '♦';
   const color = isRed ? '#A32D2D' : '#2C2C2A';
   const rankDisplay = card.rank === '10' ? '10' : card.rank;
+  // 小尺寸牌(small/tiny)太窄，放不下「角标+中间大符号」，只留左上角标避免重叠；中/大牌保留完整三件套
+  const isCompact = size === 'small' || size === 'tiny';
 
   return (
     <div style={{
@@ -186,30 +189,34 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
         <span>{rankDisplay}</span>
         <span style={{ fontSize: s.fontSize * 0.7 }}>{card.suit}</span>
       </div>
-      <span style={{
-        fontSize: s.symbolSize,
-        color: color,
-        opacity: 0.9,
-        textShadow: '0 1px 2px rgba(0,0,0,0.05)',
-      }}>
-        {card.suit}
-      </span>
-      <div style={{
-        position: 'absolute',
-        bottom: 2,
-        right: 3,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        lineHeight: 1,
-        fontSize: s.fontSize,
-        fontWeight: 700,
-        color: color,
-        transform: 'rotate(180deg)',
-      }}>
-        <span>{rankDisplay}</span>
-        <span style={{ fontSize: s.fontSize * 0.7 }}>{card.suit}</span>
-      </div>
+      {!isCompact && (
+        <span style={{
+          fontSize: s.symbolSize,
+          color: color,
+          opacity: 0.9,
+          textShadow: '0 1px 2px rgba(0,0,0,0.05)',
+        }}>
+          {card.suit}
+        </span>
+      )}
+      {!isCompact && (
+        <div style={{
+          position: 'absolute',
+          bottom: 2,
+          right: 3,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          lineHeight: 1,
+          fontSize: s.fontSize,
+          fontWeight: 700,
+          color: color,
+          transform: 'rotate(180deg)',
+        }}>
+          <span>{rankDisplay}</span>
+          <span style={{ fontSize: s.fontSize * 0.7 }}>{card.suit}</span>
+        </div>
+      )}
     </div>
   );
 };
@@ -333,6 +340,45 @@ export default function BlackjackPage() {
   const activePlayers = players.filter(p => p.status !== 'watching');
   const allReady = activePlayers.length >= 2 && activePlayers.every(p => readyPlayers.includes(p.name));
   const currentPlayer = players[currentPlayerIndex] || null;
+
+  // ==================== 数据库兜底同步（解决广播丢包导致漏人） ====================
+  const syncFromDB = (row: any) => {
+    const dbPlayers = parsePlayers(row.players);
+    setPlayers(prev => {
+      const dbMap = new Map(dbPlayers.map((p: any) => [p.name, p]));
+      const out: any[] = [];
+      const seen = new Set<string>();
+      for (const p of prev) {
+        const db = dbMap.get(p.name);
+        if (db) {
+          // DB 有此人：用 DB 的非牌字段，但保留本地当前牌面（避免回退进行中的操作）
+          out.push({ ...db, cards: p.cards, cardCount: p.cardCount, isStanding: p.isStanding, isBust: p.isBust, isBlackjack: p.isBlackjack, isFiveCard: p.isFiveCard, bustType: p.bustType });
+          seen.add(p.name);
+        } else {
+          // 本地独有且 DB 已无：观战者丢弃（已退出），进行中玩家保留（保护进行中状态）
+          if (p.status === 'watching') continue;
+          out.push(p);
+        }
+      }
+      // 把 DB 有、本地没有的人加入（新加入者）
+      for (const p of dbPlayers) if (!seen.has(p.name)) out.push(p);
+      return out;
+    });
+    // 仅非对局阶段全量同步其他状态，避免回退进行中的 phase/准备
+    const ph: string = row.phase;
+    if (ph === 'waiting' || ph === 'waiting_for_dealer' || ph === 'wheel') {
+      setPhase(ph);
+      setReadyPlayers(row.readyplayers || []);
+      setDealerId(row.dealerid || null);
+      setResultDetails(row.resultdetails || []);
+      setSpectators(row.spectators || []);
+      setSeed(row.seed ?? null);
+      setDeckOffset(row.deckoffset || 0);
+      setWheelVisible(row.wheelvisible || false);
+      setWheelSelected(row.wheelselected || null);
+      setWheelSegments(row.wheelsegments || []);
+    }
+  };
 
   // ==================== Supabase 订阅 ====================
   useEffect(() => {
@@ -470,10 +516,22 @@ export default function BlackjackPage() {
         }
         setDisconnected(false);
       })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload: any) => {
+        if (payload.new) syncFromDB(payload.new);
+      })
       .subscribe();
+
+    // 兜底轮询：定时从数据库拉最新房间状态，保证全员名单同步（广播丢包也不漏人）
+    const pollTimer = setInterval(async () => {
+      try {
+        const { data } = await supabase.from("rooms").select("*").eq("id", roomId).single();
+        if (data) syncFromDB(data);
+      } catch (_) {}
+    }, 2500);
 
     channelRef.current = channel;
     return () => {
+      clearInterval(pollTimer);
       if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
   }, [roomId, playerName]);
@@ -839,11 +897,16 @@ export default function BlackjackPage() {
   // ==================== 开始游戏 ====================
   const startGame = async () => {
     if (phase !== "waiting") return;
-    if (activePlayers.length < 2) { setErrorMsg("至少2人才能开始"); return; }
-    if (!allReady) { setErrorMsg("还有玩家未准备"); return; }
+    // 先从数据库拉最新房间，确保名单包含所有已加入者（避免本地名单过时漏人）
+    const { data: latest } = await supabase.from("rooms").select("*").eq("id", roomId).single();
+    const basePlayers = latest ? parsePlayers(latest.players) : players;
+    const baseReady = latest ? (latest.readyplayers || []) : readyPlayers;
+    const activeNow = basePlayers.filter(p => p.status !== 'watching');
+    if (activeNow.length < 2) { setErrorMsg("至少2人才能开始"); return; }
+    if (!activeNow.every(p => baseReady.includes(p.name))) { setErrorMsg("还有玩家未准备"); return; }
 
-    const firstDealer = activePlayers[0].name;
-    const resetPlayers = players.map(p => ({
+    const firstDealer = activeNow[0].name;
+    const resetPlayers = basePlayers.map(p => ({
       ...p,
       cards: [],
       cardCount: 0,
@@ -2366,13 +2429,13 @@ for (const r of results) {
                 )}
                 {cupTxt && <span style={{ color: '#d9b9c8' }}>· {cupTxt}</span>}
               </div>
-              <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', marginTop: '5px' }}>
+              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '5px', justifyContent: 'center' }}>
                 {isSettle && cards.length > 0 ? (
-                  cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="small" />)
+                  cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="tiny" />)
                 ) : (
                   p.cardCount > 0 && !isSettle ? (
                     Array.from({ length: p.cardCount }).map((_, i) => (
-                      <div key={i} style={{ width: '22px', height: '31px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                      <div key={i} style={{ width: '16px', height: '24px', borderRadius: '2px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
                     ))
                   ) : null
                 )}
