@@ -2371,7 +2371,7 @@ for (const r of results) {
             const myCards = (p as any).cards || [];
             if (isFiveCardCharlie(myCards)) { specialIcon = '🐉'; specialClass = 's-drag'; }
             else if (isBust(myCards)) { specialIcon = '💥'; specialClass = 's-bust'; }
-            else if (isBlackjack(myCards)) { specialIcon = '🃏'; specialClass = 's-bj'; }
+            else if (isBlackjack(myCards)) { specialIcon = '♠'; specialClass = 's-bj'; }
             cupTxt = '';
           } else {
             total = p.cardCount > 0 ? String(p.cardCount) : '—';
@@ -2379,7 +2379,7 @@ for (const r of results) {
               // 自己的牌自己看得到牌型
               if (p.isBust) { badge = '爆'; badgeClass = 'b-bust'; }
               else if (p.isFiveCard) { badge = '五小龙'; badgeClass = 'b-drag'; }
-              else if (p.isBlackjack) { badge = '黑杰克'; badgeClass = 'b-bj'; }
+              else if (p.isBlackjack && showMyCards) { badge = '♠'; badgeClass = 'b-bj'; }
               else if (p.isStanding) { badge = '停牌'; badgeClass = 'b-stand'; }
               else if (isActive) { badge = '你的回合'; badgeClass = 'b-stand'; }
               else if (isWatching) { badge = '观战'; badgeClass = 'b-wait'; }
