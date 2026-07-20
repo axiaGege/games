@@ -183,6 +183,7 @@ const applyCardToG = (g: any, card: CardT, drawer: string): any => {
 
 const initialG = (players: any[]) => ({
   players,
+  version: 0,
   currentDrawer: "",
   deck: shuffle(buildDeck()),
   drawnCard: null,
@@ -216,6 +217,7 @@ export default function GamePage() {
   const lastFeedId = useRef<any>(undefined);
   const feedOpenRef = useRef(false);
   const channelRef = useRef<any>(null);
+  const gVersionRef = useRef(0); // 状态版本号：单调增，接收端据此丢弃迟到/旧消息
 
   // 展开态实时可见，不计未读；关闭时清零（用 ref 同步给订阅闭包读取）
   useEffect(() => { feedOpenRef.current = feedOpen; }, [feedOpen]);
@@ -244,6 +246,8 @@ export default function GamePage() {
   };
 
   const commit = (ng: any) => {
+    ng.version = (ng?.version || 0) + 1; // 每次操作版本+1，作为"最新"凭证
+    gVersionRef.current = ng.version;
     lastFeedId.current = ng?.feed?.[0]?.id; // 自己操作标记为已读，红点只给旁观者
     setG(ng);
     if (roomId) broadcastState(roomId, ng);
@@ -256,11 +260,14 @@ export default function GamePage() {
       .channel(`room:${roomId}`, { config: { broadcast: { ack: true } } })
       .on("broadcast", { event: "gameState" }, (payload: any) => {
         const st = payload.payload;
+        const newV = st?.version || 0;
+        if (newV <= gVersionRef.current) return; // 旧消息/回声：直接丢弃，绝不回退
         const id = st?.feed?.[0]?.id;
         if (id !== undefined && id !== lastFeedId.current) {
           lastFeedId.current = id;
           if (!feedOpenRef.current) setFeedUnread((n) => n + 1); // 仅旁观者（他人动态）冒红点
         }
+        gVersionRef.current = newV;
         setG(st);
       })
       .subscribe();
@@ -268,6 +275,28 @@ export default function GamePage() {
     return () => {
       if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
+  }, [roomId]);
+
+  // ============ 定时对账（兜底：每 3 秒从账本补回漏收的广播，绝不永久掉队）============
+  useEffect(() => {
+    if (!roomId) return;
+    const iv = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from("rooms")
+          .select("resultdetails")
+          .eq("id", roomId)
+          .maybeSingle();
+        if (!data?.resultdetails) return;
+        const st = JSON.parse(data.resultdetails);
+        const newV = st?.version || 0;
+        if (newV > gVersionRef.current) {
+          gVersionRef.current = newV;
+          setG(st);
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(iv);
   }, [roomId]);
 
   // ============ 自动重连 ============
@@ -282,8 +311,15 @@ export default function GamePage() {
 
   const leaveRoom = async () => {
     if (!roomId || !g) return;
-    const updated = (g.players || []).filter((p: any) => p.name !== playerName);
-    let ng: any = { ...g, players: updated };
+    // 先从账本读最新全量状态，避免用本地过期快照覆盖掉别人已做的操作
+    let base: any = null;
+    try {
+      const { data } = await supabase.from("rooms").select("resultdetails").eq("id", roomId).maybeSingle();
+      if (data?.resultdetails) base = JSON.parse(data.resultdetails);
+    } catch {}
+    if (!base) base = g;
+    const updated = (base.players || []).filter((p: any) => p.name !== playerName);
+    let ng: any = { ...base, players: updated };
     // 若待办（选人/罚酒/定K）涉及离开者，清理掉，避免整局冻住
     if (ng.pending) {
       const p = ng.pending;
@@ -301,6 +337,8 @@ export default function GamePage() {
       ng.drawnBy = null;
       ng.pending = null;
     }
+    ng.version = (ng.version || 0) + 1; // 离开也 bump 版本，确保别人能收到这一变更
+    gVersionRef.current = ng.version;
     await broadcastState(roomId, ng); // 同步给所有人（含 players / 轮次 / 待办清理）
     if (channelRef.current) supabase.removeChannel(channelRef.current);
     try { localStorage.removeItem("misspai_name"); localStorage.removeItem("misspai_pass"); } catch {}
@@ -324,6 +362,7 @@ export default function GamePage() {
     if (error) { setErrorMsg("开台失败：" + error.message); return; }
     setRoomId(data.id);
     const ng = initialG([newPlayer]);
+    gVersionRef.current = ng.version;
     setG(ng);
     setJoined(true);
     try { localStorage.setItem("misspai_name", playerName.trim()); localStorage.setItem("misspai_pass", roomPassword.trim()); } catch {}
@@ -353,7 +392,8 @@ export default function GamePage() {
       try {
         const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
         setG(saved || initialG(current));
-      } catch { setG(initialG(current)); }
+        gVersionRef.current = saved?.version || 0; // 重连进已有局：以账本版本为准
+      } catch { setG(initialG(current)); gVersionRef.current = 0; }
       try { localStorage.setItem("misspai_name", name); localStorage.setItem("misspai_pass", pass); } catch {}
       return;
     }
@@ -370,6 +410,8 @@ export default function GamePage() {
       catch { return initialG(updated); }
     })();
     ng.players = updated;
+    ng.version = (ng.version || 0) + 1; // 新人加入也 bump 版本，让在场者收到
+    gVersionRef.current = ng.version;
     setG(ng);
     setJoined(true);
     try { localStorage.setItem("misspai_name", name); localStorage.setItem("misspai_pass", pass); } catch {}

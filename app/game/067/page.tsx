@@ -215,7 +215,14 @@ export default function GamePage() {
         setResult(state.result || "");
         setCurrentPlayer(state.currentPlayer || "");
         setLastBid(state.lastBid || null);
-        setPhase(state.phase || "waiting");
+        // 关键修复：对局进行中(rolling/bidding)时，拒绝被迟到/错误的 "waiting" 广播拉回准备阶段；
+        // 仅"再来一局"(resetGame→waiting) 或 全员离开 才允许回到 waiting。
+        setPhase((prevPhase) => {
+          if ((prevPhase === "rolling" || prevPhase === "bidding") && state.phase === "waiting") {
+            return prevPhase;
+          }
+          return state.phase || "waiting";
+        });
         setHasRolled(state.hasRolled || false);
         setOneSealed(state.oneSealed || false);
         setBidHistory(state.bidHistory || []);
@@ -298,23 +305,32 @@ export default function GamePage() {
   const leaveRoom = async () => {
     if (!roomId) return;
     const updatedPlayers = players.filter(p => p.name !== playerName);
+    // 关键修复：离开房间时，读取房间【真实进行中的对局状态】，仅把离开者从名单移除，
+    // 绝不再把整局重置为 waiting（否则正在进行的对局会被打回准备阶段）。
+    let saved = null;
+    try {
+      const { data: rd } = await supabase.from("rooms").select("resultdetails").eq("id", roomId).maybeSingle();
+      if (rd?.resultdetails) saved = JSON.parse(rd.resultdetails);
+    } catch (_) {}
+    const roomEmpty = updatedPlayers.length === 0;
+    const leavingCurrent = saved?.currentPlayer === playerName;
     await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
     await broadcastState(roomId, {
       players: updatedPlayers,
-      currentPlayer: "",
-      gameStarted: false,
-      gameOver: false,
-      result: "",
-      lastBid: null,
-      phase: "waiting",
-      hasRolled: false,
-      oneSealed: false,
-      bidHistory: [],
-      warning: "",
-      cupOpened: false,
-      selectedTarget: null,
-      nextStarter: null,
-      diceShaking: false,
+      currentPlayer: leavingCurrent ? "" : (saved?.currentPlayer || (roomEmpty ? "" : currentPlayer)),
+      gameStarted: saved?.gameStarted ?? gameStarted,
+      gameOver: saved?.gameOver ?? gameOver,
+      result: saved?.result || "",
+      lastBid: saved?.lastBid || null,
+      phase: saved?.phase || (roomEmpty ? "waiting" : phase),
+      hasRolled: saved?.hasRolled || false,
+      oneSealed: saved?.oneSealed || false,
+      bidHistory: saved?.bidHistory || [],
+      warning: saved?.warning || "",
+      cupOpened: saved?.cupOpened || false,
+      selectedTarget: saved?.selectedTarget || null,
+      nextStarter: saved?.nextStarter || null,
+      diceShaking: saved?.diceShaking || false,
     });
     setJoined(false);
     setRoomId("");
@@ -497,22 +513,25 @@ export default function GamePage() {
     setJoined(true);
     setPlayers(updatedPlayers);
     try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
+    // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
+    // 绝不再写死 phase:"waiting"（否则会把正在进行的对局打回准备阶段）。
+    const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
     await broadcastState(data.id, {
       players: updatedPlayers,
-      currentPlayer: "",
-      gameStarted: false,
-      gameOver: false,
-      result: "",
-      lastBid: null,
-      phase: "waiting",
-      hasRolled: false,
-      oneSealed: false,
-      bidHistory: [],
-      warning: "",
-      cupOpened: false,
-      selectedTarget: null,
-      nextStarter: null,
-      diceShaking: false,
+      currentPlayer: saved?.currentPlayer || "",
+      gameStarted: saved?.gameStarted || false,
+      gameOver: saved?.gameOver || false,
+      result: saved?.result || "",
+      lastBid: saved?.lastBid || null,
+      phase: saved?.phase || "waiting",
+      hasRolled: saved?.hasRolled || false,
+      oneSealed: saved?.oneSealed || false,
+      bidHistory: saved?.bidHistory || [],
+      warning: saved?.warning || "",
+      cupOpened: saved?.cupOpened || false,
+      selectedTarget: saved?.selectedTarget || null,
+      nextStarter: saved?.nextStarter || null,
+      diceShaking: saved?.diceShaking || false,
     });
   };
 

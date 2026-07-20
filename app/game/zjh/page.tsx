@@ -719,7 +719,7 @@ export default function ZhaJinHuaPage() {
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "waiting" || newPhase === "dealing") {
+        } else if (newPhase === "waiting" || newPhase === "dealing" || prevPhase === "waiting") {
           effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           effectivePhase = newPhase;
@@ -2472,7 +2472,7 @@ export default function ZhaJinHuaPage() {
   };
 
   const changeCommunityCard = async () => {
-    if (phase !== "betting" && phase !== "reveal") {
+    if (phase !== "betting") {
       setErrorMsg("当前阶段不能换公牌");
       return;
     }
@@ -2492,7 +2492,7 @@ export default function ZhaJinHuaPage() {
   };
 
   const doChangeCommunityCard = async () => {
-    if (phase !== "betting" && phase !== "reveal") {
+    if (phase !== "betting") {
       setErrorMsg("当前阶段不能换公牌");
       return;
     }
@@ -3150,7 +3150,7 @@ export default function ZhaJinHuaPage() {
 
   const isMyBetTurn = phase === "betting" && currentPlayer?.name === playerName && !gameOver && !isDealer;
   const myPlayer = getMyPlayer();
-  const canChangeCommunity = (phase === "betting" || phase === "reveal") && deckOffset < 52 && deckOffset > 0;
+  const canChangeCommunity = phase === "betting" && deckOffset < 52 && deckOffset > 0;
 
   // 🔧 修复：想象牌兜底用 players 里"我"的真实手牌(myPlayer.cards)，而非 myCards 这个独立 state——
   // 重进/晚到的接收端不会触发 setMyCards，但 setPlayers 已正确更新 myPlayer.cards，否则想象牌恒显示"无牌"
