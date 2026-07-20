@@ -113,7 +113,7 @@ const PokerCard = ({ card, hidden, size = 'medium' }: { card?: any; hidden?: boo
     small: { width: 22, height: 32, fontSize: 9, symbolSize: 14, corner: 3 },
     medium: { width: 34, height: 50, fontSize: 10, symbolSize: 10, corner: 5 },
     large: { width: 36, height: 50, fontSize: 14, symbolSize: 24, corner: 7 },
-    tiny: { width: 14, height: 20, fontSize: 7, symbolSize: 7, corner: 2 },
+    tiny: { width: 28, height: 40, fontSize: 11, symbolSize: 16, corner: 4 },
     dealer: { width: 32, height: 46, fontSize: 11, symbolSize: 13, corner: 5 },
   };
   const s = sizeMap[size] || sizeMap.medium;
@@ -2466,16 +2466,25 @@ for (const r of results) {
 
           return (
             <div key={p.name || idx} style={{
-              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '5px', position: 'relative',
+              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '4px', position: 'relative',
               border: `1px solid ${isMe ? '#ff5a7a' : (isActive ? '#ffd27a' : 'rgba(255,255,255,0.1)')}`,
               boxShadow: isMe ? '0 0 0 1px rgba(255,90,122,0.4), 0 0 16px rgba(255,90,122,0.2)' : (isActive ? '0 0 0 1px rgba(255,210,122,0.5)' : 'none')
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(160deg,#ff5a7a,#a0204a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>{avatar}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'linear-gradient(160deg,#ff5a7a,#a0204a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>{avatar}</div>
                 <div style={{ fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, color: isMe ? '#f0a8c4' : '#ddd' }}>
                   {isMe ? '你' : p.name}
                   {isDealer && <span style={{ fontSize: '10px', color: '#ffd27a' }}> 👑</span>}
                 </div>
+                {badge && <span style={{ display: 'inline-block', padding: '1px 5px', borderRadius: '6px', fontSize: '9px', fontWeight: 700, flexShrink: 0, ...badgeStyle }}>{badge}</span>}
+                {specialIcon && (
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    width: '16px', height: '14px', borderRadius: '6px', fontSize: '10px', lineHeight: 1,
+                    background: specialClass === 's-drag' ? 'rgba(120,170,255,0.22)' : specialClass === 's-bust' ? 'rgba(255,90,122,0.22)' : 'rgba(255,210,122,0.22)',
+                    color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
+                  }}>{specialIcon}</span>
+                )}
                 <div style={{ marginLeft: 'auto', fontSize: total === '黑杰克' ? '11px' : '18px', fontWeight: 800, color: '#ffd9e6', lineHeight: 1 }}>
                   {total}<span style={{ fontSize: '10px', color: '#d9b9c8' }}>{isSettle && total !== '黑杰克' ? '点' : (!isSettle && total !== '—' ? '张' : '')}</span>
                 </div>
@@ -2485,24 +2494,13 @@ for (const r of results) {
                     color: cupColor }}>{cupTxt}</span>
                 )}
               </div>
-              <div style={{ fontSize: '10px', marginTop: '2px', display: 'flex', gap: '4px', alignItems: 'center' }}>
-                {badge && <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: '6px', fontSize: '10px', ...badgeStyle }}>{badge}</span>}
-                {specialIcon && (
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    width: '18px', height: '15px', borderRadius: '6px', fontSize: '11px', lineHeight: 1,
-                    background: specialClass === 's-drag' ? 'rgba(120,170,255,0.22)' : specialClass === 's-bust' ? 'rgba(255,90,122,0.22)' : 'rgba(255,210,122,0.22)',
-                    color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
-                  }}>{specialIcon}</span>
-                )}
-              </div>
-              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '3px', justifyContent: 'center' }}>
+              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '2px', justifyContent: 'center' }}>
                 {isSettle && cards.length > 0 ? (
                   cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="tiny" />)
                 ) : (
                   p.cardCount > 0 && !isSettle ? (
                     Array.from({ length: p.cardCount }).map((_, i) => (
-                      <div key={i} style={{ width: '14px', height: '20px', borderRadius: '2px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                      <div key={i} style={{ width: '28px', height: '40px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
                     ))
                   ) : null
                 )}
