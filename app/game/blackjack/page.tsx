@@ -267,6 +267,7 @@ export default function BlackjackPage() {
   const [showRules, setShowRules] = useState(false);
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
+  const seedRef = useRef<number | null>(null);
   const isSettlingRef = useRef(false);
   const drawTimeoutFiredRef = useRef(false);
 
@@ -468,7 +469,13 @@ export default function BlackjackPage() {
         if (state.spectators !== undefined) setSpectators(state.spectators);
         setSettlementStep(state.settlementStep || 0);
         setSeed(state.seed || null);
-        setDeckOffset(state.deckOffset || 0);
+        {
+          const _inc = state.deckOffset || 0;
+          if (state.seed === null) setDeckOffset(0);
+          else if (state.seed !== seedRef.current) setDeckOffset(_inc);
+          else setDeckOffset(prev => Math.max(prev, _inc));
+          seedRef.current = state.seed ?? null;
+        }
         // —— 处理抽牌选庄同步 ——
         setWheelVisible(state.wheelVisible || false);
         const rawCtrl = state.wheelSelected;
@@ -652,7 +659,13 @@ export default function BlackjackPage() {
       setResult(roomData.result || "");
       setResultDetails(roomData.resultdetails || []);
       setSettlementStep(roomData.settlementstep || 0);
-      setDeckOffset(roomData.deckoffset || 0);
+      {
+        const _inc = roomData.deckoffset || 0;
+        if (roomData.seed === null) setDeckOffset(0);
+        else if (roomData.seed !== seedRef.current) setDeckOffset(_inc);
+        else setDeckOffset(prev => Math.max(prev, _inc));
+        seedRef.current = roomData.seed ?? null;
+      }
       setWheelVisible(roomData.wheelvisible || false);
       setWheelSelected(roomData.wheelselected || null);
       setWheelSegments(roomData.wheelsegments || []);
@@ -747,7 +760,13 @@ export default function BlackjackPage() {
     setResult(roomData.result || "");
     setResultDetails(roomData.resultdetails || []);
     setSettlementStep(roomData.settlementstep || 0);
-    setDeckOffset(roomData.deckoffset || 0);
+    {
+      const _inc = roomData.deckoffset || 0;
+      if (roomData.seed === null) setDeckOffset(0);
+      else if (roomData.seed !== seedRef.current) setDeckOffset(_inc);
+      else setDeckOffset(prev => Math.max(prev, _inc));
+      seedRef.current = roomData.seed ?? null;
+    }
     setWheelVisible(roomData.wheelvisible || false);
     setWheelSelected(roomData.wheelselected || null);
     setWheelSegments(roomData.wheelsegments || []);
