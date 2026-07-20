@@ -2387,12 +2387,13 @@ for (const r of results) {
       </div>
     );
 
-    const others = isSettle
+    const others = (isSettle
       ? resultDetails.filter((d) => d.name !== dealerName)
-      : players.filter((p) => p.name !== dealerName);
+      : players.filter((p) => p.name !== dealerName)
+    ).slice().sort((a: any, b: any) => ((a.seatId ?? 0) - (b.seatId ?? 0)) || (a.name || '').localeCompare(b.name || ''));
 
     const grid = (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(108px, 1fr))', gap: '7px', width: '100%' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '7px', width: '100%' }}>
         {others.map((p, idx) => {
           const isMe = p.name === playerName;
           const isDealer = p.name === dealerId || p.isDealer;
@@ -2471,7 +2472,7 @@ for (const r of results) {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(160deg,#ff5a7a,#a0204a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>{avatar}</div>
-                <div style={{ fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isMe ? '#f0a8c4' : '#ddd' }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, color: isMe ? '#f0a8c4' : '#ddd' }}>
                   {isMe ? '你' : p.name}
                   {isDealer && <span style={{ fontSize: '10px', color: '#ffd27a' }}> 👑</span>}
                 </div>
