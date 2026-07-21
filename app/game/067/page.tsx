@@ -136,7 +136,6 @@ export default function GamePage() {
   const [diceShaking, setDiceShaking] = useState(false);
   const [isLidOpen, setIsLidOpen] = useState(false);
   const [cupOpened, setCupOpened] = useState(false);
-  const [myCupViewed, setMyCupViewed] = useState(false); // 本地：自己本局是否查看过骰子（仅自己可见，不广播锁他人）
   const [oneSealed, setOneSealed] = useState(false);
   const [bidHistory, setBidHistory] = useState<string[]>([]);
   const [warning, setWarning] = useState("");
@@ -443,7 +442,6 @@ export default function GamePage() {
     setDiceShaking(false);
     setIsLidOpen(false);
     setCupOpened(false);
-      setMyCupViewed(false);
     setOneSealed(false);
     setBidHistory([]);
     setWarning("");
@@ -711,7 +709,6 @@ export default function GamePage() {
     setHasRolled(false);
     setHasRolledLocal(false);
     setCupOpened(false);
-      setMyCupViewed(false);
     setMyDice([]);
     setIsLidOpen(false);
     
@@ -1073,7 +1070,6 @@ export default function GamePage() {
     setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
-      setMyCupViewed(false);
     setHasRolledLocal(false);
     setMyDice([]);
     setSelectedCount(null);
@@ -1124,7 +1120,6 @@ export default function GamePage() {
     setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
-      setMyCupViewed(false);
     setHasRolledLocal(false);
     setMyDice([]);
     setSelectedCount(null);
@@ -1156,9 +1151,7 @@ export default function GamePage() {
 
   const handleLidOpen = async () => {
     setIsLidOpen(true);
-    // 查看自己骰子是私人行为：只记本地标记（自己本局已查看，仅自己手机可见提示），
-    // 不再广播 cupOpened 去锁全桌——否则一个人查看会误伤其他人使其不能摇。
-    if (myDice.length > 0) setMyCupViewed(true);
+    // 查看自己骰子是私人行为，不影响他人；公平性由"已摇过不可重摇"及"叫牌后阶段切换"两道关卡保证。
   };
 
   const handleLidClose = () => {
@@ -1411,12 +1404,6 @@ export default function GamePage() {
                 })()}
               </div>
             )}
-
-            {myCupViewed && (
-              <div style={{ color: '#ef4444', fontSize: '13px', marginTop: '4px' }}>
-                ⚠️ 已查看，本局不能再摇骰
-              </div>
-            )}
           </div>
 
           <div style={styles.roomInfo}>
@@ -1519,9 +1506,9 @@ export default function GamePage() {
             <button 
               onClick={handleRollDice} 
               style={hasRolledLocal ? styles.btnReady : styles.btnStart}
-              disabled={hasRolledLocal || cupOpened || players.find((p: any) => p.name === playerName)?.status === "watching"}
+              disabled={hasRolledLocal || players.find((p: any) => p.name === playerName)?.status === "watching"}
             >
-              {players.find((p: any) => p.name === playerName)?.status === "watching" ? '👁 观战中' : (hasRolledLocal ? '✅ 已摇骰' : (cupOpened ? '🔒 骰盅已开' : '🎲 摇骰'))}
+              {players.find((p: any) => p.name === playerName)?.status === "watching" ? '👁 观战中' : (hasRolledLocal ? '✅ 已摇骰' : '🎲 摇骰')}
             </button>
           )}
           {gameStarted && !gameOver && phase === "bidding" && (
