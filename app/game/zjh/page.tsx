@@ -864,7 +864,13 @@ export default function ZhaJinHuaPage() {
         if (data.communitycard !== undefined) setCommunityCard(data.communitycard);
         setResult(data.result || "");
         setResultDetails(data.resultdetails || []);
-        setReadyPlayers(data.readyplayers || []);
+        // 准备名单：waiting 阶段以"本地∪数据库"并集保留，避免3秒对账的瞬时滞后把刚点的准备清掉导致卡准备死循环；对局中仍用数据库权威值
+        const dbReady = data.readyplayers || [];
+        if (phaseRef.current === "waiting") {
+          setReadyPlayers(prev => Array.from(new Set([...prev, ...dbReady])));
+        } else {
+          setReadyPlayers(dbReady);
+        }
         setBettingComplete(data.bettingcomplete !== undefined ? data.bettingcomplete : false);
         bettingCompleteRef.current = data.bettingcomplete || false;
         if (data.revealtargets) setRevealTargets(data.revealtargets);
