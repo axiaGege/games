@@ -441,14 +441,15 @@ export default function BlackjackPage() {
         });
 
         setPhase(prevPhase => {
-          // 防回退：已进入发牌/玩家回合/庄家回合时，拒绝被迟到旧广播拉回 抽庄/等待
-          // （合法流程里对局阶段只会自动走向下一局 dealing，从不回退 wheel/waiting）
-          const _protected = prevPhase === "dealing" || prevPhase === "player_turn" || prevPhase === "dealer_turn";
-          if (_protected && (state.phase === "wheel" || state.phase === "waiting" || state.phase === "waiting_for_dealer")) {
+          // 防回退（方向一）：已进入对局中时，拒绝被迟到旧广播拉回 抽庄/等待/结算
+          const inRound = prevPhase === "dealing" || prevPhase === "player_turn" || prevPhase === "dealer_turn";
+          if (inRound && (state.phase === "wheel" || state.phase === "waiting" || state.phase === "waiting_for_dealer")) {
             return prevPhase;
           }
-          if (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn") {
-            return state.phase;
+          // 防回退（方向二）：已结算/选庄时，拒绝被迟到"对局中"旧广播戳回（避免结算单一闪而过）
+          const settled = prevPhase === "waiting_for_dealer" || prevPhase === "wheel";
+          if (settled && (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn")) {
+            return prevPhase;
           }
           if (state.phase === "waiting_for_dealer") return "waiting_for_dealer";
           return state.phase || "waiting";
@@ -2352,19 +2353,21 @@ for (const r of results) {
     } else if (dealerP) {
       dealerPt = dealerP.cardCount > 0 ? dealerP.cardCount + '张' : '—';
     }
+    // 庄家黑杰克金标做稳：cards 算不出时，退而用结算结论文字兜底（避免 cards 缺失导致图标漏显）
+    const dealerBjShow = dealerBj || (isSettle && !!dealerRD && ((dealerRD.result || '').includes('黑杰克')));
 
     const dealerCard = (
       <div style={{
         width: '100%', maxWidth: '360px', borderRadius: '14px', padding: '7px 11px',
         background: 'linear-gradient(160deg, rgba(255,210,122,0.12), rgba(46,12,34,0.5))',
-        border: `1px solid ${dealerBj ? '#ffd27a' : 'rgba(255,210,122,0.35)'}`,
-        boxShadow: dealerBj ? '0 0 24px rgba(255,210,122,0.3)' : 'none',
+        border: `1px solid ${dealerBjShow ? '#ffd27a' : 'rgba(255,210,122,0.35)'}`,
+        boxShadow: dealerBjShow ? '0 0 24px rgba(255,210,122,0.3)' : 'none',
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px'
       }}>
         <div style={{ fontSize: '11px', color: '#ffd27a', letterSpacing: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
           <span style={{ fontSize: '13px' }}>👑</span>
           <span>庄家 {dealerIsMe ? '（你）' : dealerName}</span>
-          {dealerBj && <span style={{ background: 'linear-gradient(120deg,#ffd27a,#d89a2a)', color: '#2a0820', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px', boxShadow: '0 0 12px rgba(255,210,122,0.6)' }}>黑杰克</span>}
+          {dealerBjShow && <span style={{ background: 'linear-gradient(120deg,#ffd27a,#d89a2a)', color: '#2a0820', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px', boxShadow: '0 0 12px rgba(255,210,122,0.6)' }}>♠ 黑杰克</span>}
           {dealerBust && <span style={{ background: 'rgba(255,90,122,0.2)', color: '#ff7a93', fontSize: '10px', fontWeight: 800, padding: '1px 7px', borderRadius: '6px', letterSpacing: '1px' }}>爆</span>}
           {dealerFive && <span style={{ background: 'rgba(120,170,255,0.2)', color: '#9ec4ff', fontSize: '13px', fontWeight: 800, padding: '1px 6px', borderRadius: '6px', letterSpacing: '1px' }}>🐉</span>}
           {isSettle && dealerRD && (
@@ -2375,14 +2378,14 @@ for (const r of results) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '9px', marginTop: '3px' }}>
           <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffd27a', lineHeight: 1, textShadow: '0 0 16px rgba(255,210,122,0.5)', minWidth: '44px' }}>
-            {dealerPt}<small style={{ fontSize: '12px', color: '#d9b9c8', fontWeight: 400 }}>{isSettle && !dealerBj ? '点' : ''}</small>
+            {dealerPt}<small style={{ fontSize: '12px', color: '#d9b9c8', fontWeight: 400 }}>{isSettle && !dealerBjShow ? '点' : ''}</small>
           </div>
           <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
             {isSettle && dealerCards.length > 0 ? (
               dealerCards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="dealer" />)
             ) : dealerP && dealerP.cardCount > 0 ? (
               Array.from({ length: dealerP.cardCount }).map((_, i) => (
-                <div key={i} style={{ width: '22px', height: '31px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                <PokerCard key={i} card={undefined} hidden size="dealer" />
               ))
             ) : null}
           </div>
@@ -2477,15 +2480,8 @@ for (const r of results) {
             cards = (p as any).cards || [];
             const rawTotal = calculateHand(cards);
             total = isBlackjack(cards) ? '黑杰克' : String(rawTotal);
-            // 网格是公共视图：所有人只看「赢/输/平局」结论，不写喝几杯（喝几杯只在各自顶部那行大字显示）
-            if (p.who === 'all_players') { badge = '输'; badgeClass = 'b-lose'; }
-            else if (p.who === 'dealer') { badge = '赢'; badgeClass = 'b-stand'; }
-            else if (p.who === 'none') { badge = '平局'; badgeClass = 'b-wait'; }
-            else {
-              const win = (p.result || '').includes('赢') || p.penalty === 0;
-              badge = win ? '赢' : '输'; badgeClass = win ? 'b-stand' : 'b-lose';
-            }
-            // 特殊牌型图标（用户选纯图标 B 方案；爆了统一 💥）
+            // 结算：不显示「赢/输/平局」结论字（多余且占位置），只保留牌型图标 + 喝几杯（带原因）
+            // 特殊牌型图标（纯图标方案；爆了统一 💥）
             // 从"玩家自己的牌"推导，避免把描述庄家的文字(如"庄家爆牌")误贴到玩家格
             const myCards = (p as any).cards || [];
             if (isFiveCardCharlie(myCards)) { specialIcon = '🐉'; specialClass = 's-drag'; }
@@ -2497,8 +2493,17 @@ for (const r of results) {
             let cups = 0;
             if (p.who === 'dealer' || p.who === 'none') cups = 0;
             else cups = p.penalty || 0;
-            cupTxt = cups > 0 ? `喝 ${cups} 杯` : '免喝';
-            cupColor = cups > 0 ? '#ff7a93' : '#7bf0a0';
+            if (cups > 0) {
+              const r = (p as any).result || '';
+              if (r.includes('想偷鸡被爆')) cupTxt = '偷鸡爆2杯';
+              else if (r.includes('认爆')) cupTxt = '认爆1杯';
+              else if (r.includes('第5张爆')) cupTxt = '第5张爆3杯';
+              else cupTxt = `喝 ${cups} 杯`;
+              cupColor = '#ff7a93';
+            } else {
+              cupTxt = '免喝';
+              cupColor = '#7bf0a0';
+            }
           } else {
             total = p.cardCount > 0 ? String(p.cardCount) : '—';
             if (isMe) {
@@ -2571,7 +2576,7 @@ for (const r of results) {
                 ) : (
                   p.cardCount > 0 && !isSettle ? (
                     Array.from({ length: p.cardCount }).map((_, i) => (
-                      <div key={i} style={{ width: '24px', height: '34px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                      <PokerCard key={i} card={undefined} hidden size="tiny" />
                     ))
                   ) : null
                 )}
