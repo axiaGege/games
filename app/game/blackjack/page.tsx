@@ -2457,7 +2457,7 @@ for (const r of results) {
     ).slice().sort((a: any, b: any) => ((a.seatId ?? 0) - (b.seatId ?? 0)) || (a.name || '').localeCompare(b.name || ''));
 
     const grid = (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '7px', width: '100%' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(108px, 1fr))', gap: '7px', width: '100%' }}>
         {others.map((p, idx) => {
           const isMe = p.name === playerName;
           const isDealer = p.name === dealerId || p.isDealer;
@@ -2951,75 +2951,6 @@ for (const r of results) {
               ⏳ 等待开始 {players.length >= 2 ? `（${readyPlayers.length}/${players.length} 已准备）` : '（至少2人）'}
             </span>
           )}
-          {phase === "waiting_for_dealer" && (() => {
-            const allEvent = resultDetails.find(d => d.who === 'all_players');
-            const dealerRow = resultDetails.find(d => d.name === dealerId && d.who === 'dealer');
-            let overview = '';
-            if (allEvent) {
-              const ev = allEvent.result.replace(/^庄家/, '').replace(/！$/, '');
-              overview = `庄家【${dealerId}】${ev}，全场玩家各喝 ${allEvent.penalty} 杯 🍺（庄家不罚）`;
-            } else if (dealerRow) {
-              overview = `庄家【${dealerId}】${dealerRow.result.replace(/^庄家/, '')}`;
-            }
-            const meRow = resultDetails.find(d => d.name === playerName);
-            let myWin = false, myCups = 0, myTxt = '';
-            if (meRow) {
-              if (meRow.who === 'all_players') { myWin = false; myCups = meRow.penalty || 0; myTxt = `你这局 输 · 喝 ${myCups} 杯`; }
-              else if (meRow.who === 'dealer') { myWin = true; myCups = meRow.dealerPenalty ?? meRow.penalty ?? 0; myTxt = `你这局 赢 · 庄家喝 ${myCups} 杯`; }
-              else if (meRow.who === 'none') { myWin = false; myCups = 0; myTxt = '你这局 平局 · 免喝'; }
-              else { myCups = meRow.penalty || 0; myWin = (meRow.result || '').includes('赢'); myTxt = `你这局 ${myWin ? '赢' : '输'} · ${myCups > 0 ? '喝 ' + myCups + ' 杯' : '免喝'}`; }
-            }
-            return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'stretch', width: '100%', padding: '4px 0' }}>
-              {false && (<>
-              <div style={{ background: 'rgba(214,140,170,0.10)', border: '1px solid rgba(214,140,170,0.2)', borderRadius: '10px', padding: '6px 10px', color: '#e7c4d4', fontSize: '12px', fontWeight: '500', textAlign: 'center' }}>
-                📊 本局结算：{overview}
-              </div>
-              <div style={{ maxHeight: '34vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', display: 'flex', flexDirection: 'column', gap: '4px', padding: '2px 4px' }}>
-                {resultDetails.map((d, idx) => {
-                  if (d.name === playerName) return null;
-                  if (d.name === dealerId && d.who === 'dealer') {
-                    return (
-                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-                        <span style={{ fontWeight: 'bold', color: '#e879a8' }}>{d.name}（庄家）</span>
-                        <span style={{ color: '#f3d4e0' }}>{d.result}</span>
-                      </div>
-                    );
-                  }
-                  if (d.who === 'all_players') {
-                    return (
-                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
-                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
-                        <span style={{ color: '#f87171' }}>输</span>
-                      </div>
-                    );
-                  }
-                  if (d.who === 'dealer') {
-                    return (
-                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
-                        <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
-                        <span style={{ color: '#e879a8' }}>赢 · 庄家喝 {d.dealerPenalty ?? d.penalty} 杯</span>
-                      </div>
-                    );
-                  }
-                  let txt = d.result;
-                  if (d.who === 'none') txt = `${d.result}（不喝）`;
-                  else if (d.who && d.who !== 'none') txt = `${d.result}，喝 ${d.penalty} 杯`;
-                  return (
-                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '3px 6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px' }}>
-                      <span style={{ fontWeight: 'bold', color: '#fff' }}>{d.name}</span>
-                      <span style={{ color: '#f3d4e0' }}>{txt}</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: '12px', color: 'rgba(235,195,215,0.6)', textAlign: 'center', paddingTop: '2px' }}>
-                🎲 轮到【{dealerId}】当庄，点「开始抽牌」选下一局庄家
-              </div>
-              </>)}
-            </div>
-            );
-          })()}
           {phase === "dealing" && <span style={styles.statusText}>🃏 发牌中...</span>}
           {phase === "player_turn" && !gameOver && (
             <span style={styles.statusText}>
