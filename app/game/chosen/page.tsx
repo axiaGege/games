@@ -305,13 +305,27 @@ export default function Chosen() {
     return fallback;
   };
 
+  // ============ 隐形身份证：每台设备一个永久编号，退出也不删，认人靠编号不靠名字 ============
+  const getOrCreateCid = () => {
+    try {
+      let c = localStorage.getItem('txzz_cid');
+      if (!c) {
+        c = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('txzz_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem('txzz_cid', c);
+      }
+      return c;
+    } catch (_) {
+      return 'txzz_' + Math.random().toString(36).slice(2);
+    }
+  };
+
   const createRoom = async () => {
     if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
     if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
     setErrorMsg("");
     const { data: existing } = await supabase.from("rooms").select("password").eq("password", roomPassword.trim()).maybeSingle();
     if (existing) { setErrorMsg("这个密码已被使用，请换一个"); return; }
-    const newPlayer = { name: playerName.trim(), seatId: 0, isDealer: true, status: "playing", cards: [], pouredCups: 0, hasPoured: false };
+    const newPlayer = { cid: getOrCreateCid(), lastSeen: Date.now(), name: playerName.trim(), seatId: 0, isDealer: true, status: "playing", cards: [], pouredCups: 0, hasPoured: false };
     const { data, error } = await supabase.from("rooms").insert({
       game_type: GAME_TYPE, password: roomPassword.trim(), players: [newPlayer],
       phase: "waiting", dealerid: playerName.trim(), gameover: false, currentplayerindex: 0,
@@ -348,13 +362,19 @@ export default function Chosen() {
     if (error || !roomData) { setErrorMsg("密码错误，未找到对应房间"); return; }
     const dbVersion = roomData.version || 0;
     versionRef.current = Math.max(versionRef.current, dbVersion);
-    const currentPlayers = parseArray(roomData.players);
+    let currentPlayers = parseArray(roomData.players);
     const currentReady = parseArray(roomData.readyplayers);
     const currentWheel = parseArray(roomData.wheelsegments);
     if (currentPlayers.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
-    if (currentPlayers.some((p: any) => p.name === name)) {
+    const myCid = getOrCreateCid();
+    // 玩家已存在（重连/暂离回归）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+    if (existingIdx >= 0) {
+      currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name, lastSeen: Date.now() } : p);
+    }
+    if (existingIdx >= 0) {
       // 重进（含暂离回归）：恢复全套，并把 online 设回 true（牌与座位一直在服务器，直接续上）
-      const revived = currentPlayers.map((p: any) => (p.name === name ? { ...p, online: true } : p));
+      const revived = currentPlayers.map((p: any) => (p.name === name ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p));
       setRoomId(roomData.id); setJoined(true); setPlayers(revived); playersRef.current = revived;
       // 重进重置本机翻牌/轮盘视觉状态：避免回来后之前翻开的牌/轮盘残留（下一轮 pouring 也会清，但 result 阶段回来会怪）
       setFlipped([]); setWheelRevealed(false); setResultRevealed(false); setRevealedOpponents({}); setWheelSpinning(false);
@@ -384,7 +404,7 @@ export default function Chosen() {
     let seatId = 0;
     for (let i = 0; i < 10; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
     const isActive = roomData.phase !== "waiting";
-    const newPlayer = { name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false };
+    const newPlayer = { cid: myCid, lastSeen: Date.now(), name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false };
     const updated = [...currentPlayers, newPlayer];
     await supabase.from("rooms").update({ players: updated, readyplayers: currentReady }).eq("id", roomData.id);
     setRoomId(roomData.id); setJoined(true); setPlayers(updated); playersRef.current = updated;
@@ -461,7 +481,18 @@ export default function Chosen() {
       try {
         const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
         if (error || !data) return;
-        const ps = parseArray(data.players);
+        // 心跳 + 幽灵清理：刷新自己的 lastSeen；只清"仍显示在线、但超过15分钟没心跳"的幽灵；
+        // 主动暂离(online===false)的人保留座位，绝不误伤
+        const myCid = (() => { try { return localStorage.getItem('txzz_cid') || ''; } catch { return ''; } })();
+        const now = Date.now();
+        let ps: any[] = parseArray(data.players);
+        let changed = false;
+        ps = ps.map((p: any) => {
+          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: now }; }
+          if (p.online !== false && p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
+          return p;
+        }).filter(Boolean) as any[];
+        if (changed) { try { await supabase.from("rooms").update({ players: ps }).eq("id", roomId); } catch (_) {} }
         if (ps.length > 0) { setPlayers(ps); playersRef.current = ps; }
         if (data.phase) { setPhase(data.phase); phaseRef.current = data.phase; }
         if (data.dealerid !== undefined) setDealerId(data.dealerid);
@@ -534,7 +565,7 @@ export default function Chosen() {
     await supabase.from("rooms").update({ players: updated, dealerid: newDealer, readyplayers: newReady }).eq("id", roomId);
     await broadcastAndSyncDB({ structuralSync: true, players: updated, phase: phase, dealerId: newDealer, seed: seed, deckOffset: deckOffset, wheelVisible: wheelVisible, wheelSelected: wheelSelected, wheelSegments: wheelSegments, round: round, excluded: excluded, readyPlayers: newReady, result: result, drinkers: drinkers });
     setJoined(false); setRoomId(""); // 本机退出界面，但服务器仍保留该玩家（online=false），牌与座位都在
-    try { localStorage.removeItem("txzz_name"); localStorage.removeItem("txzz_pass"); localStorage.removeItem("txzz_room"); } catch (_) {}
+    try { localStorage.removeItem("txzz_name"); localStorage.removeItem("txzz_pass"); localStorage.removeItem("txzz_room"); /* 保留 txzz_cid */ } catch (_) {}
     if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
   };
 

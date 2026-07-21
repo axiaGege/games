@@ -107,7 +107,7 @@ const parsePlayers = (raw: any): any[] => {
       if (matches) {
         return matches.map((m: string) => {
           const name = m.match(/"name":"([^"]+)"/)?.[1] || '未知';
-          return { name, dice: [], ready: false, seatId: 0 };
+          return { name, dice: [], ready: false, seatId: 0, status: "playing" };
         });
       }
     } catch {}
@@ -136,6 +136,7 @@ export default function GamePage() {
   const [diceShaking, setDiceShaking] = useState(false);
   const [isLidOpen, setIsLidOpen] = useState(false);
   const [cupOpened, setCupOpened] = useState(false);
+  const [myCupViewed, setMyCupViewed] = useState(false); // 本地：自己本局是否查看过骰子（仅自己可见，不广播锁他人）
   const [oneSealed, setOneSealed] = useState(false);
   const [bidHistory, setBidHistory] = useState<string[]>([]);
   const [warning, setWarning] = useState("");
@@ -282,7 +283,8 @@ export default function GamePage() {
       setSelectedCount(null);
       setSelectedValue(null);
     }
-    const me = parsedPlayers.find((p: any) => p.name === playerName);
+    const myCid = (() => { try { return localStorage.getItem('067_cid') || ''; } catch { return ''; } })();
+    const me = parsedPlayers.find((p: any) => (myCid && p.cid && p.cid === myCid) || p.name === playerName);
     if (me) {
       setMyDice(me.dice || []);
       setMySeatId(me.seatId !== undefined ? me.seatId : null);
@@ -302,12 +304,25 @@ export default function GamePage() {
           .eq("id", roomId)
           .maybeSingle();
         if (!data) return;
+        // 心跳 + 幽灵清理：刷新自己的 lastSeen，剔除超过 15 分钟没动静的幽灵（自己除外）
+        const myCid = (() => { try { return localStorage.getItem('067_cid') || ''; } catch { return ''; } })();
+        const now = Date.now();
+        let playersArr: any[] = parsePlayers(data.players);
+        let changed = false;
+        playersArr = playersArr.map((p: any) => {
+          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: now }; }
+          if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
+          return p;
+        }).filter(Boolean) as any[];
+        if (changed) {
+          try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
+        }
         const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
         const remoteVersion = saved?.version ?? 0;
         // 账本版本不旧于本地才应用，避免用更旧的数据把本地进度覆盖回去
         if (remoteVersion < gVersionRef.current) return;
         if (remoteVersion > gVersionRef.current) gVersionRef.current = remoteVersion;
-        applyRemoteState({ ...saved, players: data.players });
+        applyRemoteState({ ...saved, players: changed ? playersArr : data.players });
       } catch (_) {}
     }, 3000);
     return () => clearInterval(t);
@@ -346,9 +361,24 @@ export default function GamePage() {
     }
   };
 
+  // ============ 隐形身份证：每台设备一个永久编号，退出也不删，认人靠编号不靠名字 ============
+  const getOrCreateCid = () => {
+    try {
+      let c = localStorage.getItem('067_cid');
+      if (!c) {
+        c = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('067_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem('067_cid', c);
+      }
+      return c;
+    } catch (_) {
+      return '067_' + Math.random().toString(36).slice(2);
+    }
+  };
+
   const leaveRoom = async () => {
     if (!roomId) return;
-    const updatedPlayers = players.filter(p => p.name !== playerName);
+    const myCid = getOrCreateCid();
+    const updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
     // 关键修复：离开房间时，读取房间【真实进行中的对局状态】，仅把离开者从名单移除，
     // 绝不再把整局重置为 waiting（否则正在进行的对局会被打回准备阶段）。
     let saved = null;
@@ -378,7 +408,7 @@ export default function GamePage() {
     });
     setJoined(false);
     setRoomId("");
-    try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); } catch (_) {}
+    try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); /* 保留 067_cid：退出房间也不删，回头再进仍被认出 */ } catch (_) {}
     setPlayers([]);
     setGameStarted(false);
     setGameOver(false);
@@ -391,6 +421,7 @@ export default function GamePage() {
     setDiceShaking(false);
     setIsLidOpen(false);
     setCupOpened(false);
+      setMyCupViewed(false);
     setOneSealed(false);
     setBidHistory([]);
     setWarning("");
@@ -421,7 +452,7 @@ export default function GamePage() {
       return;
     }
 
-    const newPlayer = { name: playerName.trim(), dice: [], ready: true, seatId: 0 };
+    const newPlayer = { cid: getOrCreateCid(), lastSeen: Date.now(), name: playerName.trim(), dice: [], ready: true, seatId: 0, status: "playing" };
     const { data, error } = await supabase
       .from("rooms")
       .insert({
@@ -482,13 +513,13 @@ export default function GamePage() {
     if (error || !data) {
       console.error('❌ 查询房间失败:', error);
       setErrorMsg("密码错误，未找到对应房间");
-      try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); } catch (_) {}
+      try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); /* 保留 067_cid：退出房间也不删，回头再进仍被认出 */ } catch (_) {}
       return;
     }
 
     console.log('📥 查询到的房间数据:', data);
 
-    const currentPlayers = parsePlayers(data.players);
+    let currentPlayers = parsePlayers(data.players);
     console.log('📥 解析后的 currentPlayers:', currentPlayers);
 
     if (currentPlayers.length >= 12) {
@@ -496,8 +527,19 @@ export default function GamePage() {
       return;
     }
 
+    const savedState = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+    // 进行中的一局（摇骰/叫牌阶段）中途回来的人：先当“观战”，不拉进当前局，下一局再来一局再带上他
+    const midRound = !!savedState && savedState.gameStarted && (savedState.phase === "rolling" || savedState.phase === "bidding");
+
+    const myCid = getOrCreateCid();
+    // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+    if (existingIdx >= 0) {
+      currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name, lastSeen: Date.now() } : p);
+    }
+
     // 玩家已存在时，同步 players 状态
-    if (currentPlayers.some((p: any) => p.name === name)) {
+    if (existingIdx >= 0) {
       setRoomId(data.id);
       setPlayers(currentPlayers);
       setJoined(true);
@@ -529,6 +571,8 @@ export default function GamePage() {
         gVersionRef.current = saved?.version || 0; // 重连后把本地版本号对齐到账本，避免后续消息误判过期
       } catch (e) { console.error('❌ 恢复对局状态失败:', e); }
       try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
+      // 把补上的编号/昵称/心跳落库，保证后续按编号认人稳定生效
+      try { await supabase.from("rooms").update({ players: currentPlayers }).eq("id", data.id); } catch (_) {}
       return;
     }
 
@@ -538,7 +582,7 @@ export default function GamePage() {
       if (!occupiedSeats.includes(i)) { seatId = i; break; }
     }
 
-    const newPlayer = { name, dice: [], ready: false, seatId };
+    const newPlayer = { cid: myCid, lastSeen: Date.now(), name, dice: [], ready: false, seatId, status: midRound ? "watching" : "playing" };
     const updatedPlayers = [...currentPlayers, newPlayer];
     console.log('📤 准备更新的 players:', updatedPlayers);
 
@@ -560,7 +604,7 @@ export default function GamePage() {
     try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
     // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
     // 绝不再写死 phase:"waiting"（否则会把正在进行的对局打回准备阶段）。
-    const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+    const saved = savedState;
     gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
     await broadcastState(data.id, {
       players: updatedPlayers,
@@ -645,6 +689,7 @@ export default function GamePage() {
     setHasRolled(false);
     setHasRolledLocal(false);
     setCupOpened(false);
+      setMyCupViewed(false);
     setMyDice([]);
     setIsLidOpen(false);
     
@@ -657,7 +702,8 @@ export default function GamePage() {
     const resetPlayers = players.map(p => ({
       ...p,
       dice: [],
-      ready: p.seatId === 0 ? true : false
+      ready: p.seatId === 0 ? true : false,
+      status: "playing"
     }));
     setPlayers(resetPlayers);
     setDiceShaking(true);
@@ -689,14 +735,14 @@ export default function GamePage() {
       setErrorMsg("当前不是摇骰阶段");
       return;
     }
-    if (players.find(p => p.name === playerName)?.dice?.length > 0) {
+    const meRoll = players.find((p: any) => p.name === playerName);
+    if (meRoll?.status === "watching") { setErrorMsg("你正在观战，下一局再加入"); return; }
+    if (meRoll?.dice?.length > 0) {
       setErrorMsg("你已经摇过骰子了");
       return;
     }
-    if (cupOpened) {
-      setErrorMsg("已查看过骰子，不能摇骰！");
-      return;
-    }
+    // 注：公平性已由两道关卡保证——①摇过的人 dice 有值(L737)不能再摇；②叫牌后 phase 切到 bidding 全员不能摇。
+    // 不再用全局 cupOpened 锁人（那会让一个人查看就误锁全桌）。
 
     const myDice = rollDice();
     const updatedPlayers = players.map(p =>
@@ -707,16 +753,16 @@ export default function GamePage() {
     setHasRolledLocal(true);
     playShakeSound();
     if (navigator.vibrate) navigator.vibrate(100);
-    // 自己骰子翻滚动画：快速翻滚约 0.7s 后定格为真实值
+    // 自己骰子翻滚动画：明显翻滚约 1.8s 后定格为真实值（拉长更有真实摇骰感）
     if (rollTimerRef.current) clearInterval(rollTimerRef.current);
     if (rollTimeoutRef.current) clearTimeout(rollTimeoutRef.current);
     setRolling(true);
     setRollingDice(rollDice());
-    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 70);
+    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 60);
     rollTimeoutRef.current = setTimeout(() => {
       if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
       setRolling(false);
-    }, 700);
+    }, 1800);
 
     // 广播时保留 gameStarted = true (此时游戏已开始)
     await broadcastState(roomId, {
@@ -793,6 +839,9 @@ export default function GamePage() {
 
   // ==================== 核心修改：删除封印1后禁止叫1的判断 ====================
   const makeBidDirect = async (count: number, value: number) => {
+    // 观战者（中途回来、还没轮到下一局的人）不能叫牌
+    const me = players.find((p: any) => p.name === playerName);
+    if (me?.status === "watching") { setErrorMsg("你正在观战，下一局再加入"); return; }
     // 已删除：if (oneSealed && value === 1) { ... }
     // 现在允许封印1后继续叫1
     if (lastBid) {
@@ -814,9 +863,11 @@ export default function GamePage() {
     setBidHistory(newHistory);
 
     const sortedPlayers = [...players].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
-    const playerNames = sortedPlayers.map((p) => p.name);
+    // 观战者不进入叫牌轮转，避免轮到空手观战者导致卡死
+    const activePlayers = sortedPlayers.filter((p: any) => p.status !== "watching");
+    const playerNames = activePlayers.map((p) => p.name);
     const idx = playerNames.indexOf(currentPlayer);
-    const nextIdx = (idx + 1) % playerNames.length;
+    const nextIdx = ((idx < 0 ? -1 : idx) + 1) % playerNames.length;
     setCurrentPlayer(playerNames[nextIdx]);
 
     setSelectedCount(null);
@@ -982,7 +1033,7 @@ export default function GamePage() {
   };
 
   const resetGame = async () => {
-    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false }));
+    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(false);
     setGameOver(false);
@@ -1000,6 +1051,7 @@ export default function GamePage() {
     setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
+      setMyCupViewed(false);
     setHasRolledLocal(false);
     setMyDice([]);
     setSelectedCount(null);
@@ -1032,7 +1084,7 @@ export default function GamePage() {
   // 第一局仍走 startGame（要求全员准备）；只有“再来一局”走这里——
   // 重置手牌/状态后立刻进入摇骰阶段，不再等任何人点准备，避免每局都卡在准备。
   const playAgain = async () => {
-    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false }));
+    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(true);
     setGameOver(false);
@@ -1050,6 +1102,7 @@ export default function GamePage() {
     setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
+      setMyCupViewed(false);
     setHasRolledLocal(false);
     setMyDice([]);
     setSelectedCount(null);
@@ -1081,26 +1134,9 @@ export default function GamePage() {
 
   const handleLidOpen = async () => {
     setIsLidOpen(true);
-    if (myDice.length > 0 && !cupOpened) {
-      setCupOpened(true);
-      await broadcastState(roomId, {
-        players,
-        currentPlayer,
-        gameStarted,
-        gameOver,
-        result,
-        lastBid,
-        phase,
-        hasRolled,
-        oneSealed,
-        bidHistory,
-        warning,
-        cupOpened: true,
-        selectedTargets,
-        nextStarter,
-        diceShaking,
-      });
-    }
+    // 查看自己骰子是私人行为：只记本地标记（自己本局已查看，仅自己手机可见提示），
+    // 不再广播 cupOpened 去锁全桌——否则一个人查看会误伤其他人使其不能摇。
+    if (myDice.length > 0) setMyCupViewed(true);
   };
 
   const handleLidClose = () => {
@@ -1169,9 +1205,6 @@ export default function GamePage() {
               </span>
               {isHost && <span style={{ fontSize: '12px', color: '#fbbf24', marginTop: '1px' }}>👑</span>}
               {isReady && <span style={{ fontSize: '10px', color: '#22d3ee', marginLeft: '2px' }}>✅</span>}
-              {cupOpened && player.dice && player.dice.length > 0 && (
-                <span style={{ fontSize: '10px', color: '#fbbf24', marginLeft: '2px' }}>👁️</span>
-              )}
             </>
           ) : (
             <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>+</span>
@@ -1285,10 +1318,16 @@ export default function GamePage() {
           <div style={styles.diceCenter}>
             <div style={styles.diceBase}>
               <div style={styles.diceDisplay}>
-                {isLidOpen && myDice.length > 0 ? (
+                {rolling ? (
+                  <div style={styles.diceRow}>
+                    {rollingDice.map((val, idx) => (
+                      <div key={idx} className="dice-roll-anim"><DiceSVG value={val} size={32} /></div>
+                    ))}
+                  </div>
+                ) : isLidOpen && myDice.length > 0 ? (
                   <div style={styles.diceRow}>
                     {myDice.map((val, idx) => (
-                      <div key={idx} className="fade-in"><DiceSVG value={val} size={34} /></div>
+                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={34} /></div>
                     ))}
                   </div>
                 ) : myDice.length === 0 ? (
@@ -1304,9 +1343,9 @@ export default function GamePage() {
                   transform: isLidOpen
                     ? 'translate(-50%, -50%) translateY(-64px) rotateX(-12deg) scale(0.92)'
                     : 'translate(-50%, -50%)',
-                  opacity: isLidOpen ? 0.35 : 1,
+                  opacity: isLidOpen ? 0.35 : (rolling ? 0.22 : 1),
                   transition: 'transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease, box-shadow 0.3s ease',
-                  animation: rolling ? 'cupShake 0.5s ease-in-out infinite' : 'none',
+                  animation: rolling ? 'cupShake 0.4s ease-in-out infinite' : 'none',
                 }}
               >
                 <div style={styles.lidGloss} />
@@ -1351,7 +1390,7 @@ export default function GamePage() {
               </div>
             )}
 
-            {cupOpened && (
+            {myCupViewed && (
               <div style={{ color: '#ef4444', fontSize: '13px', marginTop: '4px' }}>
                 ⚠️ 已查看，本局不能再摇骰
               </div>
@@ -1393,7 +1432,7 @@ export default function GamePage() {
             <span style={styles.resultText}>{result}</span>
           ) : phase === "rolling" ? (
             <span style={styles.statusText}>
-              🎲 摇骰中... ({players.filter(p => p.dice && p.dice.length > 0).length}/{players.length} 已摇)
+              🎲 摇骰中... ({players.filter(p => p.dice && p.dice.length > 0).length}/{players.filter((p: any) => p.status !== "watching").length} 已摇)
             </span>
           ) : (
             <span style={styles.statusText}>
@@ -1415,7 +1454,10 @@ export default function GamePage() {
 
         {phase === "rolling" && (
           <div style={{ textAlign: 'center', marginBottom: '12px', fontSize: '13px', color: 'rgba(255,255,255,0.6)' }}>
-            未摇骰: {players.filter(p => !p.dice || p.dice.length === 0).map(p => p.name).join('、') || '全部已摇'}
+            未摇骰: {players.filter((p: any) => (!p.dice || p.dice.length === 0) && p.status !== "watching").map(p => p.name).join('、') || '全部已摇'}
+            {players.filter((p: any) => p.status === "watching").length > 0 && (
+              <span style={{ marginLeft: '8px', color: '#22d3ee' }}>👁 观战: {players.filter((p: any) => p.status === "watching").map(p => p.name).join('、')}</span>
+            )}
           </div>
         )}
 
@@ -1455,9 +1497,9 @@ export default function GamePage() {
             <button 
               onClick={handleRollDice} 
               style={hasRolledLocal ? styles.btnReady : styles.btnStart}
-              disabled={hasRolledLocal || cupOpened}
+              disabled={hasRolledLocal || cupOpened || players.find((p: any) => p.name === playerName)?.status === "watching"}
             >
-              {hasRolledLocal ? '✅ 已摇骰' : (cupOpened ? '🔒 骰盅已开' : '🎲 摇骰')}
+              {players.find((p: any) => p.name === playerName)?.status === "watching" ? '👁 观战中' : (hasRolledLocal ? '✅ 已摇骰' : (cupOpened ? '🔒 骰盅已开' : '🎲 摇骰'))}
             </button>
           )}
           {gameStarted && !gameOver && phase === "bidding" && (
@@ -1527,7 +1569,7 @@ export default function GamePage() {
                   <div style={styles.targetSelector}>
                     <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>开谁（可多选）：</span>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
-                      {players.filter(p => p.name !== playerName).map(p => {
+                      {players.filter(p => p.name !== playerName && p.status !== "watching").map(p => {
                         const on = selectedTargets.includes(p.name);
                         return (
                           <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
@@ -1548,7 +1590,7 @@ export default function GamePage() {
                   <div style={styles.targetSelector}>
                     <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>抢开谁（可多选）：</span>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
-                      {players.filter(p => p.name !== playerName).map(p => {
+                      {players.filter(p => p.name !== playerName && p.status !== "watching").map(p => {
                         const on = selectedTargets.includes(p.name);
                         return (
                           <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
@@ -2200,11 +2242,11 @@ if (typeof document !== 'undefined') {
       50% { opacity: 0.8; transform: scale(1.1); }
     }
     @keyframes diceRoll {
-      0% { transform: rotate(0deg) scale(1); filter: blur(0); }
-      25% { transform: rotate(90deg) scale(1.12); filter: blur(1.5px); }
-      50% { transform: rotate(200deg) scale(0.92); filter: blur(2.5px); }
-      75% { transform: rotate(300deg) scale(1.06); filter: blur(1.5px); }
-      100% { transform: rotate(360deg) scale(1); filter: blur(0); }
+      0% { transform: translateY(0) rotate(0deg) scale(1); filter: blur(0); }
+      25% { transform: translateY(-6px) rotate(90deg) scale(1.12); filter: blur(1.5px); }
+      50% { transform: translateY(4px) rotate(200deg) scale(0.92); filter: blur(2.5px); }
+      75% { transform: translateY(-3px) rotate(300deg) scale(1.06); filter: blur(1.5px); }
+      100% { transform: translateY(0) rotate(360deg) scale(1); filter: blur(0); }
     }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -2216,12 +2258,21 @@ if (typeof document !== 'undefined') {
     }
     @keyframes cupShake {
       0%, 100% { transform: translate(-50%, -50%) rotate(0deg); }
-      20% { transform: translate(-50%, -52%) rotate(-6deg); }
-      40% { transform: translate(-50%, -47%) rotate(6deg); }
-      60% { transform: translate(-50%, -51%) rotate(-4deg); }
-      80% { transform: translate(-50%, -49%) rotate(4deg); }
+      12% { transform: translate(-54%, -55%) rotate(-13deg); }
+      24% { transform: translate(-46%, -45%) rotate(13deg); }
+      36% { transform: translate(-53%, -54%) rotate(-10deg); }
+      48% { transform: translate(-47%, -46%) rotate(10deg); }
+      60% { transform: translate(-52%, -53%) rotate(-7deg); }
+      72% { transform: translate(-48%, -47%) rotate(7deg); }
+      84% { transform: translate(-50%, -51%) rotate(-3deg); }
     }
-    .dice-roll-anim { animation: diceRoll 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
+    .dice-roll-anim { animation: diceRoll 0.55s linear infinite; }
+    @keyframes diceSettle {
+      0% { transform: scale(0.5) rotate(-14deg); opacity: 0; }
+      60% { transform: scale(1.12) rotate(5deg); opacity: 1; }
+      100% { transform: scale(1) rotate(0deg); }
+    }
+    .dice-settle { animation: diceSettle 0.42s cubic-bezier(0.34, 1.56, 0.64, 1); }
     .fade-in { animation: fadeIn 0.35s ease; }
     .turn-highlight { animation: turnPulse 1.2s ease-in-out infinite; }
     .cup-glass { cursor: pointer; }

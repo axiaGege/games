@@ -348,16 +348,17 @@ export default function BlackjackPage() {
   // ==================== 数据库兜底同步（解决广播丢包导致漏人） ====================
   const syncFromDB = (row: any) => {
     const dbPlayers = parsePlayers(row.players);
+    const keyOf = (p: any) => p.cid || p.name;
     setPlayers(prev => {
-      const dbMap = new Map(dbPlayers.map((p: any) => [p.name, p]));
+      const dbMap = new Map(dbPlayers.map((p: any) => [keyOf(p), p]));
       const out: any[] = [];
       const seen = new Set<string>();
       for (const p of prev) {
-        const db = dbMap.get(p.name);
+        const db = dbMap.get(keyOf(p));
         if (db) {
           // DB 有此人：用 DB 的非牌字段，但保留本地当前牌面（避免回退进行中的操作）
           out.push({ ...db, cards: p.cards, cardCount: p.cardCount, isStanding: p.isStanding, isBust: p.isBust, isBlackjack: p.isBlackjack, isFiveCard: p.isFiveCard, bustType: p.bustType });
-          seen.add(p.name);
+          seen.add(keyOf(p));
         } else {
           // 本地独有且 DB 已无：观战者丢弃（已退出），进行中玩家保留（保护进行中状态）
           if (p.status === 'watching') continue;
@@ -365,7 +366,7 @@ export default function BlackjackPage() {
         }
       }
       // 把 DB 有、本地没有的人加入（新加入者）
-      for (const p of dbPlayers) if (!seen.has(p.name)) out.push(p);
+      for (const p of dbPlayers) if (!seen.has(keyOf(p))) out.push(p);
       return out;
     });
     // 仅非对局阶段全量同步其他状态，避免回退进行中的 phase/准备
@@ -387,6 +388,7 @@ export default function BlackjackPage() {
   // ==================== Supabase 订阅 ====================
   useEffect(() => {
     if (!roomId) return;
+    const myCid = getOrCreateCid();
     console.log('🔄 订阅房间:', roomId);
     const channel = supabase
       .channel(`blackjack:${roomId}`, { config: { broadcast: { ack: true } } })
@@ -401,8 +403,8 @@ export default function BlackjackPage() {
           const localOnlySpectators = prev.filter(p =>
             !broadcastNames.has(p.name) && p.status === 'watching'
           );
-          const localMe = prev.find(p => p.name === playerName);
-          const remoteMe = parsedPlayers.find(p => p.name === playerName);
+          const localMe = prev.find(p => (p.cid && myCid && p.cid === myCid) || p.name === playerName);
+          const remoteMe = parsedPlayers.find(p => (p.cid && myCid && p.cid === myCid) || p.name === playerName);
           if (localMe && remoteMe) {
             const isDealing = state.phase === "dealing";
             if (isDealing) return [...localOnlySpectators, ...parsedPlayers];
@@ -423,7 +425,7 @@ export default function BlackjackPage() {
                     status: p.status || 'playing',
                   };
                 }
-                const prevPlayer = prev.find(pp => pp.name === p.name);
+                const prevPlayer = prev.find(pp => (pp.cid && p.cid && pp.cid === p.cid) || pp.name === p.name);
                 const isNewPlayer = !prevPlayer;
                 return {
                   ...p,
@@ -521,7 +523,7 @@ export default function BlackjackPage() {
           setLocalDeck(createDeckWithSeed(state.seed));
         }
 
-        const me = parsedPlayers.find(p => p.name === playerName);
+        const me = parsedPlayers.find(p => (p.cid && myCid && p.cid === myCid) || p.name === playerName);
         if (me) {
           setIsDealer(me.isDealer || false);
           setMySeatId(me.seatId !== undefined ? me.seatId : null);
@@ -542,16 +544,61 @@ export default function BlackjackPage() {
     const pollTimer = setInterval(async () => {
       try {
         const { data } = await supabase.from("rooms").select("*").eq("id", roomId).single();
-        if (data) syncFromDB(data);
+        if (data) {
+          // 心跳清理：把超过 15 分钟没动静的幽灵清掉（自己除外）
+          const ps: any[] = parsePlayers(data.players);
+          const now = Date.now();
+          const pruned = ps.filter((p: any) => {
+            if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) return true; // 自己保留
+            if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) return false; // 超时幽灵剔除
+            return true;
+          });
+          if (pruned.length !== ps.length) {
+            await supabase.from("rooms").update({ players: pruned }).eq("id", roomId);
+            syncFromDB({ ...data, players: pruned });
+          } else {
+            syncFromDB(data);
+          }
+        }
       } catch (_) {}
     }, 2500);
+
+    // 心跳：每 12 秒刷新自己的 lastSeen，证明"我还活着"
+    const hbTimer = setInterval(async () => {
+      try {
+        const { data } = await supabase.from("rooms").select("players").eq("id", roomId).single();
+        if (!data) return;
+        const ps: any[] = parsePlayers(data.players);
+        let changed = false;
+        const next = ps.map((p: any) => {
+          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: Date.now() }; }
+          return p;
+        });
+        if (changed) await supabase.from("rooms").update({ players: next }).eq("id", roomId);
+      } catch (_) {}
+    }, 12000);
 
     channelRef.current = channel;
     return () => {
       clearInterval(pollTimer);
+      clearInterval(hbTimer);
       if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
   }, [roomId, playerName]);
+
+  // ============ 隐形身份证：每台设备一个永久编号，退出也不删，认人靠编号不靠名字 ============
+  const getOrCreateCid = () => {
+    try {
+      let c = localStorage.getItem('bj_cid');
+      if (!c) {
+        c = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('bj_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem('bj_cid', c);
+      }
+      return c;
+    } catch (_) {
+      return 'bj_' + Math.random().toString(36).slice(2);
+    }
+  };
 
   // ==================== 创建/加入/离开 ====================
   const createRoom = async () => {
@@ -570,7 +617,7 @@ export default function BlackjackPage() {
       return;
     }
 
-    const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, isStanding: false, isBust: false, isBlackjack: false, isFiveCard: false, seatId: 0, isDealer: false, bustType: 'none', status: 'playing' };
+    const newPlayer = { cid: getOrCreateCid(), lastSeen: Date.now(), name: playerName.trim(), cards: [], cardCount: 0, isStanding: false, isBust: false, isBlackjack: false, isFiveCard: false, seatId: 0, isDealer: false, bustType: 'none', status: 'playing' };
     const { data, error } = await supabase
       .from("rooms")
       .insert({
@@ -646,14 +693,21 @@ export default function BlackjackPage() {
       return;
     }
 
-    const currentPlayers = parsePlayers(roomData.players);
+    let currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满（最多12人）");
       return;
     }
 
+    const myCid = getOrCreateCid();
+    // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim()));
+    if (existingIdx >= 0) {
+      currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name: playerName.trim(), lastSeen: Date.now() } : p);
+    }
+
     // 玩家已存在（重连）
-    if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
+    if (existingIdx >= 0) {
       setRoomId(roomData.id);
       setJoined(true);
       setPlayers(currentPlayers);
@@ -729,6 +783,8 @@ export default function BlackjackPage() {
 
     // 🔥 关键修改：所有加入的人都进 players，用 status 区分
     const newPlayer = {
+      cid: myCid,
+      lastSeen: Date.now(),
       name: playerName.trim(),
       cards: [],
       cardCount: 0,
@@ -822,8 +878,10 @@ export default function BlackjackPage() {
 
   const leaveRoom = async () => {
     if (!roomId) return;
+    const myCid = getOrCreateCid();
     const isLeavingSpectator = spectators.includes(playerName);
-    const updatedPlayers = players.filter(p => p.name !== playerName);
+    // 按编号(或名字兜底)移除自己，绝不靠改名逃掉
+    const updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
     const updatedSpectators = isLeavingSpectator
       ? spectators.filter(n => n !== playerName)
       : spectators;
@@ -887,6 +945,7 @@ export default function BlackjackPage() {
       localStorage.removeItem('bj_name');
       localStorage.removeItem('bj_pass');
       localStorage.removeItem('bj_room');
+      // 注意：保留 bj_cid（退出房间也不删），保证回头再进仍被认出，不会变成新玩家
     } catch (_) {}
   };
 
@@ -1345,7 +1404,8 @@ export default function BlackjackPage() {
   const exitCurrentRound = async () => {
     setConfirmDialog({ show: true, message: '确定退出本局吗？退出后可在准备阶段重新加入。', callback: async () => {
       if (!roomId) return;
-      const updatedPlayers = players.filter(p => p.name !== playerName);
+      const myCid = getOrCreateCid();
+      const updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
       const updatedSpectators = [...(spectators || []), playerName];
       await supabase.from('rooms').update({ players: updatedPlayers, spectators: updatedSpectators }).eq('id', roomId);
       setPlayers(updatedPlayers);
@@ -1366,11 +1426,13 @@ export default function BlackjackPage() {
       .eq('id', roomId)
       .single();
     if (!roomData) return;
+    const myCid = getOrCreateCid();
     const currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
       setErrorMsg('房间已满，无法加入'); return;
     }
     const newPlayer = {
+      cid: myCid, lastSeen: Date.now(),
       name: playerName.trim(), cards: [], cardCount: 0,
       isStanding: false, isBust: false, isBlackjack: false,
       isFiveCard: false, seatId: currentPlayers.length,

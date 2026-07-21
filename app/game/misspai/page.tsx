@@ -53,6 +53,23 @@ const parsePlayers = (raw: any): any[] => {
   return [];
 };
 
+// ==================== 隐形身份证 ====================
+// 每台设备一个永久随机编号，存 localStorage。退出房间也不删（只删房号/密码/昵称），
+// 这样玩家重进同一张牌桌时，系统按编号把他认回来，而不是靠“名字文字”去猜。
+const getOrCreateCid = (): string => {
+  try {
+    const k = "misspai_cid";
+    let v = localStorage.getItem(k);
+    if (!v) {
+      v = "c_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem(k, v);
+    }
+    return v;
+  } catch {
+    return "c_fallback_" + Math.random().toString(36).slice(2);
+  }
+};
+
 // 各牌规则文案（线下牌仅提示，系统不判定）
 const cardRuleText = (c: CardT): string => {
   switch (c.rank) {
@@ -277,22 +294,55 @@ export default function GamePage() {
     };
   }, [roomId]);
 
-  // ============ 定时对账（兜底：每 3 秒从账本补回漏收的广播，绝不永久掉队）============
+  // ============ 定时对账 + 心跳 + 幽灵清理（兜底：每 3 秒从账本补回漏收的广播，绝不永久掉队）============
   useEffect(() => {
     if (!roomId) return;
     const iv = setInterval(async () => {
       try {
         const { data } = await supabase
           .from("rooms")
-          .select("resultdetails")
+          .select("resultdetails, players")
           .eq("id", roomId)
           .maybeSingle();
         if (!data?.resultdetails) return;
-        const st = JSON.parse(data.resultdetails);
+        const st: any = JSON.parse(data.resultdetails);
         const newV = st?.version || 0;
+        // 1) 对账：账本有更新就同步到本地
         if (newV > gVersionRef.current) {
           gVersionRef.current = newV;
+          if (!st.players) st.players = parsePlayers(data.players);
           setG(st);
+        }
+        // 2) 心跳 + 幽灵清理（基于最新账本里的玩家名单）
+        const players: any[] = st?.players || parsePlayers(data.players);
+        if (!players.length) return;
+        const myCid = getOrCreateCid();
+        const isMe = (p: any) =>
+          (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName);
+        const now = Date.now();
+        let changed = false;
+        // 先确保自己带编号
+        let next: any[] = players.map((p: any) => (isMe(p) ? { ...p, cid: p.cid || myCid } : p));
+        // 心跳：我自己 lastSeen 超过 10 秒没更新才写，避免刷屏
+        const meNow = next.find(isMe);
+        if (meNow && now - (meNow.lastSeen || 0) > 10000) {
+          next = next.map((p: any) => (isMe(p) ? { ...p, lastSeen: now } : p));
+          changed = true;
+        }
+        // 幽灵清理：关 app 没点退出、赖在名单里且超过 15 分钟没动静的人，清掉；自己永不清理
+        const before = next.length;
+        next = next.filter(
+          (p: any) => isMe(p) || !(p.lastSeen && now - p.lastSeen > 15 * 60 * 1000)
+        );
+        if (next.length !== before) changed = true;
+        if (changed) {
+          const ng: any = { ...st, players: next, version: (st.version || 0) + 1 };
+          gVersionRef.current = ng.version;
+          setG(ng);
+          await supabase
+            .from("rooms")
+            .update({ resultdetails: JSON.stringify(ng), players: next })
+            .eq("id", roomId);
         }
       } catch {}
     }, 3000);
@@ -318,7 +368,10 @@ export default function GamePage() {
       if (data?.resultdetails) base = JSON.parse(data.resultdetails);
     } catch {}
     if (!base) base = g;
-    const updated = (base.players || []).filter((p: any) => p.name !== playerName);
+    const myCid = getOrCreateCid();
+    const updated = (base.players || []).filter(
+      (p: any) => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName))
+    );
     let ng: any = { ...base, players: updated };
     // 若待办（选人/罚酒/定K）涉及离开者，清理掉，避免整局冻住
     if (ng.pending) {
@@ -353,7 +406,7 @@ export default function GamePage() {
     setErrorMsg("");
     const { data: existing } = await supabase.from("rooms").select("password").eq("password", roomPassword.trim()).maybeSingle();
     if (existing) { setErrorMsg("这串摩斯密码已被占用，换一个"); return; }
-    const newPlayer = { name: playerName.trim(), seatId: 0, cups: 0, gold: 0, toilet: 0, bigKing: false, bigKingUsed: [], smallKing: false, smallKingUsed: 0, isMiss: false, isNeuro: false };
+    const newPlayer = { name: playerName.trim(), cid: getOrCreateCid(), lastSeen: Date.now(), seatId: 0, cups: 0, gold: 0, toilet: 0, bigKing: false, bigKingUsed: [], smallKing: false, smallKingUsed: 0, isMiss: false, isNeuro: false };
     const { data, error } = await supabase
       .from("rooms")
       .insert({ game_type: "misspai", password: roomPassword.trim(), players: [newPlayer] })
@@ -386,21 +439,33 @@ export default function GamePage() {
     if (error || !data) { setErrorMsg("摩斯密码错误，未找到对应牌桌"); try { localStorage.removeItem("misspai_name"); localStorage.removeItem("misspai_pass"); } catch {} return; }
     const current = parsePlayers(data.players);
     if (current.length >= 12) { setErrorMsg("牌桌已满（最多 12 人）"); return; }
-    if (current.some((p: any) => p.name === name)) {
+    const myCid = getOrCreateCid();
+    const existingIdx = current.findIndex(
+      (p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name)
+    );
+    if (existingIdx >= 0) {
+      // 认出是自己（编号优先，老房间没编号就用名字兜底）；认出后补上编号并同步最新昵称
+      const revived = current.map((p: any, i: number) =>
+        i === existingIdx ? { ...p, cid: p.cid || myCid, name, lastSeen: Date.now() } : p
+      );
       setRoomId(data.id);
       setJoined(true);
       try {
         const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
-        setG(saved || initialG(current));
+        const st = saved || initialG(revived);
+        if (saved) st.players = revived; // 让最新昵称/编号在账本里也生效
+        setG(st);
         gVersionRef.current = saved?.version || 0; // 重连进已有局：以账本版本为准
-      } catch { setG(initialG(current)); gVersionRef.current = 0; }
+        // 把补上的编号落库，下次重连即可直接按编号认人
+        supabase.from("rooms").update({ players: revived }).eq("id", data.id);
+      } catch { setG(initialG(revived)); gVersionRef.current = 0; }
       try { localStorage.setItem("misspai_name", name); localStorage.setItem("misspai_pass", pass); } catch {}
       return;
     }
     const occupied = current.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
     let seatId = 0;
     for (let i = 0; i < 12; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
-    const newPlayer = { name, seatId, cups: 0, gold: 0, toilet: 0, bigKing: false, bigKingUsed: [], smallKing: false, smallKingUsed: 0, isMiss: false, isNeuro: false };
+    const newPlayer = { name, cid: myCid, lastSeen: Date.now(), seatId, cups: 0, gold: 0, toilet: 0, bigKing: false, bigKingUsed: [], smallKing: false, smallKingUsed: 0, isMiss: false, isNeuro: false };
     const updated = [...current, newPlayer];
     const { error: ue } = await supabase.from("rooms").update({ players: updated }).eq("id", data.id);
     if (ue) { setErrorMsg("入座失败：" + ue.message); return; }

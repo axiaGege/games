@@ -830,6 +830,19 @@ export default function ZhaJinHuaPage() {
       try {
         const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
         if (error || !data) return;
+        // 心跳 + 幽灵清理：刷新自己的 lastSeen，剔除超过 15 分钟没动静的幽灵（自己除外）
+        const myCid = (() => { try { return localStorage.getItem('zjh_cid') || ''; } catch { return ''; } })();
+        const now = Date.now();
+        let playersArr: any[] = parsePlayers(data.players);
+        let changed = false;
+        playersArr = playersArr.map((p: any) => {
+          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: now }; }
+          if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
+          return p;
+        }).filter(Boolean) as any[];
+        if (changed) {
+          try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
+        }
         await reconcilePlayersFromDB(); // 名单收敛（已有函数，零风险）
         // 阶段防护：沿用接收端 forwardPhases 逻辑，避免把对局中状态拉回 waiting
         const prevPhase = phaseRef.current;
@@ -877,6 +890,20 @@ export default function ZhaJinHuaPage() {
   }, [wheelSpinning, wheelRotation, wheelSegments, seed]);
   // ==========================================
 
+  // ============ 隐形身份证：每台设备一个永久编号，退出也不删，认人靠编号不靠名字 ============
+  const getOrCreateCid = () => {
+    try {
+      let c = localStorage.getItem('zjh_cid');
+      if (!c) {
+        c = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('zjh_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem('zjh_cid', c);
+      }
+      return c;
+    } catch (_) {
+      return 'zjh_' + Math.random().toString(36).slice(2);
+    }
+  };
+
   const createRoom = async () => {
     if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
     if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
@@ -893,7 +920,7 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, seatId: 0, isDealer: false, status: 'playing', bet: 0 };
+    const newPlayer = { cid: getOrCreateCid(), lastSeen: Date.now(), name: playerName.trim(), cards: [], cardCount: 0, seatId: 0, isDealer: false, status: 'playing', bet: 0 };
     const { data, error } = await supabase
       .from("rooms")
       .insert({
@@ -980,14 +1007,21 @@ export default function ZhaJinHuaPage() {
     versionRef.current = Math.max(versionRef.current, dbVersion);
     setVersion(versionRef.current);
 
-    const currentPlayers = parsePlayers(roomData.players);
+    let currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满(最多12人)");
       return;
     }
 
+    const myCid = getOrCreateCid();
+    // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim()));
+    if (existingIdx >= 0) {
+      currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name: playerName.trim(), lastSeen: Date.now() } : p);
+    }
+
     // 修复8：恢复会话分支也要触发广播，保证人数同步
-    if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
+    if (existingIdx >= 0) {
       setRoomId(roomData.id);
       setJoined(true);
       setPlayers(currentPlayers);
@@ -1104,6 +1138,8 @@ export default function ZhaJinHuaPage() {
     // 在 waiting 阶段则直接成为 playing
     const isGameActive = roomData.phase !== "waiting" && roomData.phase !== "settlement";
     const newPlayer = {
+      cid: myCid,
+      lastSeen: Date.now(),
       name: playerName.trim(),
       cards: [],
       cardCount: 0,
@@ -1279,15 +1315,16 @@ export default function ZhaJinHuaPage() {
     // 1. 判断离开的人是否是庄家
     const isDealerLeaving = playerName === dealerId || players.find(p => p.name === playerName)?.isDealer;
 
-    // 2. 过滤掉离开的人
-    let updatedPlayers = players.filter(p => p.name !== playerName);
+    // 2. 过滤掉离开的人（按编号或名字兜底，绝不靠改名逃掉）
+    const myCid = getOrCreateCid();
+    let updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
 
     // 3. 如果房间没人了，直接清理
     if (updatedPlayers.length === 0) {
       setJoined(false);
       setRoomId("");
       if (channelRef.current) supabase.removeChannel(channelRef.current);
-      try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); } catch (_) {}
+      try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); /* 保留 zjh_cid */ } catch (_) {}
       return;
     }
 
@@ -1481,7 +1518,7 @@ export default function ZhaJinHuaPage() {
     try {
       localStorage.removeItem('zjh_name');
       localStorage.removeItem('zjh_pass');
-      localStorage.removeItem('zjh_room');
+      localStorage.removeItem('zjh_room'); /* 保留 zjh_cid */
     } catch (_) {}
   };
 
@@ -1670,13 +1707,14 @@ export default function ZhaJinHuaPage() {
         .single();
       if (error || !data) return;
       const dbPlayers = parsePlayers(data.players);
-      const dbNames = new Set(dbPlayers.map((p: any) => p.name));
+      const keyOf = (p: any) => p.cid || p.name;
+      const dbKeys = new Set(dbPlayers.map(keyOf));
       const dbReady = data.readyplayers || [];
       setPlayers(prev => {
-        const localNames = new Set(prev.map((p: any) => p.name));
-        let next = prev.filter((p: any) => dbNames.has(p.name)); // 移除已离开者
+        const localKeys = new Set(prev.map(keyOf));
+        let next = prev.filter((p: any) => dbKeys.has(keyOf(p))); // 移除已离开者（按编号或名字）
         dbPlayers.forEach((dp: any) => {
-          if (!localNames.has(dp.name)) next.push(dp); // 补齐新加入者（用库里的完整对象）
+          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐新加入者（用库里的完整对象）
         });
         return next;
       });
