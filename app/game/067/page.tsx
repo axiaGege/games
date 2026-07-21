@@ -554,6 +554,7 @@ export default function GamePage() {
     // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
     // 绝不再写死 phase:"waiting"（否则会把正在进行的对局打回准备阶段）。
     const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+    gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
     await broadcastState(data.id, {
       players: updatedPlayers,
       currentPlayer: saved?.currentPlayer || "",
@@ -1011,6 +1012,57 @@ export default function GamePage() {
       selectedTarget: null,
       nextStarter: nextStarter,
       diceShaking: false,
+    });
+  };
+
+  // ============ 修改: 再来一局直接开下一局（跳过“全员准备”门槛） ============
+  // 第一局仍走 startGame（要求全员准备）；只有“再来一局”走这里——
+  // 重置手牌/状态后立刻进入摇骰阶段，不再等任何人点准备，避免每局都卡在准备。
+  const playAgain = async () => {
+    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false }));
+    setPlayers(resetPlayers);
+    setGameStarted(true);
+    setGameOver(false);
+    setShowReveal(false);
+    setRvOpenerName("");
+    setRvIsSnapOpen(false);
+    setResult("");
+    setLastBid(null);
+    setCurrentPlayer("");
+    setPhase("rolling");
+    setHasRolled(false);
+    setOneSealed(false);
+    setBidHistory([]);
+    setWarning("");
+    setSelectedTarget(null);
+    setIsLidOpen(false);
+    setCupOpened(false);
+    setHasRolledLocal(false);
+    setMyDice([]);
+    setSelectedCount(null);
+    setSelectedValue(null);
+    setDiceShaking(true);
+    setLastBidDisplay(null);
+    setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
+
+    await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
+
+    await broadcastState(roomId, {
+      players: resetPlayers,
+      currentPlayer: "",
+      gameStarted: true,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "rolling",
+      hasRolled: false,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTarget: null,
+      nextStarter: nextStarter,
+      diceShaking: true,
     });
   };
 
@@ -1535,7 +1587,7 @@ export default function GamePage() {
             </>
           )}
           {gameOver && (
-            <button onClick={resetGame} style={styles.btnReset}>🔄 再来一局</button>
+            <button onClick={playAgain} style={styles.btnReset}>🔄 再来一局</button>
           )}
           {errorMsg && <div style={{ color: "#f87171", fontSize: 13, marginTop: 8 }}>{errorMsg}</div>}
           {disconnected && <div style={{ color: "#f87171", fontSize: 13, marginTop: 4 }}>⚠️ 网络连接断开，部分操作可能无法同步</div>}
