@@ -126,6 +126,7 @@ export default function GamePage() {
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [showReveal, setShowReveal] = useState(false);
+  const revealDismissedRef = useRef(false); // 摊牌弹窗：玩家点✕关闭后，本局内不再被广播/对账重新弹出
   const [result, setResult] = useState("");
   const [currentPlayer, setCurrentPlayer] = useState("");
   const [lastBid, setLastBid] = useState<{ player: string; count: number; value: number } | null>(null);
@@ -138,7 +139,7 @@ export default function GamePage() {
   const [oneSealed, setOneSealed] = useState(false);
   const [bidHistory, setBidHistory] = useState<string[]>([]);
   const [warning, setWarning] = useState("");
-  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
   const [nextStarter, setNextStarter] = useState<string | null>(null);
   const [mySeatId, setMySeatId] = useState<number | null>(null);
   const [hasRolledLocal, setHasRolledLocal] = useState(false);
@@ -243,8 +244,14 @@ export default function GamePage() {
     setPlayers(parsedPlayers);
     setGameStarted(state.gameStarted || false);
     setGameOver(state.gameOver || false);
-    if (state.gameOver) { setShowReveal(true); setIsLidOpen(false); }
-    else setShowReveal(false);
+    if (state.gameOver) {
+      // 玩家本局已主动关掉摊牌弹窗，则不再被广播/定时对账强制重新弹出
+      if (!revealDismissedRef.current) setShowReveal(true);
+      setIsLidOpen(false);
+    } else {
+      setShowReveal(false);
+      revealDismissedRef.current = false; // 新一局开始，重置标记，下一局摊牌照常弹出
+    }
     setRvOpenerName(state.opener || "");
     setRvIsSnapOpen(state.isSnapOpen || false);
     setResult(state.result || "");
@@ -263,7 +270,7 @@ export default function GamePage() {
     setBidHistory(state.bidHistory || []);
     setWarning(state.warning || "");
     setCupOpened(state.cupOpened || false);
-    setSelectedTarget(state.selectedTarget || null);
+    setSelectedTargets(state.selectedTargets || []);
     setNextStarter(state.nextStarter || null);
     setDiceShaking(state.diceShaking || false);
     if (state.lastBid) {
@@ -365,7 +372,7 @@ export default function GamePage() {
       bidHistory: saved?.bidHistory || [],
       warning: saved?.warning || "",
       cupOpened: saved?.cupOpened || false,
-      selectedTarget: saved?.selectedTarget || null,
+      selectedTargets: saved?.selectedTargets || [],
       nextStarter: saved?.nextStarter || null,
       diceShaking: saved?.diceShaking || false,
     });
@@ -387,7 +394,7 @@ export default function GamePage() {
     setOneSealed(false);
     setBidHistory([]);
     setWarning("");
-    setSelectedTarget(null);
+    setSelectedTargets([]);
     setNextStarter(null);
     setMySeatId(null);
     setHasRolledLocal(false);
@@ -448,7 +455,7 @@ export default function GamePage() {
       bidHistory: [],
       warning: "",
       cupOpened: false,
-      selectedTarget: null,
+      selectedTargets: [],
       nextStarter: null,
       diceShaking: false,
     });
@@ -512,7 +519,7 @@ export default function GamePage() {
           setBidHistory(saved.bidHistory || []);
           setWarning(saved.warning || "");
           setCupOpened(saved.cupOpened || false);
-          setSelectedTarget(saved.selectedTarget || null);
+          setSelectedTargets(saved.selectedTargets || []);
           setNextStarter(saved.nextStarter || null);
           setDiceShaking(saved.diceShaking || false);
           if (saved.lastBid) setLastBidDisplay({ count: saved.lastBid.count, value: saved.lastBid.value });
@@ -568,7 +575,7 @@ export default function GamePage() {
       bidHistory: saved?.bidHistory || [],
       warning: saved?.warning || "",
       cupOpened: saved?.cupOpened || false,
-      selectedTarget: saved?.selectedTarget || null,
+      selectedTargets: saved?.selectedTargets || [],
       nextStarter: saved?.nextStarter || null,
       diceShaking: saved?.diceShaking || false,
     });
@@ -623,7 +630,7 @@ export default function GamePage() {
       bidHistory,
       warning,
       cupOpened,
-      selectedTarget,
+      selectedTargets,
       nextStarter,
       diceShaking,
     });
@@ -670,7 +677,7 @@ export default function GamePage() {
       bidHistory: [],
       warning: "",
       cupOpened: false,
-      selectedTarget: null,
+      selectedTargets: [],
       nextStarter,
       diceShaking: true,
     });
@@ -725,7 +732,7 @@ export default function GamePage() {
       bidHistory: [],
       warning: "",
       cupOpened,
-      selectedTarget,
+      selectedTargets,
       nextStarter,
       diceShaking: true,
     });
@@ -755,7 +762,7 @@ export default function GamePage() {
         bidHistory: [],
         warning: "",
         cupOpened: false,
-        selectedTarget: null,
+        selectedTargets: [],
         nextStarter: null,
         diceShaking: false,
       });
@@ -831,7 +838,7 @@ export default function GamePage() {
       bidHistory: newHistory,
       warning: "",
       cupOpened,
-      selectedTarget,
+      selectedTargets,
       nextStarter,
       diceShaking,
     });
@@ -860,7 +867,12 @@ export default function GamePage() {
   };
 
   // ==================== 开骰（最终版顺子规则） ====================
-  const openDice = async (targetPlayer?: string, isSnapOpen: boolean = false) => {
+
+  // 抢开/开骰 支持多选：点击玩家名在“被开名单”里加入/移除
+  const toggleTarget = (name: string) => {
+    setSelectedTargets(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
+  };
+  const openDice = async (targetPlayers?: string[], isSnapOpen: boolean = false) => {
     if (phase !== "bidding") {
       setErrorMsg("当前不是叫牌阶段");
       return;
@@ -870,28 +882,29 @@ export default function GamePage() {
       return;
     }
 
-    const target = targetPlayer || selectedTarget || lastBid.player;
-    if (!target) {
-      setErrorMsg("请选择要开的玩家");
-      return;
-    }
-
-    const hasCalled = bidHistory.some(entry => entry.includes(target));
-    if (!hasCalled) {
-      setErrorMsg(`${target} 本轮尚未叫牌，不能开`);
-      return;
-    }
-
-    const targetData = players.find(p => p.name === target);
-    if (!targetData || !targetData.dice || targetData.dice.length === 0) {
-      setErrorMsg("目标玩家没有骰子");
-      return;
+    // 支持多选：勾中多个人一起开（输赢仍数全桌，与单选完全一致）；什么都不勾默认开上一个叫牌者
+    const targets = (targetPlayers && targetPlayers.length > 0) ? targetPlayers : [lastBid.player];
+    for (const t of targets) {
+      const hasCalled = bidHistory.some(entry => entry.includes(t));
+      if (!hasCalled) {
+        setErrorMsg(`${t} 本轮尚未叫牌，不能开`);
+        return;
+      }
+      const td = players.find(p => p.name === t);
+      if (!td || !td.dice || td.dice.length === 0) {
+        setErrorMsg(`${t} 没有骰子`);
+        return;
+      }
     }
 
     setErrorMsg("");
-    setSelectedTarget(null);
+    setSelectedTargets(targets); // 保留被开者名单，供摊牌弹窗高亮
 
-    const targetIsStraight = isStraight(targetData.dice);
+    // 被开者中任一是顺子 即算“对方顺子”，用于双方顺子特殊规则
+    const anyStraight = targets.some(t => {
+      const td = players.find(p => p.name === t);
+      return td ? isStraight(td.dice) : false;
+    });
     const caller = playerName;
     const bidder = lastBid.player;
     const calledCount = lastBid.count;
@@ -902,8 +915,8 @@ export default function GamePage() {
     let winner = "";
     let loser = "";
 
-    // 情况1：双方都是顺子 → 开牌者输（特殊规则保留）
-    if (targetIsStraight && callerIsStraight) {
+    // 情况1：被开者中有顺子 且 开牌者也是顺子 → 开牌者输（特殊规则保留）
+    if (anyStraight && callerIsStraight) {
       loser = caller;
       winner = bidder;
     }
@@ -933,7 +946,7 @@ export default function GamePage() {
     setPhase("ended");
     let resultMsg = "";
     const cupLabel = isSnapOpen ? '（抢开×2杯）' : '（顺开×1杯）';
-    if (targetIsStraight && callerIsStraight) {
+    if (anyStraight && callerIsStraight) {
       resultMsg = `🍺 ${loser} 输了！（双方都是顺子，谁开谁喝）`;
     } else {
       resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，全场实际有 ${totalCount} 个${lastBid.value}`;
@@ -962,7 +975,7 @@ export default function GamePage() {
       bidHistory,
       warning: "",
       cupOpened,
-      selectedTarget: null,
+      selectedTargets: targets,
       nextStarter: isSnapOpen ? caller : loser,
       diceShaking: false,
     });
@@ -984,7 +997,7 @@ export default function GamePage() {
     setOneSealed(false);
     setBidHistory([]);
     setWarning("");
-    setSelectedTarget(null);
+    setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
     setHasRolledLocal(false);
@@ -1009,7 +1022,7 @@ export default function GamePage() {
       bidHistory: [],
       warning: "",
       cupOpened: false,
-      selectedTarget: null,
+      selectedTargets: [],
       nextStarter: nextStarter,
       diceShaking: false,
     });
@@ -1034,7 +1047,7 @@ export default function GamePage() {
     setOneSealed(false);
     setBidHistory([]);
     setWarning("");
-    setSelectedTarget(null);
+    setSelectedTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
     setHasRolledLocal(false);
@@ -1060,7 +1073,7 @@ export default function GamePage() {
       bidHistory: [],
       warning: "",
       cupOpened: false,
-      selectedTarget: null,
+      selectedTargets: [],
       nextStarter: nextStarter,
       diceShaking: true,
     });
@@ -1083,7 +1096,7 @@ export default function GamePage() {
         bidHistory,
         warning,
         cupOpened: true,
-        selectedTarget,
+        selectedTargets,
         nextStarter,
         diceShaking,
       });
@@ -1121,7 +1134,7 @@ export default function GamePage() {
       const isActive = player?.name === currentPlayer && gameStarted && !gameOver;
       const isReady = player?.ready || false;
       const isHost = player?.seatId === 0;
-      const isTarget = player?.name === selectedTarget;
+      const isTarget = selectedTargets.includes(player?.name);
 
       return (
         <div
@@ -1510,77 +1523,44 @@ export default function GamePage() {
                       </div>
                     )}
                   </div>
+                  <div style={styles.actionDivider}>— 或者 —</div>
                   <div style={styles.targetSelector}>
-                    <span style={{ color: '#ccc', marginRight: '8px', fontSize: '14px' }}>开谁：</span>
-                    <select
-                      value={selectedTarget || ''}
-                      onChange={(e) => {
-                        const val = e.target.value || null;
-                        setSelectedTarget(val);
-                        broadcastState(roomId, {
-                          players,
-                          currentPlayer,
-                          gameStarted,
-                          gameOver,
-                          result,
-                          lastBid,
-                          phase,
-                          hasRolled,
-                          oneSealed,
-                          bidHistory,
-                          warning,
-                          cupOpened,
-                          selectedTarget: val,
-                          nextStarter,
-                          diceShaking,
-                        });
-                      }}
-                      style={styles.targetSelect}
-                    >
-                      <option value="">默认（上一个叫牌者）</option>
-                      {players.filter(p => p.name !== playerName).map(p => (
-                        <option key={p.name} value={p.name}>{p.name}</option>
-                      ))}
-                    </select>
-                    <button onClick={() => openDice(undefined, false)} style={styles.btnOpen}>🔓 开骰</button>
+                    <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>开谁（可多选）：</span>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
+                      {players.filter(p => p.name !== playerName).map(p => {
+                        const on = selectedTargets.includes(p.name);
+                        return (
+                          <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
+                            padding: '4px 10px', borderRadius: '14px', fontSize: '12px', cursor: 'pointer',
+                            background: on ? 'rgba(236,72,153,0.85)' : 'rgba(255,255,255,0.08)',
+                            border: on ? '1px solid #ec4899' : '1px solid rgba(255,255,255,0.15)',
+                            color: on ? '#fff' : '#ccc',
+                          }}>{p.name}</button>
+                        );
+                      })}
+                    </div>
+                    <button onClick={() => openDice(selectedTargets, false)} style={styles.btnOpen}>🔓 开骰</button>
                   </div>
                 </>
               ) : (
                 <div style={styles.waitBox}>
                   <span style={styles.waitText}>⏳ 等待 {currentPlayer} 操作</span>
                   <div style={styles.targetSelector}>
-                    <span style={{ color: '#ccc', marginRight: '8px', fontSize: '14px' }}>抢开谁：</span>
-                    <select
-                      value={selectedTarget || ''}
-                      onChange={(e) => {
-                        const val = e.target.value || null;
-                        setSelectedTarget(val);
-                        broadcastState(roomId, {
-                          players,
-                          currentPlayer,
-                          gameStarted,
-                          gameOver,
-                          result,
-                          lastBid,
-                          phase,
-                          hasRolled,
-                          oneSealed,
-                          bidHistory,
-                          warning,
-                          cupOpened,
-                          selectedTarget: val,
-                          nextStarter,
-                          diceShaking,
-                        });
-                      }}
-                      style={styles.targetSelect}
-                    >
-                      <option value="">选择目标</option>
-                      {players.filter(p => p.name !== playerName).map(p => (
-                        <option key={p.name} value={p.name}>{p.name}</option>
-                      ))}
-                    </select>
-                    <button onClick={() => openDice(selectedTarget || undefined, true)} style={styles.btnOpenSmall}>⚡ 抢开</button>
+                    <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>抢开谁（可多选）：</span>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
+                      {players.filter(p => p.name !== playerName).map(p => {
+                        const on = selectedTargets.includes(p.name);
+                        return (
+                          <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
+                            padding: '4px 10px', borderRadius: '14px', fontSize: '12px', cursor: 'pointer',
+                            background: on ? 'rgba(236,72,153,0.85)' : 'rgba(255,255,255,0.08)',
+                            border: on ? '1px solid #ec4899' : '1px solid rgba(255,255,255,0.15)',
+                            color: on ? '#fff' : '#ccc',
+                          }}>{p.name}</button>
+                        );
+                      })}
+                    </div>
+                    <button onClick={() => openDice(selectedTargets, true)} style={styles.btnOpenSmall}>⚡ 抢开</button>
                   </div>
                 </div>
               )}
@@ -1601,20 +1581,23 @@ export default function GamePage() {
       </div>
 
       {showReveal && gameOver && lastBid && (
-        <div onClick={() => setShowReveal(false)} style={{ position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.72)', backdropFilter:'blur(4px)', WebkitBackdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
+        <div onClick={() => { setShowReveal(false); revealDismissedRef.current = true; }} style={{ position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.72)', backdropFilter:'blur(4px)', WebkitBackdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width:'100%', maxWidth:'420px', maxHeight:'82vh', background:'linear-gradient(160deg,#1c1430,#120c20)', border:'1px solid rgba(34,211,238,0.4)', borderRadius:'20px', padding:'18px 16px', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)', animation:'fadeIn 0.3s ease' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
               <div style={{ color:'#22d3ee', fontSize:'16px', fontWeight:'bold' }}>🎴 摊牌 · 自己数数够不够</div>
-              <button onClick={() => setShowReveal(false)} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
+              <button onClick={() => { setShowReveal(false); revealDismissedRef.current = true; }} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
             </div>
             <div style={{ textAlign:'center', color:'rgba(255,255,255,0.5)', fontSize:'11px', marginBottom:'10px' }}>
               金框 = 叫的 {rvBidVal} 点　青框 = 百搭1️⃣（{rvWildOn ? '算入' : '已封印不算'}）
             </div>
             <div style={{ overflowY:'auto', flex:'1 1 auto', display:'flex', flexDirection:'column', gap:'8px', paddingRight:'2px' }}>
-              {players.filter(p => p.dice && p.dice.length > 0).map((p, i) => (
-                <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'center', flexWrap:'wrap' }}>
+              {players.filter(p => p.dice && p.dice.length > 0).map((p, i) => {
+                const opened = selectedTargets.includes(p.name);
+                return (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'center', flexWrap:'wrap', padding:'4px 6px', borderRadius:'12px', background: opened ? 'rgba(236,72,153,0.16)' : 'transparent', border: opened ? '1px solid rgba(236,72,153,0.6)' : '1px solid transparent' }}>
                   <span style={{ minWidth:'52px', textAlign:'right', fontSize:'13px', color: p.name === playerName ? '#22d3ee' : '#ddd', fontWeight: p.name === playerName ? 'bold' : 'normal' }}>
                     {p.name === playerName ? '你' : p.name}
+                    {opened ? ' 🔍被开' : ''}
                     {isStraight(p.dice) ? ' 🎯顺子归零' : ''}
                   </span>
                   <div style={{ display:'flex', gap:'4px' }}>
@@ -1622,14 +1605,15 @@ export default function GamePage() {
                       const isMatch = d === rvBidVal;
                       const isWild = d === 1 && rvWildOn && !isStraight(p.dice);
                       return (
-                        <span key={di} style={{ display:'inline-block', padding:'3px', borderRadius:'9px', border: isMatch ? '2px solid #fbbf24' : isWild ? '2px solid #22d3ee' : '2px solid transparent', boxShadow: isMatch ? '0 0 10px rgba(251,191,36,0.5)' : isWild ? '0 0 8px rgba(34,211,238,0.4)' : 'none' }}>
+                        <span key={di} style={{ display:'inline-block', padding:'3px', borderRadius:'9px', border: isMatch ? '2px solid #fbbf24' : isWild ? '2px solid #22d3ee' : (opened ? '2px solid rgba(236,72,153,0.5)' : '2px solid transparent'), boxShadow: isMatch ? '0 0 10px rgba(251,191,36,0.5)' : isWild ? '0 0 8px rgba(34,211,238,0.4)' : (opened ? '0 0 8px rgba(236,72,153,0.4)' : 'none') }}>
                           <DiceSVG value={d} size={27} />
                         </span>
                       );
                     })}
                   </div>
                 </div>
-              ))}
+              );})}
+
             </div>
             <div style={{ textAlign:'center', marginTop:'12px', fontSize:'14px', color:'#fff', borderTop:'1px solid rgba(255,255,255,0.1)', paddingTop:'10px' }}>
               全场共 <strong style={{ color:'#fbbf24', fontSize:'18px' }}>{rvTotal}</strong> 个 {rvBidVal}
@@ -2116,6 +2100,14 @@ const styles: any = {
     flexWrap: "wrap" as const,
     justifyContent: "center",
   },
+  // 叫牌 与 开骰 之间的分隔线，明示两者是“二选一”的互斥操作
+  actionDivider: {
+    textAlign: "center",
+    color: "rgba(255,255,255,0.4)",
+    fontSize: "12px",
+    margin: "8px 0 4px",
+    letterSpacing: "4px",
+  },
   targetSelect: {
     padding: "3px 8px",
     borderRadius: "6px",
@@ -2125,16 +2117,16 @@ const styles: any = {
     fontSize: "12px",
     outline: "none",
   },
+  // 开骰/抢开 设为“次按钮”：红边半透明，与实心蓝“叫牌”形成主次区分，避免误点
   btnOpen: {
     padding: "8px 24px",
     borderRadius: "10px",
-    border: "none",
-    background: "linear-gradient(135deg, #f43f5e, #e11d48)",
-    color: "#fff",
+    border: "2px solid #f43f5e",
+    background: "rgba(244,63,94,0.12)",
+    color: "#fda4af",
     fontSize: "14px",
     fontWeight: "600",
     cursor: "pointer",
-    boxShadow: "0 4px 16px rgba(244,63,94,0.5), 0 0 20px rgba(244,63,94,0.35)",
   },
   btnOpenSmall: {
     padding: "3px 12px",
