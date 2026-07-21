@@ -719,7 +719,7 @@ export default function ZhaJinHuaPage() {
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "waiting" || newPhase === "dealing" || prevPhase === "waiting") {
+        } else if ((newPhase === "waiting" && prevPhase === "waiting") || newPhase === "dealing" || prevPhase === "waiting") {
           effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           effectivePhase = newPhase;
@@ -850,7 +850,7 @@ export default function ZhaJinHuaPage() {
         const cur = forwardPhases.indexOf(prevPhase);
         const nxt = forwardPhases.indexOf(data.phase || "waiting");
         let eff = data.phase || "waiting";
-        if (!(eff === "waiting" || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
+        if (!((eff === "waiting" && prevPhase === "waiting") || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
           eff = prevPhase;
         }
         setPhase(eff); phaseRef.current = eff;
