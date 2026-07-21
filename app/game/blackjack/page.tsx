@@ -2530,41 +2530,48 @@ for (const r of results) {
 
           return (
             <div key={p.name || idx} style={{
-              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '4px', position: 'relative',
+              background: 'rgba(20,6,16,0.6)', borderRadius: '11px', padding: '6px', position: 'relative',
               border: `1px solid ${isMe ? '#ff5a7a' : (isActive ? '#ffd27a' : 'rgba(255,255,255,0.1)')}`,
               boxShadow: isMe ? '0 0 0 1px rgba(255,90,122,0.4), 0 0 16px rgba(255,90,122,0.2)' : (isActive ? '0 0 0 1px rgba(255,210,122,0.5)' : 'none')
             }}>
+              {/* 层1：头像 + 名字 + 点数 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                 <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'linear-gradient(160deg,#ff5a7a,#a0204a)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>{avatar}</div>
                 <div style={{ fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, color: isMe ? '#f0a8c4' : '#ddd' }}>
                   {isMe ? '你' : p.name}
                   {isDealer && <span style={{ fontSize: '10px', color: '#ffd27a' }}> 👑</span>}
                 </div>
-                {badge && <span style={{ display: 'inline-block', padding: '1px 5px', borderRadius: '6px', fontSize: '9px', fontWeight: 700, flexShrink: 0, ...badgeStyle }}>{badge}</span>}
-                {specialIcon && (
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    width: '16px', height: '14px', borderRadius: '6px', fontSize: '10px', lineHeight: 1,
-                    background: specialClass === 's-drag' ? 'rgba(120,170,255,0.22)' : specialClass === 's-bust' ? 'rgba(255,90,122,0.22)' : 'rgba(255,210,122,0.22)',
-                    color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
-                  }}>{specialIcon}</span>
-                )}
-                <div style={{ marginLeft: 'auto', fontSize: total === '黑杰克' ? '11px' : '18px', fontWeight: 800, color: '#ffd9e6', lineHeight: 1 }}>
+                <div style={{ marginLeft: 'auto', flexShrink: 0, fontSize: total === '黑杰克' ? '11px' : '18px', fontWeight: 800, color: '#ffd9e6', lineHeight: 1 }}>
                   {total}<span style={{ fontSize: '10px', color: '#d9b9c8' }}>{isSettle && total !== '黑杰克' ? '点' : (!isSettle && total !== '—' ? '张' : '')}</span>
                 </div>
-                {isSettle && cupTxt && (
-                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 5px', borderRadius: '6px', flexShrink: 0, marginLeft: '2px',
-                    background: cupColor === '#ff7a93' ? 'rgba(255,90,122,0.2)' : 'rgba(91,224,138,0.18)',
-                    color: cupColor }}>{cupTxt}</span>
-                )}
               </div>
-              <div style={{ display: 'flex', gap: '2px', flexWrap: 'nowrap', marginTop: '2px', justifyContent: 'center' }}>
+              {/* 层2：状态徽章 + 特殊图标 + 喝几杯（可换行，避免窄卡挤压） */}
+              {(badge || specialIcon || (isSettle && cupTxt)) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginTop: '3px' }}>
+                  {badge && <span style={{ display: 'inline-block', padding: '1px 5px', borderRadius: '6px', fontSize: '9px', fontWeight: 700, ...badgeStyle }}>{badge}</span>}
+                  {specialIcon && (
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: '16px', height: '14px', borderRadius: '6px', fontSize: '10px', lineHeight: 1,
+                      background: specialClass === 's-drag' ? 'rgba(120,170,255,0.22)' : specialClass === 's-bust' ? 'rgba(255,90,122,0.22)' : 'rgba(255,210,122,0.22)',
+                      color: specialClass === 's-drag' ? '#9ec4ff' : specialClass === 's-bust' ? '#ff7a93' : '#ffd27a'
+                    }}>{specialIcon}</span>
+                  )}
+                  {isSettle && cupTxt && (
+                    <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 5px', borderRadius: '6px',
+                      background: cupColor === '#ff7a93' ? 'rgba(255,90,122,0.2)' : 'rgba(91,224,138,0.18)',
+                      color: cupColor }}>{cupTxt}</span>
+                  )}
+                </div>
+              )}
+              {/* 层3：手牌（允许换行，五张牌在窄卡内自动折行） */}
+              <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', marginTop: '5px', justifyContent: 'center' }}>
                 {isSettle && cards.length > 0 ? (
                   cards.map((c, i) => <PokerCard key={i} card={c} hidden={false} size="tiny" />)
                 ) : (
                   p.cardCount > 0 && !isSettle ? (
                     Array.from({ length: p.cardCount }).map((_, i) => (
-                      <div key={i} style={{ width: '28px', height: '40px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
+                      <div key={i} style={{ width: '24px', height: '34px', borderRadius: '4px', background: 'repeating-linear-gradient(45deg, #4a1230, #4a1230 4px, #5e1840 4px, #5e1840 8px)', border: '1px solid #ff9ec4' }} />
                     ))
                   ) : null
                 )}
@@ -2641,7 +2648,7 @@ for (const r of results) {
       <div style={styles.glowOrb}></div>
       <div style={styles.glowOrb2}></div>
 
-      <div style={styles.tableContainer} className="table-container">
+      <div style={{ ...styles.tableContainer, paddingBottom: (myPlayer && myPlayer.cardCount > 0 && !gameOver) ? '88px' : '16px' }} className="table-container">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px', paddingBottom: '8px' }}>
           {renderBoard()}
           {/* ====== 中央区域（已改由 renderBoard 统一渲染，旧绝对定位遮罩块整段停用，避免重叠） ====== */}
