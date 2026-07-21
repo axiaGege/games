@@ -409,10 +409,19 @@ export default function GamePage() {
     } catch (_) {}
     const roomEmpty = updatedPlayers.length === 0;
     const leavingCurrent = saved?.currentPlayer === playerName;
+    // 轮到谁叫牌时离开：直接把轮次交给下一位还能玩的人（跳过观战者），避免回合卡在空人
+    let nextCurrentAfterLeave = saved?.currentPlayer || (roomEmpty ? "" : currentPlayer);
+    if (leavingCurrent && !roomEmpty) {
+      const sortedLeavers = [...updatedPlayers].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
+      const activeLeavers = sortedLeavers.filter((p: any) => p.status !== "watching");
+      const namesLeavers = activeLeavers.map((p: any) => p.name);
+      // 离开者已不在名单，取座位序最靠前的活跃玩家接手（轮转自然继续，不卡死）
+      nextCurrentAfterLeave = namesLeavers[0] || "";
+    }
     await supabase.from("rooms").update({ players: updatedPlayers }).eq("id", roomId);
     await broadcastState(roomId, {
       players: updatedPlayers,
-      currentPlayer: leavingCurrent ? "" : (saved?.currentPlayer || (roomEmpty ? "" : currentPlayer)),
+      currentPlayer: nextCurrentAfterLeave,
       gameStarted: saved?.gameStarted ?? gameStarted,
       gameOver: saved?.gameOver ?? gameOver,
       result: saved?.result || "",
