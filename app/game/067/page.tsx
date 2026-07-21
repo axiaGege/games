@@ -149,6 +149,7 @@ export default function GamePage() {
   const [rollingDice, setRollingDice] = useState<number[]>([]);
   const rollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
+  const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 叫牌面板
@@ -226,6 +227,11 @@ export default function GamePage() {
     };
   }, [roomId, playerName]);
 
+  // ============ 实时镜像 players 到 ref，供同步合并读取最新值 ============
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
+
   // ============ 自动重连：刷新页面后自动回到原房间，无需重新输密码 ============
   useEffect(() => {
     try {
@@ -242,7 +248,23 @@ export default function GamePage() {
   // ============ 远端状态应用（广播接收 + 定时对账共用，逻辑只写一处） ============
   const applyRemoteState = (state: any) => {
     const parsedPlayers = parsePlayers(state.players);
-    setPlayers(parsedPlayers);
+    // 按名字合并骰子：拒绝被陈旧广播把"已摇好的骰子"冲空。
+    // 并发摇骰时，甲在收到乙骰子前就广播，会把乙记为空；若两人本地版号撞车、版本闸拦不住，
+    // 整组替换(setPlayers)会抹掉乙刚摇的骰子 → 乙查看自己空、被开时提示"没有骰子"。
+    // 规则：非"全员清空(新一局发牌)"时，若本地该玩家已有非空骰子而广播里为空，则保留本地那份。
+    const allEmpty = parsedPlayers.every((p: any) => !p.dice || p.dice.length === 0);
+    let mergedPlayers = parsedPlayers;
+    if (!allEmpty) {
+      const localPlayers = playersRef.current;
+      mergedPlayers = parsedPlayers.map((inc: any) => {
+        const loc = localPlayers.find((p: any) => (p.cid && inc.cid && p.cid === inc.cid) || p.name === inc.name);
+        if (loc && loc.dice && loc.dice.length > 0 && (!inc.dice || inc.dice.length === 0)) {
+          return { ...inc, dice: loc.dice };
+        }
+        return inc;
+      });
+    }
+    setPlayers(mergedPlayers);
     setGameStarted(state.gameStarted || false);
     setGameOver(state.gameOver || false);
     if (state.gameOver) {
@@ -284,7 +306,7 @@ export default function GamePage() {
       setSelectedValue(null);
     }
     const myCid = (() => { try { return localStorage.getItem('067_cid') || ''; } catch { return ''; } })();
-    const me = parsedPlayers.find((p: any) => (myCid && p.cid && p.cid === myCid) || p.name === playerName);
+    const me = mergedPlayers.find((p: any) => (myCid && p.cid && p.cid === myCid) || p.name === playerName);
     if (me) {
       setMyDice(me.dice || []);
       setMySeatId(me.seatId !== undefined ? me.seatId : null);
