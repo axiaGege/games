@@ -268,53 +268,6 @@ const parsePlayers = (raw: any): any[] => {
   return [];
 };
 
-// 🔧 按名字去重：名字是游戏的权威身份（压酒/轮转/庄家判定全用名字）。
-// 同一名字出现多条（多为重连时 cid 变化导致的历史脏数据）一律合并为一条，
-// 优先保留有牌/有下注/是庄家/有座位号的字段，避免人数被重复计数(表现为 2/12、3/13)。
-// 这是根治"名单滚雪球"的核心：之前接收端按名字去重、写库却按 cid||名字 去重，
-// cid 一变就识别不出老条目 → 每次重连追加一条同名重复 → 名单累积到房间上限 12。
-const dedupePlayers = (arr: any[]): any[] => {
-  if (!Array.isArray(arr)) return [];
-  const map = new Map<string, any>();
-  for (const p of arr) {
-    if (!p || typeof p !== 'object') continue;
-    const key = ((p.name && String(p.name).trim()) || p.cid || '') as string;
-    if (!key) continue;
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, { ...p });
-    } else {
-      const merged: any = { ...existing, ...p };
-      merged.cards = (p.cards && p.cards.length) ? p.cards : (existing.cards || []);
-      merged.cardCount = merged.cards.length || p.cardCount || existing.cardCount || 0;
-      merged.bet = p.bet ? p.bet : (existing.bet || 0);
-      merged.isDealer = p.isDealer || existing.isDealer || false;
-      merged.seatId = (p.seatId !== undefined && p.seatId !== null) ? p.seatId : existing.seatId;
-      merged.status = p.status || existing.status || 'playing';
-      merged.cid = p.cid || existing.cid;
-      merged.lastSeen = Math.max(existing.lastSeen || 0, p.lastSeen || 0);
-      map.set(key, merged);
-    }
-  }
-  return Array.from(map.values());
-};
-
-// 🔧 根治"压酒卡死/轮转错位"：各手机 players 数组排列顺序不同，
-// 导致同一个数字编号 currentPlayerIndex 在不同手机上指到不同的人。
-// 改用"按名字排序后的统一顺序"来解读/计算这个编号——名字集合每部手机都相同，
-// 排序用纯 Unicode 码点比较(与设备/浏览器语言无关)，故各端顺序完全一致，编号自然对得上。
-// 只影响"轮到谁"的解读，不动庄家/房主/座位逻辑。
-const canonical = (arr: any[]): any[] => {
-  if (!Array.isArray(arr)) return [];
-  return [...arr].sort((a, b) => {
-    const na = (a?.name != null ? String(a.name) : '');
-    const nb = (b?.name != null ? String(b.name) : '');
-    if (na < nb) return -1;
-    if (na > nb) return 1;
-    return 0;
-  });
-};
-
 const getHandName = (cards: any[]): string => {
   if (!cards || cards.length !== 3) return '无牌';
   const r = getHandRank(cards);
@@ -491,13 +444,6 @@ export default function ZhaJinHuaPage() {
   // 🔥 原庄家退返标记：庄家离开时记下其名字，待结算阶段开新局前、若其已回房则把庄家身份还给他（仅走广播，不改数据库）
   const [pendingReturnDealer, setPendingReturnDealer] = useState<string | null>(null);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
-
-  // 🔧 根因修复：各端 players 数组顺序不一致（谁先进房谁排前），而压酒轮转/下一个谁/重连定位
-  // 全用数组下标 currentPlayerIndex，顺序一不同→同一下标指不同的人→压酒卡死等问题。
-  // 用"稳定座位号 seatId"统一排序，所有客户端顺序完全一致，下标自然对得上号。一次性根治。
-  const bySeat = (a: any, b: any) => (a?.seatId ?? 9999) - (b?.seatId ?? 9999);
-  const sortPlayers = (arr: any[]) => [...(arr || [])].sort(bySeat);
-
   const [gameOver, setGameOver] = useState(false);
   const [result, setResult] = useState<string>("");
   const [resultDetails, setResultDetails] = useState<any[]>([]);
@@ -518,39 +464,6 @@ export default function ZhaJinHuaPage() {
   const [disconnected, setDisconnected] = useState(false);
   const [isDealer, setIsDealer] = useState(false);
   const [readyPlayers, setReadyPlayers] = useState<string[]>([]);
-
-  // ===== 临时诊断浮窗（仅取证，不改变任何游戏逻辑）=====
-  const [diagErr, setDiagErr] = useState('');
-  const [myCidState, setMyCidState] = useState('');
-  const captureErr = (where: string, err: any) => {
-    if (err) setDiagErr(where + ': ' + (err?.message || err?.code || JSON.stringify(err)));
-  };
-  useEffect(() => {
-    setMyCidState(getOrCreateCid());
-  }, []);
-  useEffect(() => {
-    const el = document.createElement('div');
-    el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,0.82);color:#7CFC00;font:11px/1.4 monospace;padding:6px 9px;border-radius:8px;max-width:48vw;white-space:pre-wrap;pointer-events:none;box-shadow:0 0 0 1px rgba(255,255,255,0.15);';
-    document.body.appendChild(el);
-    el.textContent = '🔍 诊断浮窗加载中...';
-    (window as any).__zjhDiag = el;
-    return () => { el.remove(); (window as any).__zjhDiag = null; };
-  }, []);
-  useEffect(() => {
-    const el = (window as any).__zjhDiag as HTMLElement | null;
-    if (!el) return;
-    const names = players.map((p: any) => (p.name || '?')).slice(0, 8).join(', ');
-    el.textContent = [
-      '🔍 诊断',
-      '房间: ' + (roomId ? String(roomId).slice(0, 8) : '—'),
-      '名单条数: ' + players.length,
-      '准备: ' + readyPlayers.length,
-      '我的cid: ' + (myCidState ? String(myCidState).slice(0, 8) : '—'),
-      '名字: ' + names,
-      '最近DB错误: ' + (diagErr || '无'),
-    ].join('\n');
-  }, [roomId, players, readyPlayers, myCidState, diagErr]);
-
   const [wheelVisible, setWheelVisible] = useState(false);
   const [wheelRotation, setWheelRotation] = useState(0);
   const [wheelSelected, setWheelSelected] = useState<string | null>(null);
@@ -624,14 +537,13 @@ export default function ZhaJinHuaPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [joined]);
 
-  const broadcastAndSyncDB = async (state: any, readyOnly = false, joinSync = false) => {
+  const broadcastAndSyncDB = async (state: any) => {
     const newVersion = versionRef.current + 1;
     versionRef.current = newVersion;
     setVersion(newVersion);
     // 自动从 ref 获取当前转盘状态
     const payload = {
       ...state,
-      readyOnly,
       version: newVersion,
       bettingComplete: state.bettingComplete !== undefined ? state.bettingComplete : false,
       revealTargets: state.revealTargets || [],
@@ -658,62 +570,40 @@ export default function ZhaJinHuaPage() {
     }
 
     try {
-      // 🔧 readyOnly(点准备/取消准备)：只同步准备名单与(观战转玩家时的)玩家名单，绝不写相位/牌堆/庄家等游戏状态，
-      // 否则携带滞后 phase:"waiting" 的迟到广播会把发牌中的对局拽回准备、并把自己落后的 players 名单广播出去把人删掉
-      // 🔧 根因修复：写库前把 incoming 名单与数据库现有名单按名字并集，绝不因本端暂时缺人就把库里已有玩家冲掉。
-      const mergePlayersWithDB = async (incoming: any[]) => {
-        try {
-          const { data: cur } = await supabase.from("rooms").select("players").eq("id", roomId).single();
-          const curArr = parsePlayers(cur?.players);
-          const keys = new Set((incoming || []).map((p: any) => p.cid || p.name));
-          return dedupePlayers([...(incoming || []), ...curArr.filter((p: any) => !keys.has(p.cid || p.name))]);
-        } catch { return incoming; }
-      };
-
-      const dbUpdate: any = { version: newVersion };
-      let playersToWrite: any = undefined;
-      if (readyOnly) {
-        // 点准备/取消准备：只同步准备名单（及观战转玩家时的 players），绝不碰相位/牌堆/庄家
-        dbUpdate.readyplayers = state.readyPlayers || [];
-        if (state.players) playersToWrite = await mergePlayersWithDB(state.players);
-      } else if (joinSync) {
-        // 加入/重连房间：只把"我来了/我回来了"写进 players，绝不写相位/准备/牌堆。
-        // 否则携带滞后 phase:"waiting" 的迟到写库会把发牌中的对局拽回准备、准备名单打回[房主]
-        // （表现：发牌后顶部又冒出"等待开始(1/3 已准备)"）
-        playersToWrite = state.players;
-      } else {
-        playersToWrite = await mergePlayersWithDB(state.players);
-        dbUpdate.phase = state.phase;
-        dbUpdate.dealerid = state.dealerId;
-        dbUpdate.gameover = state.gameOver;
-        dbUpdate.currentplayerindex = state.currentPlayerIndex || 0;
-        dbUpdate.result = state.result || "";
-        dbUpdate.resultdetails = state.resultDetails || [];
-        dbUpdate.settlementstep = state.settlementStep || 0;
-        dbUpdate.seed = state.seed;
+      await supabase.from("rooms").update({
+        players: state.players,
+        phase: state.phase,
+        dealerid: state.dealerId,
+        gameover: state.gameOver,
+        currentplayerindex: state.currentPlayerIndex || 0,
+        result: state.result || "",
+        resultdetails: state.resultDetails || [],
+        readyplayers: state.readyPlayers || [],
+        settlementstep: state.settlementStep || 0,
+        seed: state.seed,
         // 修复2：仅在确实携带 deckOffset 时才写库，避免 undefined/0 把库里已有进度清零
-        if (state.deckOffset !== undefined && state.deckOffset !== null) dbUpdate.deckoffset = state.deckOffset;
-        dbUpdate.wheelvisible = state.wheelVisible || false;
-        dbUpdate.wheelselected = state.wheelSelected || null;
-        dbUpdate.wheelsegments = state.wheelSegments || [];
-        dbUpdate.communitycard = state.communityCard || null;
-        dbUpdate.bettingcomplete = state.bettingComplete !== undefined ? state.bettingComplete : false;
-        dbUpdate.revealtargets = state.revealTargets || [];
-      }
-      if (playersToWrite !== undefined) dbUpdate.players = playersToWrite;
-      await supabase.from("rooms").update(dbUpdate).eq("id", roomId);
+        ...(state.deckOffset !== undefined && state.deckOffset !== null
+            ? { deckoffset: state.deckOffset }
+            : {}),
+        wheelvisible: state.wheelVisible || false,
+        wheelselected: state.wheelSelected || null,
+        wheelsegments: state.wheelSegments || [],
+        communitycard: state.communityCard || null,
+        bettingcomplete: state.bettingComplete !== undefined ? state.bettingComplete : false,
+        revealtargets: state.revealTargets || [],
+        version: newVersion,
+      }).eq("id", roomId);
       console.log('💾 数据库同步成功');
       setDisconnected(false);
     } catch (error) {
       console.error('⚠️ 数据库同步失败(不影响游戏实时同步):', error);
-      captureErr('sync', error);
     }
   };
 
   const getMyPlayer = () => players.find(p => p.name === playerName);
   const activePlayers = players.filter(p => p.status === 'playing');
   const allReady = activePlayers.length >= 2 && activePlayers.every(p => readyPlayers.includes(p.name));
-  const currentPlayer = canonical(players)[currentPlayerIndex] || null;
+  const currentPlayer = players[currentPlayerIndex] || null;
 
   useEffect(() => {
     if (!roomId) return;
@@ -722,18 +612,23 @@ export default function ZhaJinHuaPage() {
       .channel(`zhajinhua:${roomId}`, { config: { broadcast: { ack: true } } })
       .on('broadcast', { event: 'gameState' }, (payload) => {
         const state = payload.payload;
-        // 🔧 根因修复：原版本号是"每客户端各自递增"的计数器，跨客户端根本无法比较大小，
-        // 导致其他玩家发来的【新鲜】广播被误判成"旧版本"直接丢弃 → 准备/压酒状态各手机对不上、压酒卡死。
-        // 改为不再因版本号丢弃任何广播；相位回退由专门的相位护栏拦截，玩家名单由并集保护，故可全部接受。
-        // 仅记录版本号便于排查。
-        versionRef.current = Math.max(versionRef.current, state.version || 0);
+        // 🔧 修复：结构性同步广播（加入/离开房间）不受版本号丢弃限制，必须无条件处理，
+        // 否则重进玩家发出的广播永远被当成旧消息丢弃，导致人数/准备/牌堆全不同步
+        if (state.version && state.version <= versionRef.current && !state.structuralSync) {
+          console.log('⏭️ 忽略旧版本广播:', state.version, '当前:', versionRef.current);
+          return;
+        }
+        if (state.version && !state.structuralSync) {
+          versionRef.current = state.version;
+          setVersion(state.version);
+        }
         const parsedPlayers = parsePlayers(state.players);
         // 🔧 任何广播都让内部名单(playersRef)立刻跟上最新，避免发起方(finishReveal/dealCards)
         // 用滞后快照算错下注顺序/归还判定。
         // 典型场景：原庄家返回时新庄家端名单靠 400ms 异步补齐且只更 state 不更 ref，
         // 导致点"开始新对局"时 ref 里无原庄家→归还失效、firstIdx 错位、压酒按钮不出。
         if (parsedPlayers.length > 0) {
-          playersRef.current = sortPlayers(parsedPlayers);
+          playersRef.current = parsedPlayers;
         }
 
         if (state.phase === "betting" || state.phase === "dealing" || state.phase === "waiting") {
@@ -744,66 +639,60 @@ export default function ZhaJinHuaPage() {
           // 修复5：广播里带了 players 但解析失败(返回空数组)时，保持本地原状，绝不用空数组清空全场手牌
           if (parsedPlayers.length === 0 && state.players && prev.length > 0) return prev;
           if (isSettlingRef.current && state.phase !== "settlement" && state.phase !== "wheel" && !state.structuralSync) return prev;
-
           const localMe = prev.find(p => p.name === playerName);
           const remoteMe = parsedPlayers.find(p => p.name === playerName);
-
-          const normalize = (p: any) => ({
-            ...p,
-            cards: p.cards || [],
-            cardCount: p.cards?.length || p.cardCount || 0,
-            bet: p.bet || 0,
-            status: p.status || 'playing',
-          });
-
-          // 1) 以广播名单为主，逐人规范化（保留"我"的牌/下注/身份兜底逻辑）
-          let merged = parsedPlayers.map((p: any) => {
-            if (p.name === playerName && localMe && remoteMe) {
-              const isDealing = state.phase === "dealing";
-              if (isDealing) return p;
-              const hasLocalCards = localMe.cards && localMe.cards.length > 0;
-              const isNewBettingRound = state.phase === "betting" && remoteMe.bet === 0;
-              const shouldUseRemoteCards = isNewBettingRound && remoteMe.cards && remoteMe.cards.length > 0;
-              // 🔧 兜底：betting 阶段自己是 playing 但完全没牌（漏收发牌广播），用 seed+deckOffset 确定性重建
-              const needRebuild = state.phase === "betting" && localMe.status === 'playing' && !hasLocalCards && !(remoteMe.cards && remoteMe.cards.length > 0);
-              if (needRebuild) {
-                try {
-                  const N = parsedPlayers.length;
-                  const myIndex = parsedPlayers.findIndex(pp => pp.name === playerName);
-                  const dk = createDeckWithSeed(state.seed);
-                  const startOff = (state.deckOffset || 0) - 1 - N;
-                  const myCard = dk[startOff + 1 + myIndex];
-                  const community = dk[startOff];
-                  if (myCard) {
-                    if (!state.communityCard) setCommunityCard(community);
-                    return { ...p, cards: [myCard], cardCount: 1, status: 'playing' };
-                  }
-                } catch (_) {}
+          if (localMe && remoteMe) {
+            const isDealing = state.phase === "dealing";
+            if (isDealing) return parsedPlayers;
+            const hasLocalCards = localMe.cards && localMe.cards.length > 0;
+            const isNewBettingRound = state.phase === "betting" && remoteMe.bet === 0;
+            const shouldUseRemoteCards = isNewBettingRound && remoteMe.cards && remoteMe.cards.length > 0;
+            // 🔧 兜底：betting 阶段自己是 playing 但完全没牌（漏收发牌广播），
+            // 用 seed + deckOffset + 座位顺序确定性重建自己的牌，避免"无手牌却能压酒"
+            const needRebuild = state.phase === "betting" && localMe.status === 'playing' && !hasLocalCards && !(remoteMe.cards && remoteMe.cards.length > 0);
+            return parsedPlayers.map(p => {
+              if (p.name === playerName) {
+                if (needRebuild) {
+                  try {
+                    const N = parsedPlayers.length;
+                    const myIndex = parsedPlayers.findIndex(pp => pp.name === playerName);
+                    const dk = createDeckWithSeed(state.seed);
+                    const startOff = (state.deckOffset || 0) - 1 - N;
+                    const myCard = dk[startOff + 1 + myIndex];
+                    const community = dk[startOff]; // 公牌是发牌时 deck[offset++] 取的第一张，位于 startOff
+                    if (myCard) {
+                      // 🔧 兜底公牌（全局共享）：若本地公牌漏收，用 seed+deckOffset 确定性重建，避免"想象牌 无牌"
+                      if (!state.communityCard) {
+                        setCommunityCard(community);
+                      }
+                      return { ...p, cards: [myCard], cardCount: 1, status: 'playing' };
+                    }
+                  } catch (_) {}
+                }
+                return {
+                  ...p,
+                  cards: shouldUseRemoteCards ? (p.cards || []) : (hasLocalCards ? localMe.cards : (p.cards || [])),
+                  cardCount: shouldUseRemoteCards ? (p.cardCount || p.cards?.length || 0) : (hasLocalCards ? localMe.cardCount : (p.cardCount || 0)),
+                  bet: isNewBettingRound ? 0 : (hasLocalCards ? (localMe.bet || 0) : (p.bet || 0)),
+                  status: isNewBettingRound ? 'playing' : (hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing')),
+                };
+              }
+              const prevPlayer = prev.find(pp => pp.name === p.name);
+              // 🔧 结构性同步（加入/离开）时，已存在的玩家保留自己的牌/下注/身份，
+              // 绝不用加入广播里的空牌去覆盖（防止迟到加入广播冲掉刚发好的牌）
+              if (state.structuralSync && prevPlayer) {
+                return prevPlayer;
               }
               return {
                 ...p,
-                cards: shouldUseRemoteCards ? (p.cards || []) : (hasLocalCards ? localMe.cards : (p.cards || [])),
-                cardCount: shouldUseRemoteCards ? (p.cardCount || p.cards?.length || 0) : (hasLocalCards ? localMe.cardCount : (p.cardCount || 0)),
-                bet: isNewBettingRound ? 0 : (hasLocalCards ? (localMe.bet || 0) : (p.bet || 0)),
-                status: isNewBettingRound ? 'playing' : (hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing')),
+                cards: p.cards || [],
+                cardCount: p.cards?.length || p.cardCount || 0,
+                bet: p.bet || 0,
+                status: p.status || 'playing',
               };
-            }
-            const prevPlayer = prev.find(pp => pp.name === p.name);
-            // 🔧 结构性同步（加入/离开）时，已存在的玩家保留自己的牌/下注/身份
-            if (state.structuralSync && prevPlayer) return prevPlayer;
-            return normalize(p);
-          });
-
-          // 2) 🔧 并集：补齐"本地有但广播没带"的人——迟到加入广播(只带[p1,p2])不能把已加入的玩家3整体删掉，
-          // 否则表现为"人数变少 / 准备名单有3人但玩家列表只有2人 / 点了开始却只有两人能玩"
-          const localOnly = prev.filter((pp: any) => !parsedPlayers.some((p: any) => p.name === pp.name));
-          merged = [...merged, ...localOnly];
-
-          // 3) 有人离开(justUnready)时剔除离开者，避免迟到加入广播把它又加回来
-          if (state.justUnready) {
-            merged = merged.filter((p: any) => p.name !== state.justUnready);
+            });
           }
-          return sortPlayers(dedupePlayers(merged)); // 🔧 统一按座位号排序 + 按名字去重(防历史脏数据)
+          return parsedPlayers;
         });
 
         // 🔧 结构性同步（加入/离开房间）只更新玩家名单，绝不覆盖任何游戏状态
@@ -812,26 +701,6 @@ export default function ZhaJinHuaPage() {
         // 🔥 例外：庄家离开（leaveSync）时，必须落地"转移后的新庄家 + 保留的阶段/牌堆"，
         // 否则算好的转移传不出去（其他人永远看不到新庄家、牌堆被刷）。
         // leaveSync 仅由 doLeaveRoom 在"庄家离开"时置 true，加入/重进/非庄家离开均不置，故不回归。
-
-        // ===== 准备名单同步（所有广播都先处理，放在结构性提前返回之前）=====
-        // 根因修复：原逻辑收到任何广播都用广播里的 readyPlayers 整体覆盖本地，
-        // 迟到/滞后的子集广播会把已准备的人全冲掉(变回1/4)。
-        // 现改为：clearReady 或 游戏已开始(phase≠waiting)→整体清空；justUnready→精确移除该玩家；
-        // 正常准备广播(非结构性)→并集吸收(只增不冲)，结构性广播(加入/离开)的 readyPlayers 是发送者滞后快照，不并集。
-        setReadyPlayers(prev => {
-          if (state.clearReady || (state.phase && state.phase !== "waiting")) return [];
-          let next = prev;
-          if (state.justUnready) next = next.filter(n => n !== state.justUnready);
-          if (!state.structuralSync && state.readyPlayers) {
-            next = Array.from(new Set([...next, ...state.readyPlayers]));
-          }
-          return next;
-        });
-
-        // 🔧 readyOnly 广播(点准备/取消准备)只同步准备名单，绝不触碰相位/牌堆/庄家等游戏状态，
-        // 否则携带滞后 phase:"waiting" 或落后 players 名单的迟到广播会把发牌中的对局拽回准备、或把已加入的人删掉
-        if (state.readyOnly) return;
-
         if (state.structuralSync) {
           // 🔥 彻底兜底：以数据库权威名单收敛人数——收到进/出消息后主动拉库核对，
           // 即使实时广播漏了一条，人数也必然一致（只增删人，不碰牌/下注/身份）
@@ -850,10 +719,7 @@ export default function ZhaJinHuaPage() {
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "dealing" || prevPhase === "waiting") {
-          // 🔧 仅两种情形接受等待/开局推进：①本地本就在等待界面(正常准备)；②收到开局(dealing)推进。
-          // 绝不在游戏进行中(dealing/betting/...)接受 waiting——否则一条迟到旧广播或轮询读到滞后的库相位，
-          // 就会把正在打牌的对局拽回准备(表现：发牌后顶部又冒出"等待开始(1/3 已准备)")。
+        } else if (newPhase === "waiting" || newPhase === "dealing" || prevPhase === "waiting") {
           effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           effectivePhase = newPhase;
@@ -876,7 +742,7 @@ export default function ZhaJinHuaPage() {
         setCurrentPlayerIndex(state.currentPlayerIndex || 0);
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
-        // 🔧 准备名单已由上方"所有广播统一处理"块接管（并集/精确移除/开局清空），此处不再整体覆盖
+        setReadyPlayers(state.readyPlayers || []);
         // 修复8：接收端牌堆保护——只在广播显式携带时才更新，避免漏带字段把本地进度误清零（与修复2写库保护对称）
         if (state.seed !== undefined) setSeed(state.seed);
         if (state.deckOffset !== undefined) setDeckOffset(state.deckOffset);
@@ -974,9 +840,8 @@ export default function ZhaJinHuaPage() {
           if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
           return p;
         }).filter(Boolean) as any[];
-        playersArr = dedupePlayers(playersArr); // 🔧 按名字去重，清理历史累积的重复条目
         if (changed) {
-          try { const { error: he } = await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); captureErr('heartbeat', he); } catch (_) {}
+          try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
         }
         await reconcilePlayersFromDB(); // 名单收敛（已有函数，零风险）
         // 阶段防护：沿用接收端 forwardPhases 逻辑，避免把对局中状态拉回 waiting
@@ -985,9 +850,7 @@ export default function ZhaJinHuaPage() {
         const cur = forwardPhases.indexOf(prevPhase);
         const nxt = forwardPhases.indexOf(data.phase || "waiting");
         let eff = data.phase || "waiting";
-        if (!(eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
-          // 🔧 轮询同理：游戏进行中(dealing/betting/...)收到库里的 waiting 一律忽略(保留本地真实相位)，
-          // 不再因库相位滞后/写库慢半秒就把对局拽回准备。仅本地本就在等待、或收到合法前向推进时才采用库值。
+        if (!(eff === "waiting" || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
           eff = prevPhase;
         }
         setPhase(eff); phaseRef.current = eff;
@@ -1001,11 +864,7 @@ export default function ZhaJinHuaPage() {
         if (data.communitycard !== undefined) setCommunityCard(data.communitycard);
         setResult(data.result || "");
         setResultDetails(data.resultdetails || []);
-        // 准备名单：准备阶段并集吸收(防迟到/库滞后把已准备的人冲掉)；游戏中以库为准(开局后库为[])
-        setReadyPlayers(prev => {
-          if (phaseRef.current !== "waiting") return data.readyplayers || [];
-          return Array.from(new Set([...prev, ...(data.readyplayers || [])]));
-        });
+        setReadyPlayers(data.readyplayers || []);
         setBettingComplete(data.bettingcomplete !== undefined ? data.bettingcomplete : false);
         bettingCompleteRef.current = data.bettingcomplete || false;
         if (data.revealtargets) setRevealTargets(data.revealtargets);
@@ -1087,13 +946,12 @@ export default function ZhaJinHuaPage() {
       .single();
 
     if (error) {
-      captureErr('create', error);
       setErrorMsg("创建失败: " + error.message);
       return;
     }
 
     setRoomId(data.id);
-    const parsedPlayers = sortPlayers(dedupePlayers(parsePlayers(data.players)));
+    const parsedPlayers = parsePlayers(data.players);
     setPlayers(parsedPlayers);
     playersRef.current = parsedPlayers;
     setJoined(true);
@@ -1139,7 +997,6 @@ export default function ZhaJinHuaPage() {
       .maybeSingle();
 
     if (roomError || !roomData) {
-      captureErr('join-select', roomError);
       setErrorMsg("密码错误,未找到对应房间");
       return;
     }
@@ -1150,7 +1007,7 @@ export default function ZhaJinHuaPage() {
     versionRef.current = Math.max(versionRef.current, dbVersion);
     setVersion(versionRef.current);
 
-    let currentPlayers = dedupePlayers(sortPlayers(parsePlayers(roomData.players)));
+    let currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满(最多12人)");
       return;
@@ -1158,8 +1015,7 @@ export default function ZhaJinHuaPage() {
 
     const myCid = getOrCreateCid();
     // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
-    // 🔧 重连/加入按名字认人（名字是权威身份），避免 cid 变化导致识别不出老条目而被当成"新玩家"重复追加
-    const existingIdx = currentPlayers.findIndex((p: any) => p.name === playerName.trim());
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim()));
     if (existingIdx >= 0) {
       currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name: playerName.trim(), lastSeen: Date.now() } : p);
     }
@@ -1168,8 +1024,8 @@ export default function ZhaJinHuaPage() {
     if (existingIdx >= 0) {
       setRoomId(roomData.id);
       setJoined(true);
-      setPlayers(sortPlayers(currentPlayers));
-      playersRef.current = sortPlayers(currentPlayers);
+      setPlayers(currentPlayers);
+      playersRef.current = currentPlayers;
       setPhase(roomData.phase || "waiting");
       setDealerId(roomData.dealerid || null);
       setGameOver(roomData.gameover || false);
@@ -1229,7 +1085,7 @@ export default function ZhaJinHuaPage() {
       }
 
       if (roomData.phase === "betting") {
-        const cp = canonical(currentPlayers)[roomData.currentplayerindex || 0];
+        const cp = currentPlayers[roomData.currentplayerindex || 0];
         if (cp && cp.name === playerName.trim() && !cp.bet) {
           startBettingTimeout();
         }
@@ -1268,7 +1124,7 @@ export default function ZhaJinHuaPage() {
         allCompareData: roomData.allCompareData || [],
         globalDealerHand: [],
         globalDealerHandName: '',
-      }, false, true);
+      });
       return;
     }
 
@@ -1292,10 +1148,11 @@ export default function ZhaJinHuaPage() {
       status: isGameActive ? 'watching' : 'playing',
       bet: 0,
     };
-    const updatedPlayers = sortPlayers(dedupePlayers([...currentPlayers, newPlayer]));
+    const updatedPlayers = [...currentPlayers, newPlayer];
 
     await supabase.from("rooms").update({
       players: updatedPlayers,
+      readyplayers: roomData.readyplayers || [],
     }).eq("id", roomData.id);
 
     setRoomId(roomData.id);
@@ -1383,7 +1240,7 @@ export default function ZhaJinHuaPage() {
       allCompareData: roomData.allCompareData || [],
       globalDealerHand: [],
       globalDealerHandName: '',
-    }, false, true);
+    });
   };
 
   const joinRoomRef = useRef(joinRoom);
@@ -1471,23 +1328,21 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    // 4. 计算新的当前玩家索引（统一用"按名字排序"的顺序解读编号，保证各端一致）
-    const canonBefore = canonical(players);
-    const canonAfter = canonical(updatedPlayers);
+    // 4. 计算新的当前玩家索引
     let newIndex = currentPlayerIndex;
-    const currentName = canonBefore[currentPlayerIndex]?.name;
+    const currentName = players[currentPlayerIndex]?.name;
     if (currentName === playerName) {
       let next = 0;
       let count = 0;
-      while (count < canonAfter.length) {
-        const p = canonAfter[next];
+      while (count < updatedPlayers.length) {
+        const p = updatedPlayers[next];
         if (p.status === 'playing') break;
-        next = (next + 1) % canonAfter.length;
+        next = (next + 1) % updatedPlayers.length;
         count++;
       }
       newIndex = next;
     } else {
-      const foundIdx = canonAfter.findIndex(p => p.name === currentName);
+      const foundIdx = updatedPlayers.findIndex(p => p.name === currentName);
       newIndex = foundIdx >= 0 ? foundIdx : 0;
     }
 
@@ -1599,8 +1454,6 @@ export default function ZhaJinHuaPage() {
       result: newResult,
       resultDetails: newResultDetails,
       readyPlayers: newReadyPlayers,
-      // 非庄家离开→精确移除自己；庄家离开重置→清空全部准备
-      ...(isDealerLeaving ? { clearReady: true } : { justUnready: playerName }),
       settlementStep: 0,
       seed: newSeed,
       deckOffset: newDeckOffset,
@@ -1772,17 +1625,9 @@ export default function ZhaJinHuaPage() {
       needStatusChange = true;
     }
 
-    // 准备逻辑（根因修复：写库前先读库当前准备名单，只改自己，杜绝用本地不全名单整体覆盖库导致互相冲掉）
+    // 准备逻辑
     const isReady = readyPlayers.includes(playerName);
-    // 读库失败时用本地名单兜底，绝不用空数组把库覆盖成只剩自己（否则复现"变回1/4"）
-    let dbReady: string[] = readyPlayers;
-    try {
-      const { data: rd } = await supabase.from("rooms").select("readyplayers").eq("id", roomId).single();
-      if (rd?.readyplayers) dbReady = rd.readyplayers;
-    } catch (_) {}
-    const newReady = isReady
-      ? Array.from(new Set(dbReady.filter(p => p !== playerName)))
-      : Array.from(new Set([...dbReady, playerName]));
+    const newReady = isReady ? readyPlayers.filter(p => p !== playerName) : [...readyPlayers, playerName];
 
     if (needStatusChange) {
       setPlayers(updatedPlayers);
@@ -1799,7 +1644,6 @@ export default function ZhaJinHuaPage() {
       result,
       resultDetails,
       readyPlayers: newReady,
-      justUnready: isReady ? playerName : undefined, // 取消准备时精确移除自己
       settlementStep: 0,
       seed,
       deckOffset,
@@ -1811,7 +1655,7 @@ export default function ZhaJinHuaPage() {
       allCompareData,
       globalDealerHand,
       globalDealerHandName,
-    }, true);
+    });
 
     if (needStatusChange) {
       setErrorMsg("已自动转为玩家并已准备！");
@@ -1864,21 +1708,21 @@ export default function ZhaJinHuaPage() {
       if (error || !data) return;
       const dbPlayers = parsePlayers(data.players);
       const keyOf = (p: any) => p.cid || p.name;
+      const dbKeys = new Set(dbPlayers.map(keyOf));
       const dbReady = data.readyplayers || [];
       setPlayers(prev => {
         const localKeys = new Set(prev.map(keyOf));
-        // 🔧 根因修复：保留本地全部玩家，不再因"库里暂时缺人"就删人（避免 3→2 闪退）。
-        // 库里多出的新加入者照常补齐；离开者已由 justUnready/leaveSync 广播精确移除，不会在此被复活。
-        let next = [...prev];
+        let next = prev.filter((p: any) => dbKeys.has(keyOf(p))); // 移除已离开者（按编号或名字）
         dbPlayers.forEach((dp: any) => {
-          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐库里多出的新加入者
+          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐新加入者（用库里的完整对象）
         });
-        return sortPlayers(dedupePlayers(next)); // 🔧 统一按座位号排序 + 按名字去重(防历史脏数据)
+        return next;
       });
-      // 准备状态：准备阶段并集吸收(防冲掉)；游戏中以库为准(开局后库为[])
+      // 准备状态取本地与数据库交集：两边都标记"已准备"才算，
+      // 避免某人取消准备后，数据库瞬时残留其名字导致被误标"已准备"
       setReadyPlayers(prevReady => {
-        if (phaseRef.current !== "waiting") return dbReady;
-        return Array.from(new Set([...prevReady, ...dbReady]));
+        if (!dbReady || dbReady.length === 0) return prevReady; // 库无准备数据则保持本地，防误清空
+        return prevReady.filter(name => dbReady.includes(name));
       });
     } catch (e) {
       // 兜底失败不应影响游戏
@@ -1890,7 +1734,7 @@ export default function ZhaJinHuaPage() {
 
     // 🔧 开局前先以数据库权威名单补齐可能迟到的新玩家，避免发牌漏人（首局无手牌却能压酒）
     const authoritative = await fetchAuthoritativeRoom();
-    const workingPlayers = sortPlayers(dedupePlayers(authoritative ? authoritative.players : players));
+    const workingPlayers = authoritative ? authoritative.players : players;
     const workingReady = authoritative ? authoritative.ready : readyPlayers;
 
     const playingPlayers = workingPlayers.filter(p => p.status === 'playing');
@@ -1906,14 +1750,14 @@ export default function ZhaJinHuaPage() {
     }
 
     const firstDealer = playingPlayers[0].name;
-    const resetPlayers = sortPlayers(workingPlayers.map(p => ({
+    const resetPlayers = workingPlayers.map(p => ({
       ...p,
       cards: [],
       cardCount: 0,
       isDealer: p.name === firstDealer,
       status: 'playing', // 修复1：新对局开始时把观战者也转为玩家并发牌
       bet: 0,
-    })));
+    }));
     setPlayers(resetPlayers);
     playersRef.current = resetPlayers;
     setDealerId(firstDealer);
@@ -1952,7 +1796,6 @@ export default function ZhaJinHuaPage() {
       result: "",
       resultDetails: [],
       readyPlayers: [],
-      clearReady: true,
       settlementStep: 0,
       seed: newSeed,
       deckOffset: 0,
@@ -1991,8 +1834,8 @@ export default function ZhaJinHuaPage() {
 
     setDeckOffset(offset);
     setRemainingCards(52 - offset);
-    setPlayers(sortPlayers(newPlayers));
-    playersRef.current = sortPlayers(newPlayers);
+    setPlayers(newPlayers);
+    playersRef.current = newPlayers;
 
     const me = newPlayers.find(p => p.name === playerName);
     if (me) {
@@ -2004,7 +1847,7 @@ export default function ZhaJinHuaPage() {
     }
 
     const playingPlayers = newPlayers.filter(p => p.status === 'playing' && p.name !== dealerName);
-    const firstIndex = canonical(newPlayers).findIndex(p => p.name === playingPlayers[0]?.name);
+    const firstIndex = newPlayers.findIndex(p => p.name === playingPlayers[0]?.name);
     setCurrentPlayerIndex(firstIndex >= 0 ? firstIndex : 0);
     setPhase("betting");
     phaseRef.current = "betting";
@@ -2049,7 +1892,7 @@ export default function ZhaJinHuaPage() {
       broadcastAndSyncDB(bettingPayload);
     }, 600);
 
-    if (canonical(newPlayers)[firstIndex >= 0 ? firstIndex : 0]?.name === playerName) {
+    if (newPlayers[firstIndex >= 0 ? firstIndex : 0]?.name === playerName) {
       startBettingTimeout();
     }
   };
@@ -2060,7 +1903,7 @@ export default function ZhaJinHuaPage() {
     timeoutRef.current = setTimeout(() => {
       if (bettingTimeoutFiredRef.current) return;
       bettingTimeoutFiredRef.current = true;
-      const cp = canonical(playersRef.current)[currentPlayerIndex];
+      const cp = playersRef.current[currentPlayerIndex];
       if (phaseRef.current === "betting" && cp?.name === playerName && !bettingCompleteRef.current) {
         console.log('\u23F0 压酒超时,自动压半杯');
         handleBet(0.5);
@@ -2076,8 +1919,8 @@ export default function ZhaJinHuaPage() {
       return;
     }
     if (currentPlayer?.name !== playerName) {
-      const myIndex = canonical(players).findIndex(p => p.name === playerName && p.status === 'playing' && p.name !== dealerId);
-      if (myIndex >= 0 && canonical(players)[myIndex]?.name === playerName) {
+      const myIndex = players.findIndex(p => p.name === playerName && p.status === 'playing' && p.name !== dealerId);
+      if (myIndex >= 0 && players[myIndex]?.name === playerName) {
         console.log('🔧 自动修复 currentPlayerIndex 从', currentPlayerIndex, '改为', myIndex);
         setCurrentPlayerIndex(myIndex);
         setTimeout(() => handleBet(amount), 50);
@@ -2149,13 +1992,12 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    const canonUpd = canonical(updatedPlayers);
-    let next = (currentPlayerIndex + 1) % canonUpd.length;
+    let next = (currentPlayerIndex + 1) % updatedPlayers.length;
     let count = 0;
-    while (count < canonUpd.length) {
-      const p = canonUpd[next];
+    while (count < updatedPlayers.length) {
+      const p = updatedPlayers[next];
       if (p.status === 'playing' && p.bet === 0 && p.name !== dealerId) break;
-      next = (next + 1) % canonUpd.length;
+      next = (next + 1) % updatedPlayers.length;
       count++;
     }
     setCurrentPlayerIndex(next);
@@ -2640,7 +2482,7 @@ export default function ZhaJinHuaPage() {
     setGlobalDealerHandName('');
 
     const playingPlayers = updatedPlayers.filter(p => p.status === 'playing' && !p.isDealer);
-    const firstIdx = canonical(updatedPlayers).findIndex(p => p.name === playingPlayers[0]?.name);
+    const firstIdx = updatedPlayers.findIndex(p => p.name === playingPlayers[0]?.name);
     setCurrentPlayerIndex(firstIdx >= 0 ? firstIdx : 0);
     setPhase("betting");
     phaseRef.current = "betting";
@@ -2679,7 +2521,7 @@ export default function ZhaJinHuaPage() {
     };
     await broadcastAndSyncDB(bettingPayload);
 
-    if (canonical(updatedPlayers)[firstIdx >= 0 ? firstIdx : 0]?.name === playerName) {
+    if (updatedPlayers[firstIdx >= 0 ? firstIdx : 0]?.name === playerName) {
       startBettingTimeout();
     }
   };
@@ -2978,7 +2820,6 @@ export default function ZhaJinHuaPage() {
       result: "🃏 洗牌中...",
       resultDetails: [],
       readyPlayers: [],
-      clearReady: true,
       settlementStep: 0,
       seed: useSeed,
       deckOffset: useOffset,
@@ -3054,7 +2895,6 @@ export default function ZhaJinHuaPage() {
       result: "",
       resultDetails: [],
       readyPlayers: [],
-      clearReady: true,
       settlementStep: 0,
       seed: newSeed,
       deckOffset: 0,
