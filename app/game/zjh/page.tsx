@@ -268,6 +268,37 @@ const parsePlayers = (raw: any): any[] => {
   return [];
 };
 
+// 🔧 按名字去重：名字是游戏的权威身份（压酒/轮转/庄家判定全用名字）。
+// 同一名字出现多条（多为重连时 cid 变化导致的历史脏数据）一律合并为一条，
+// 优先保留有牌/有下注/是庄家/有座位号的字段，避免人数被重复计数(表现为 2/12、3/13)。
+// 这是根治"名单滚雪球"的核心：之前接收端按名字去重、写库却按 cid||名字 去重，
+// cid 一变就识别不出老条目 → 每次重连追加一条同名重复 → 名单累积到房间上限 12。
+const dedupePlayers = (arr: any[]): any[] => {
+  if (!Array.isArray(arr)) return [];
+  const map = new Map<string, any>();
+  for (const p of arr) {
+    if (!p || typeof p !== 'object') continue;
+    const key = ((p.name && String(p.name).trim()) || p.cid || '') as string;
+    if (!key) continue;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { ...p });
+    } else {
+      const merged: any = { ...existing, ...p };
+      merged.cards = (p.cards && p.cards.length) ? p.cards : (existing.cards || []);
+      merged.cardCount = merged.cards.length || p.cardCount || existing.cardCount || 0;
+      merged.bet = p.bet ? p.bet : (existing.bet || 0);
+      merged.isDealer = p.isDealer || existing.isDealer || false;
+      merged.seatId = (p.seatId !== undefined && p.seatId !== null) ? p.seatId : existing.seatId;
+      merged.status = p.status || existing.status || 'playing';
+      merged.cid = p.cid || existing.cid;
+      merged.lastSeen = Math.max(existing.lastSeen || 0, p.lastSeen || 0);
+      map.set(key, merged);
+    }
+  }
+  return Array.from(map.values());
+};
+
 const getHandName = (cards: any[]): string => {
   if (!cards || cards.length !== 3) return '无牌';
   const r = getHandRank(cards);
@@ -586,7 +617,7 @@ export default function ZhaJinHuaPage() {
           const { data: cur } = await supabase.from("rooms").select("players").eq("id", roomId).single();
           const curArr = parsePlayers(cur?.players);
           const keys = new Set((incoming || []).map((p: any) => p.cid || p.name));
-          return [...(incoming || []), ...curArr.filter((p: any) => !keys.has(p.cid || p.name))];
+          return dedupePlayers([...(incoming || []), ...curArr.filter((p: any) => !keys.has(p.cid || p.name))]);
         } catch { return incoming; }
       };
 
@@ -722,7 +753,7 @@ export default function ZhaJinHuaPage() {
           if (state.justUnready) {
             merged = merged.filter((p: any) => p.name !== state.justUnready);
           }
-          return sortPlayers(merged); // 🔧 统一按座位号排序，保证各端顺序一致
+          return sortPlayers(dedupePlayers(merged)); // 🔧 统一按座位号排序 + 按名字去重(防历史脏数据)
         });
 
         // 🔧 结构性同步（加入/离开房间）只更新玩家名单，绝不覆盖任何游戏状态
@@ -893,6 +924,7 @@ export default function ZhaJinHuaPage() {
           if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
           return p;
         }).filter(Boolean) as any[];
+        playersArr = dedupePlayers(playersArr); // 🔧 按名字去重，清理历史累积的重复条目
         if (changed) {
           try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
         }
@@ -1010,7 +1042,7 @@ export default function ZhaJinHuaPage() {
     }
 
     setRoomId(data.id);
-    const parsedPlayers = sortPlayers(parsePlayers(data.players));
+    const parsedPlayers = sortPlayers(dedupePlayers(parsePlayers(data.players)));
     setPlayers(parsedPlayers);
     playersRef.current = parsedPlayers;
     setJoined(true);
@@ -1066,7 +1098,7 @@ export default function ZhaJinHuaPage() {
     versionRef.current = Math.max(versionRef.current, dbVersion);
     setVersion(versionRef.current);
 
-    let currentPlayers = sortPlayers(parsePlayers(roomData.players));
+    let currentPlayers = dedupePlayers(sortPlayers(parsePlayers(roomData.players)));
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满(最多12人)");
       return;
@@ -1074,7 +1106,8 @@ export default function ZhaJinHuaPage() {
 
     const myCid = getOrCreateCid();
     // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
-    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim()));
+    // 🔧 重连/加入按名字认人（名字是权威身份），避免 cid 变化导致识别不出老条目而被当成"新玩家"重复追加
+    const existingIdx = currentPlayers.findIndex((p: any) => p.name === playerName.trim());
     if (existingIdx >= 0) {
       currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name: playerName.trim(), lastSeen: Date.now() } : p);
     }
@@ -1207,7 +1240,7 @@ export default function ZhaJinHuaPage() {
       status: isGameActive ? 'watching' : 'playing',
       bet: 0,
     };
-    const updatedPlayers = sortPlayers([...currentPlayers, newPlayer]);
+    const updatedPlayers = sortPlayers(dedupePlayers([...currentPlayers, newPlayer]));
 
     await supabase.from("rooms").update({
       players: updatedPlayers,
@@ -1786,7 +1819,7 @@ export default function ZhaJinHuaPage() {
         dbPlayers.forEach((dp: any) => {
           if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐库里多出的新加入者
         });
-        return sortPlayers(next); // 🔧 统一按座位号排序
+        return sortPlayers(dedupePlayers(next)); // 🔧 统一按座位号排序 + 按名字去重(防历史脏数据)
       });
       // 准备状态：准备阶段并集吸收(防冲掉)；游戏中以库为准(开局后库为[])
       setReadyPlayers(prevReady => {
@@ -1803,7 +1836,7 @@ export default function ZhaJinHuaPage() {
 
     // 🔧 开局前先以数据库权威名单补齐可能迟到的新玩家，避免发牌漏人（首局无手牌却能压酒）
     const authoritative = await fetchAuthoritativeRoom();
-    const workingPlayers = sortPlayers(authoritative ? authoritative.players : players);
+    const workingPlayers = sortPlayers(dedupePlayers(authoritative ? authoritative.players : players));
     const workingReady = authoritative ? authoritative.ready : readyPlayers;
 
     const playingPlayers = workingPlayers.filter(p => p.status === 'playing');
