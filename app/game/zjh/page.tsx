@@ -299,6 +299,22 @@ const dedupePlayers = (arr: any[]): any[] => {
   return Array.from(map.values());
 };
 
+// 🔧 根治"压酒卡死/轮转错位"：各手机 players 数组排列顺序不同，
+// 导致同一个数字编号 currentPlayerIndex 在不同手机上指到不同的人。
+// 改用"按名字排序后的统一顺序"来解读/计算这个编号——名字集合每部手机都相同，
+// 排序用纯 Unicode 码点比较(与设备/浏览器语言无关)，故各端顺序完全一致，编号自然对得上。
+// 只影响"轮到谁"的解读，不动庄家/房主/座位逻辑。
+const canonical = (arr: any[]): any[] => {
+  if (!Array.isArray(arr)) return [];
+  return [...arr].sort((a, b) => {
+    const na = (a?.name != null ? String(a.name) : '');
+    const nb = (b?.name != null ? String(b.name) : '');
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+    return 0;
+  });
+};
+
 const getHandName = (cards: any[]): string => {
   if (!cards || cards.length !== 3) return '无牌';
   const r = getHandRank(cards);
@@ -502,6 +518,39 @@ export default function ZhaJinHuaPage() {
   const [disconnected, setDisconnected] = useState(false);
   const [isDealer, setIsDealer] = useState(false);
   const [readyPlayers, setReadyPlayers] = useState<string[]>([]);
+
+  // ===== 临时诊断浮窗（仅取证，不改变任何游戏逻辑）=====
+  const [diagErr, setDiagErr] = useState('');
+  const [myCidState, setMyCidState] = useState('');
+  const captureErr = (where: string, err: any) => {
+    if (err) setDiagErr(where + ': ' + (err?.message || err?.code || JSON.stringify(err)));
+  };
+  useEffect(() => {
+    setMyCidState(getOrCreateCid());
+  }, []);
+  useEffect(() => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,0.82);color:#7CFC00;font:11px/1.4 monospace;padding:6px 9px;border-radius:8px;max-width:48vw;white-space:pre-wrap;pointer-events:none;box-shadow:0 0 0 1px rgba(255,255,255,0.15);';
+    document.body.appendChild(el);
+    el.textContent = '🔍 诊断浮窗加载中...';
+    (window as any).__zjhDiag = el;
+    return () => { el.remove(); (window as any).__zjhDiag = null; };
+  }, []);
+  useEffect(() => {
+    const el = (window as any).__zjhDiag as HTMLElement | null;
+    if (!el) return;
+    const names = players.map((p: any) => (p.name || '?')).slice(0, 8).join(', ');
+    el.textContent = [
+      '🔍 诊断',
+      '房间: ' + (roomId ? String(roomId).slice(0, 8) : '—'),
+      '名单条数: ' + players.length,
+      '准备: ' + readyPlayers.length,
+      '我的cid: ' + (myCidState ? String(myCidState).slice(0, 8) : '—'),
+      '名字: ' + names,
+      '最近DB错误: ' + (diagErr || '无'),
+    ].join('\n');
+  }, [roomId, players, readyPlayers, myCidState, diagErr]);
+
   const [wheelVisible, setWheelVisible] = useState(false);
   const [wheelRotation, setWheelRotation] = useState(0);
   const [wheelSelected, setWheelSelected] = useState<string | null>(null);
@@ -657,13 +706,14 @@ export default function ZhaJinHuaPage() {
       setDisconnected(false);
     } catch (error) {
       console.error('⚠️ 数据库同步失败(不影响游戏实时同步):', error);
+      captureErr('sync', error);
     }
   };
 
   const getMyPlayer = () => players.find(p => p.name === playerName);
   const activePlayers = players.filter(p => p.status === 'playing');
   const allReady = activePlayers.length >= 2 && activePlayers.every(p => readyPlayers.includes(p.name));
-  const currentPlayer = players[currentPlayerIndex] || null;
+  const currentPlayer = canonical(players)[currentPlayerIndex] || null;
 
   useEffect(() => {
     if (!roomId) return;
@@ -926,7 +976,7 @@ export default function ZhaJinHuaPage() {
         }).filter(Boolean) as any[];
         playersArr = dedupePlayers(playersArr); // 🔧 按名字去重，清理历史累积的重复条目
         if (changed) {
-          try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
+          try { const { error: he } = await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); captureErr('heartbeat', he); } catch (_) {}
         }
         await reconcilePlayersFromDB(); // 名单收敛（已有函数，零风险）
         // 阶段防护：沿用接收端 forwardPhases 逻辑，避免把对局中状态拉回 waiting
@@ -1037,6 +1087,7 @@ export default function ZhaJinHuaPage() {
       .single();
 
     if (error) {
+      captureErr('create', error);
       setErrorMsg("创建失败: " + error.message);
       return;
     }
@@ -1088,6 +1139,7 @@ export default function ZhaJinHuaPage() {
       .maybeSingle();
 
     if (roomError || !roomData) {
+      captureErr('join-select', roomError);
       setErrorMsg("密码错误,未找到对应房间");
       return;
     }
@@ -1177,7 +1229,7 @@ export default function ZhaJinHuaPage() {
       }
 
       if (roomData.phase === "betting") {
-        const cp = currentPlayers[roomData.currentplayerindex || 0];
+        const cp = canonical(currentPlayers)[roomData.currentplayerindex || 0];
         if (cp && cp.name === playerName.trim() && !cp.bet) {
           startBettingTimeout();
         }
@@ -1419,21 +1471,23 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    // 4. 计算新的当前玩家索引
+    // 4. 计算新的当前玩家索引（统一用"按名字排序"的顺序解读编号，保证各端一致）
+    const canonBefore = canonical(players);
+    const canonAfter = canonical(updatedPlayers);
     let newIndex = currentPlayerIndex;
-    const currentName = players[currentPlayerIndex]?.name;
+    const currentName = canonBefore[currentPlayerIndex]?.name;
     if (currentName === playerName) {
       let next = 0;
       let count = 0;
-      while (count < updatedPlayers.length) {
-        const p = updatedPlayers[next];
+      while (count < canonAfter.length) {
+        const p = canonAfter[next];
         if (p.status === 'playing') break;
-        next = (next + 1) % updatedPlayers.length;
+        next = (next + 1) % canonAfter.length;
         count++;
       }
       newIndex = next;
     } else {
-      const foundIdx = updatedPlayers.findIndex(p => p.name === currentName);
+      const foundIdx = canonAfter.findIndex(p => p.name === currentName);
       newIndex = foundIdx >= 0 ? foundIdx : 0;
     }
 
@@ -1950,7 +2004,7 @@ export default function ZhaJinHuaPage() {
     }
 
     const playingPlayers = newPlayers.filter(p => p.status === 'playing' && p.name !== dealerName);
-    const firstIndex = newPlayers.findIndex(p => p.name === playingPlayers[0]?.name);
+    const firstIndex = canonical(newPlayers).findIndex(p => p.name === playingPlayers[0]?.name);
     setCurrentPlayerIndex(firstIndex >= 0 ? firstIndex : 0);
     setPhase("betting");
     phaseRef.current = "betting";
@@ -1995,7 +2049,7 @@ export default function ZhaJinHuaPage() {
       broadcastAndSyncDB(bettingPayload);
     }, 600);
 
-    if (newPlayers[firstIndex >= 0 ? firstIndex : 0]?.name === playerName) {
+    if (canonical(newPlayers)[firstIndex >= 0 ? firstIndex : 0]?.name === playerName) {
       startBettingTimeout();
     }
   };
@@ -2006,7 +2060,7 @@ export default function ZhaJinHuaPage() {
     timeoutRef.current = setTimeout(() => {
       if (bettingTimeoutFiredRef.current) return;
       bettingTimeoutFiredRef.current = true;
-      const cp = playersRef.current[currentPlayerIndex];
+      const cp = canonical(playersRef.current)[currentPlayerIndex];
       if (phaseRef.current === "betting" && cp?.name === playerName && !bettingCompleteRef.current) {
         console.log('\u23F0 压酒超时,自动压半杯');
         handleBet(0.5);
@@ -2022,8 +2076,8 @@ export default function ZhaJinHuaPage() {
       return;
     }
     if (currentPlayer?.name !== playerName) {
-      const myIndex = players.findIndex(p => p.name === playerName && p.status === 'playing' && p.name !== dealerId);
-      if (myIndex >= 0 && players[myIndex]?.name === playerName) {
+      const myIndex = canonical(players).findIndex(p => p.name === playerName && p.status === 'playing' && p.name !== dealerId);
+      if (myIndex >= 0 && canonical(players)[myIndex]?.name === playerName) {
         console.log('🔧 自动修复 currentPlayerIndex 从', currentPlayerIndex, '改为', myIndex);
         setCurrentPlayerIndex(myIndex);
         setTimeout(() => handleBet(amount), 50);
@@ -2095,12 +2149,13 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    let next = (currentPlayerIndex + 1) % updatedPlayers.length;
+    const canonUpd = canonical(updatedPlayers);
+    let next = (currentPlayerIndex + 1) % canonUpd.length;
     let count = 0;
-    while (count < updatedPlayers.length) {
-      const p = updatedPlayers[next];
+    while (count < canonUpd.length) {
+      const p = canonUpd[next];
       if (p.status === 'playing' && p.bet === 0 && p.name !== dealerId) break;
-      next = (next + 1) % updatedPlayers.length;
+      next = (next + 1) % canonUpd.length;
       count++;
     }
     setCurrentPlayerIndex(next);
@@ -2585,7 +2640,7 @@ export default function ZhaJinHuaPage() {
     setGlobalDealerHandName('');
 
     const playingPlayers = updatedPlayers.filter(p => p.status === 'playing' && !p.isDealer);
-    const firstIdx = updatedPlayers.findIndex(p => p.name === playingPlayers[0]?.name);
+    const firstIdx = canonical(updatedPlayers).findIndex(p => p.name === playingPlayers[0]?.name);
     setCurrentPlayerIndex(firstIdx >= 0 ? firstIdx : 0);
     setPhase("betting");
     phaseRef.current = "betting";
@@ -2624,7 +2679,7 @@ export default function ZhaJinHuaPage() {
     };
     await broadcastAndSyncDB(bettingPayload);
 
-    if (updatedPlayers[firstIdx >= 0 ? firstIdx : 0]?.name === playerName) {
+    if (canonical(updatedPlayers)[firstIdx >= 0 ? firstIdx : 0]?.name === playerName) {
       startBettingTimeout();
     }
   };
