@@ -701,6 +701,22 @@ export default function ZhaJinHuaPage() {
         // 🔥 例外：庄家离开（leaveSync）时，必须落地"转移后的新庄家 + 保留的阶段/牌堆"，
         // 否则算好的转移传不出去（其他人永远看不到新庄家、牌堆被刷）。
         // leaveSync 仅由 doLeaveRoom 在"庄家离开"时置 true，加入/重进/非庄家离开均不置，故不回归。
+
+        // ===== 准备名单同步（所有广播都先处理，放在结构性提前返回之前）=====
+        // 根因修复：原逻辑收到任何广播都用广播里的 readyPlayers 整体覆盖本地，
+        // 迟到/滞后的子集广播会把已准备的人全冲掉(变回1/4)。
+        // 现改为：clearReady 或 游戏已开始(phase≠waiting)→整体清空；justUnready→精确移除该玩家；
+        // 正常准备广播(非结构性)→并集吸收(只增不冲)，结构性广播(加入/离开)的 readyPlayers 是发送者滞后快照，不并集。
+        setReadyPlayers(prev => {
+          if (state.clearReady || (state.phase && state.phase !== "waiting")) return [];
+          let next = prev;
+          if (state.justUnready) next = next.filter(n => n !== state.justUnready);
+          if (!state.structuralSync && state.readyPlayers) {
+            next = Array.from(new Set([...next, ...state.readyPlayers]));
+          }
+          return next;
+        });
+
         if (state.structuralSync) {
           // 🔥 彻底兜底：以数据库权威名单收敛人数——收到进/出消息后主动拉库核对，
           // 即使实时广播漏了一条，人数也必然一致（只增删人，不碰牌/下注/身份）
@@ -742,7 +758,7 @@ export default function ZhaJinHuaPage() {
         setCurrentPlayerIndex(state.currentPlayerIndex || 0);
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
-        setReadyPlayers(state.readyPlayers || []);
+        // 🔧 准备名单已由上方"所有广播统一处理"块接管（并集/精确移除/开局清空），此处不再整体覆盖
         // 修复8：接收端牌堆保护——只在广播显式携带时才更新，避免漏带字段把本地进度误清零（与修复2写库保护对称）
         if (state.seed !== undefined) setSeed(state.seed);
         if (state.deckOffset !== undefined) setDeckOffset(state.deckOffset);
@@ -864,7 +880,11 @@ export default function ZhaJinHuaPage() {
         if (data.communitycard !== undefined) setCommunityCard(data.communitycard);
         setResult(data.result || "");
         setResultDetails(data.resultdetails || []);
-        setReadyPlayers(data.readyplayers || []);
+        // 准备名单：准备阶段并集吸收(防迟到/库滞后把已准备的人冲掉)；游戏中以库为准(开局后库为[])
+        setReadyPlayers(prev => {
+          if (phaseRef.current !== "waiting") return data.readyplayers || [];
+          return Array.from(new Set([...prev, ...(data.readyplayers || [])]));
+        });
         setBettingComplete(data.bettingcomplete !== undefined ? data.bettingcomplete : false);
         bettingCompleteRef.current = data.bettingcomplete || false;
         if (data.revealtargets) setRevealTargets(data.revealtargets);
@@ -1454,6 +1474,8 @@ export default function ZhaJinHuaPage() {
       result: newResult,
       resultDetails: newResultDetails,
       readyPlayers: newReadyPlayers,
+      // 非庄家离开→精确移除自己；庄家离开重置→清空全部准备
+      ...(isDealerLeaving ? { clearReady: true } : { justUnready: playerName }),
       settlementStep: 0,
       seed: newSeed,
       deckOffset: newDeckOffset,
@@ -1625,9 +1647,17 @@ export default function ZhaJinHuaPage() {
       needStatusChange = true;
     }
 
-    // 准备逻辑
+    // 准备逻辑（根因修复：写库前先读库当前准备名单，只改自己，杜绝用本地不全名单整体覆盖库导致互相冲掉）
     const isReady = readyPlayers.includes(playerName);
-    const newReady = isReady ? readyPlayers.filter(p => p !== playerName) : [...readyPlayers, playerName];
+    // 读库失败时用本地名单兜底，绝不用空数组把库覆盖成只剩自己（否则复现"变回1/4"）
+    let dbReady: string[] = readyPlayers;
+    try {
+      const { data: rd } = await supabase.from("rooms").select("readyplayers").eq("id", roomId).single();
+      if (rd?.readyplayers) dbReady = rd.readyplayers;
+    } catch (_) {}
+    const newReady = isReady
+      ? Array.from(new Set(dbReady.filter(p => p !== playerName)))
+      : Array.from(new Set([...dbReady, playerName]));
 
     if (needStatusChange) {
       setPlayers(updatedPlayers);
@@ -1644,6 +1674,7 @@ export default function ZhaJinHuaPage() {
       result,
       resultDetails,
       readyPlayers: newReady,
+      justUnready: isReady ? playerName : undefined, // 取消准备时精确移除自己
       settlementStep: 0,
       seed,
       deckOffset,
@@ -1718,11 +1749,10 @@ export default function ZhaJinHuaPage() {
         });
         return next;
       });
-      // 准备状态取本地与数据库交集：两边都标记"已准备"才算，
-      // 避免某人取消准备后，数据库瞬时残留其名字导致被误标"已准备"
+      // 准备状态：准备阶段并集吸收(防冲掉)；游戏中以库为准(开局后库为[])
       setReadyPlayers(prevReady => {
-        if (!dbReady || dbReady.length === 0) return prevReady; // 库无准备数据则保持本地，防误清空
-        return prevReady.filter(name => dbReady.includes(name));
+        if (phaseRef.current !== "waiting") return dbReady;
+        return Array.from(new Set([...prevReady, ...dbReady]));
       });
     } catch (e) {
       // 兜底失败不应影响游戏
@@ -1796,6 +1826,7 @@ export default function ZhaJinHuaPage() {
       result: "",
       resultDetails: [],
       readyPlayers: [],
+      clearReady: true,
       settlementStep: 0,
       seed: newSeed,
       deckOffset: 0,
@@ -2820,6 +2851,7 @@ export default function ZhaJinHuaPage() {
       result: "🃏 洗牌中...",
       resultDetails: [],
       readyPlayers: [],
+      clearReady: true,
       settlementStep: 0,
       seed: useSeed,
       deckOffset: useOffset,
@@ -2895,6 +2927,7 @@ export default function ZhaJinHuaPage() {
       result: "",
       resultDetails: [],
       readyPlayers: [],
+      clearReady: true,
       settlementStep: 0,
       seed: newSeed,
       deckOffset: 0,
