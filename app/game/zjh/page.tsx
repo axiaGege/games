@@ -537,7 +537,7 @@ export default function ZhaJinHuaPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [joined]);
 
-  const broadcastAndSyncDB = async (state: any, readyOnly = false) => {
+  const broadcastAndSyncDB = async (state: any, readyOnly = false, joinSync = false) => {
     const newVersion = versionRef.current + 1;
     versionRef.current = newVersion;
     setVersion(newVersion);
@@ -573,9 +573,16 @@ export default function ZhaJinHuaPage() {
     try {
       // 🔧 readyOnly(点准备/取消准备)：只同步准备名单与(观战转玩家时的)玩家名单，绝不写相位/牌堆/庄家等游戏状态，
       // 否则携带滞后 phase:"waiting" 的迟到广播会把发牌中的对局拽回准备、并把自己落后的 players 名单广播出去把人删掉
-      const dbUpdate: any = { version: newVersion, readyplayers: state.readyPlayers || [] };
+      const dbUpdate: any = { version: newVersion };
       if (readyOnly) {
+        // 点准备/取消准备：只同步准备名单（及观战转玩家时的 players），绝不碰相位/牌堆/庄家
+        dbUpdate.readyplayers = state.readyPlayers || [];
         if (state.players) dbUpdate.players = state.players;
+      } else if (joinSync) {
+        // 加入/重连房间：只把"我来了/我回来了"写进 players，绝不写相位/准备/牌堆。
+        // 否则携带滞后 phase:"waiting" 的迟到写库会把发牌中的对局拽回准备、准备名单打回[房主]
+        // （表现：发牌后顶部又冒出"等待开始(1/3 已准备)"）
+        dbUpdate.players = state.players;
       } else {
         dbUpdate.players = state.players;
         dbUpdate.phase = state.phase;
@@ -1157,7 +1164,7 @@ export default function ZhaJinHuaPage() {
         allCompareData: roomData.allCompareData || [],
         globalDealerHand: [],
         globalDealerHandName: '',
-      });
+      }, false, true);
       return;
     }
 
@@ -1185,7 +1192,6 @@ export default function ZhaJinHuaPage() {
 
     await supabase.from("rooms").update({
       players: updatedPlayers,
-      readyplayers: roomData.readyplayers || [],
     }).eq("id", roomData.id);
 
     setRoomId(roomData.id);
@@ -1273,7 +1279,7 @@ export default function ZhaJinHuaPage() {
       allCompareData: roomData.allCompareData || [],
       globalDealerHand: [],
       globalDealerHandName: '',
-    });
+    }, false, true);
   };
 
   const joinRoomRef = useRef(joinRoom);
