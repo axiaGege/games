@@ -537,13 +537,14 @@ export default function ZhaJinHuaPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [joined]);
 
-  const broadcastAndSyncDB = async (state: any) => {
+  const broadcastAndSyncDB = async (state: any, readyOnly = false) => {
     const newVersion = versionRef.current + 1;
     versionRef.current = newVersion;
     setVersion(newVersion);
     // 自动从 ref 获取当前转盘状态
     const payload = {
       ...state,
+      readyOnly,
       version: newVersion,
       bettingComplete: state.bettingComplete !== undefined ? state.bettingComplete : false,
       revealTargets: state.revealTargets || [],
@@ -570,29 +571,31 @@ export default function ZhaJinHuaPage() {
     }
 
     try {
-      await supabase.from("rooms").update({
-        players: state.players,
-        phase: state.phase,
-        dealerid: state.dealerId,
-        gameover: state.gameOver,
-        currentplayerindex: state.currentPlayerIndex || 0,
-        result: state.result || "",
-        resultdetails: state.resultDetails || [],
-        readyplayers: state.readyPlayers || [],
-        settlementstep: state.settlementStep || 0,
-        seed: state.seed,
+      // 🔧 readyOnly(点准备/取消准备)：只同步准备名单与(观战转玩家时的)玩家名单，绝不写相位/牌堆/庄家等游戏状态，
+      // 否则携带滞后 phase:"waiting" 的迟到广播会把发牌中的对局拽回准备、并把自己落后的 players 名单广播出去把人删掉
+      const dbUpdate: any = { version: newVersion, readyplayers: state.readyPlayers || [] };
+      if (readyOnly) {
+        if (state.players) dbUpdate.players = state.players;
+      } else {
+        dbUpdate.players = state.players;
+        dbUpdate.phase = state.phase;
+        dbUpdate.dealerid = state.dealerId;
+        dbUpdate.gameover = state.gameOver;
+        dbUpdate.currentplayerindex = state.currentPlayerIndex || 0;
+        dbUpdate.result = state.result || "";
+        dbUpdate.resultdetails = state.resultDetails || [];
+        dbUpdate.settlementstep = state.settlementStep || 0;
+        dbUpdate.seed = state.seed;
         // 修复2：仅在确实携带 deckOffset 时才写库，避免 undefined/0 把库里已有进度清零
-        ...(state.deckOffset !== undefined && state.deckOffset !== null
-            ? { deckoffset: state.deckOffset }
-            : {}),
-        wheelvisible: state.wheelVisible || false,
-        wheelselected: state.wheelSelected || null,
-        wheelsegments: state.wheelSegments || [],
-        communitycard: state.communityCard || null,
-        bettingcomplete: state.bettingComplete !== undefined ? state.bettingComplete : false,
-        revealtargets: state.revealTargets || [],
-        version: newVersion,
-      }).eq("id", roomId);
+        if (state.deckOffset !== undefined && state.deckOffset !== null) dbUpdate.deckoffset = state.deckOffset;
+        dbUpdate.wheelvisible = state.wheelVisible || false;
+        dbUpdate.wheelselected = state.wheelSelected || null;
+        dbUpdate.wheelsegments = state.wheelSegments || [];
+        dbUpdate.communitycard = state.communityCard || null;
+        dbUpdate.bettingcomplete = state.bettingComplete !== undefined ? state.bettingComplete : false;
+        dbUpdate.revealtargets = state.revealTargets || [];
+      }
+      await supabase.from("rooms").update(dbUpdate).eq("id", roomId);
       console.log('💾 数据库同步成功');
       setDisconnected(false);
     } catch (error) {
@@ -639,60 +642,66 @@ export default function ZhaJinHuaPage() {
           // 修复5：广播里带了 players 但解析失败(返回空数组)时，保持本地原状，绝不用空数组清空全场手牌
           if (parsedPlayers.length === 0 && state.players && prev.length > 0) return prev;
           if (isSettlingRef.current && state.phase !== "settlement" && state.phase !== "wheel" && !state.structuralSync) return prev;
+
           const localMe = prev.find(p => p.name === playerName);
           const remoteMe = parsedPlayers.find(p => p.name === playerName);
-          if (localMe && remoteMe) {
-            const isDealing = state.phase === "dealing";
-            if (isDealing) return parsedPlayers;
-            const hasLocalCards = localMe.cards && localMe.cards.length > 0;
-            const isNewBettingRound = state.phase === "betting" && remoteMe.bet === 0;
-            const shouldUseRemoteCards = isNewBettingRound && remoteMe.cards && remoteMe.cards.length > 0;
-            // 🔧 兜底：betting 阶段自己是 playing 但完全没牌（漏收发牌广播），
-            // 用 seed + deckOffset + 座位顺序确定性重建自己的牌，避免"无手牌却能压酒"
-            const needRebuild = state.phase === "betting" && localMe.status === 'playing' && !hasLocalCards && !(remoteMe.cards && remoteMe.cards.length > 0);
-            return parsedPlayers.map(p => {
-              if (p.name === playerName) {
-                if (needRebuild) {
-                  try {
-                    const N = parsedPlayers.length;
-                    const myIndex = parsedPlayers.findIndex(pp => pp.name === playerName);
-                    const dk = createDeckWithSeed(state.seed);
-                    const startOff = (state.deckOffset || 0) - 1 - N;
-                    const myCard = dk[startOff + 1 + myIndex];
-                    const community = dk[startOff]; // 公牌是发牌时 deck[offset++] 取的第一张，位于 startOff
-                    if (myCard) {
-                      // 🔧 兜底公牌（全局共享）：若本地公牌漏收，用 seed+deckOffset 确定性重建，避免"想象牌 无牌"
-                      if (!state.communityCard) {
-                        setCommunityCard(community);
-                      }
-                      return { ...p, cards: [myCard], cardCount: 1, status: 'playing' };
-                    }
-                  } catch (_) {}
-                }
-                return {
-                  ...p,
-                  cards: shouldUseRemoteCards ? (p.cards || []) : (hasLocalCards ? localMe.cards : (p.cards || [])),
-                  cardCount: shouldUseRemoteCards ? (p.cardCount || p.cards?.length || 0) : (hasLocalCards ? localMe.cardCount : (p.cardCount || 0)),
-                  bet: isNewBettingRound ? 0 : (hasLocalCards ? (localMe.bet || 0) : (p.bet || 0)),
-                  status: isNewBettingRound ? 'playing' : (hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing')),
-                };
-              }
-              const prevPlayer = prev.find(pp => pp.name === p.name);
-              // 🔧 结构性同步（加入/离开）时，已存在的玩家保留自己的牌/下注/身份，
-              // 绝不用加入广播里的空牌去覆盖（防止迟到加入广播冲掉刚发好的牌）
-              if (state.structuralSync && prevPlayer) {
-                return prevPlayer;
+
+          const normalize = (p: any) => ({
+            ...p,
+            cards: p.cards || [],
+            cardCount: p.cards?.length || p.cardCount || 0,
+            bet: p.bet || 0,
+            status: p.status || 'playing',
+          });
+
+          // 1) 以广播名单为主，逐人规范化（保留"我"的牌/下注/身份兜底逻辑）
+          let merged = parsedPlayers.map((p: any) => {
+            if (p.name === playerName && localMe && remoteMe) {
+              const isDealing = state.phase === "dealing";
+              if (isDealing) return p;
+              const hasLocalCards = localMe.cards && localMe.cards.length > 0;
+              const isNewBettingRound = state.phase === "betting" && remoteMe.bet === 0;
+              const shouldUseRemoteCards = isNewBettingRound && remoteMe.cards && remoteMe.cards.length > 0;
+              // 🔧 兜底：betting 阶段自己是 playing 但完全没牌（漏收发牌广播），用 seed+deckOffset 确定性重建
+              const needRebuild = state.phase === "betting" && localMe.status === 'playing' && !hasLocalCards && !(remoteMe.cards && remoteMe.cards.length > 0);
+              if (needRebuild) {
+                try {
+                  const N = parsedPlayers.length;
+                  const myIndex = parsedPlayers.findIndex(pp => pp.name === playerName);
+                  const dk = createDeckWithSeed(state.seed);
+                  const startOff = (state.deckOffset || 0) - 1 - N;
+                  const myCard = dk[startOff + 1 + myIndex];
+                  const community = dk[startOff];
+                  if (myCard) {
+                    if (!state.communityCard) setCommunityCard(community);
+                    return { ...p, cards: [myCard], cardCount: 1, status: 'playing' };
+                  }
+                } catch (_) {}
               }
               return {
                 ...p,
-                cards: p.cards || [],
-                cardCount: p.cards?.length || p.cardCount || 0,
-                bet: p.bet || 0,
-                status: p.status || 'playing',
+                cards: shouldUseRemoteCards ? (p.cards || []) : (hasLocalCards ? localMe.cards : (p.cards || [])),
+                cardCount: shouldUseRemoteCards ? (p.cardCount || p.cards?.length || 0) : (hasLocalCards ? localMe.cardCount : (p.cardCount || 0)),
+                bet: isNewBettingRound ? 0 : (hasLocalCards ? (localMe.bet || 0) : (p.bet || 0)),
+                status: isNewBettingRound ? 'playing' : (hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing')),
               };
-            });
+            }
+            const prevPlayer = prev.find(pp => pp.name === p.name);
+            // 🔧 结构性同步（加入/离开）时，已存在的玩家保留自己的牌/下注/身份
+            if (state.structuralSync && prevPlayer) return prevPlayer;
+            return normalize(p);
+          });
+
+          // 2) 🔧 并集：补齐"本地有但广播没带"的人——迟到加入广播(只带[p1,p2])不能把已加入的玩家3整体删掉，
+          // 否则表现为"人数变少 / 准备名单有3人但玩家列表只有2人 / 点了开始却只有两人能玩"
+          const localOnly = prev.filter((pp: any) => !parsedPlayers.some((p: any) => p.name === pp.name));
+          merged = [...merged, ...localOnly];
+
+          // 3) 有人离开(justUnready)时剔除离开者，避免迟到加入广播把它又加回来
+          if (state.justUnready) {
+            merged = merged.filter((p: any) => p.name !== state.justUnready);
           }
-          return parsedPlayers;
+          return merged;
         });
 
         // 🔧 结构性同步（加入/离开房间）只更新玩家名单，绝不覆盖任何游戏状态
@@ -716,6 +725,10 @@ export default function ZhaJinHuaPage() {
           }
           return next;
         });
+
+        // 🔧 readyOnly 广播(点准备/取消准备)只同步准备名单，绝不触碰相位/牌堆/庄家等游戏状态，
+        // 否则携带滞后 phase:"waiting" 或落后 players 名单的迟到广播会把发牌中的对局拽回准备、或把已加入的人删掉
+        if (state.readyOnly) return;
 
         if (state.structuralSync) {
           // 🔥 彻底兜底：以数据库权威名单收敛人数——收到进/出消息后主动拉库核对，
@@ -1686,7 +1699,7 @@ export default function ZhaJinHuaPage() {
       allCompareData,
       globalDealerHand,
       globalDealerHandName,
-    });
+    }, true);
 
     if (needStatusChange) {
       setErrorMsg("已自动转为玩家并已准备！");
