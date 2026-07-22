@@ -580,18 +580,29 @@ export default function ZhaJinHuaPage() {
     try {
       // 🔧 readyOnly(点准备/取消准备)：只同步准备名单与(观战转玩家时的)玩家名单，绝不写相位/牌堆/庄家等游戏状态，
       // 否则携带滞后 phase:"waiting" 的迟到广播会把发牌中的对局拽回准备、并把自己落后的 players 名单广播出去把人删掉
+      // 🔧 根因修复：写库前把 incoming 名单与数据库现有名单按名字并集，绝不因本端暂时缺人就把库里已有玩家冲掉。
+      const mergePlayersWithDB = async (incoming: any[]) => {
+        try {
+          const { data: cur } = await supabase.from("rooms").select("players").eq("id", roomId).single();
+          const curArr = parsePlayers(cur?.players);
+          const keys = new Set((incoming || []).map((p: any) => p.cid || p.name));
+          return [...(incoming || []), ...curArr.filter((p: any) => !keys.has(p.cid || p.name))];
+        } catch { return incoming; }
+      };
+
       const dbUpdate: any = { version: newVersion };
+      let playersToWrite: any = undefined;
       if (readyOnly) {
         // 点准备/取消准备：只同步准备名单（及观战转玩家时的 players），绝不碰相位/牌堆/庄家
         dbUpdate.readyplayers = state.readyPlayers || [];
-        if (state.players) dbUpdate.players = state.players;
+        if (state.players) playersToWrite = await mergePlayersWithDB(state.players);
       } else if (joinSync) {
         // 加入/重连房间：只把"我来了/我回来了"写进 players，绝不写相位/准备/牌堆。
         // 否则携带滞后 phase:"waiting" 的迟到写库会把发牌中的对局拽回准备、准备名单打回[房主]
         // （表现：发牌后顶部又冒出"等待开始(1/3 已准备)"）
-        dbUpdate.players = state.players;
+        playersToWrite = state.players;
       } else {
-        dbUpdate.players = state.players;
+        playersToWrite = await mergePlayersWithDB(state.players);
         dbUpdate.phase = state.phase;
         dbUpdate.dealerid = state.dealerId;
         dbUpdate.gameover = state.gameOver;
@@ -609,6 +620,7 @@ export default function ZhaJinHuaPage() {
         dbUpdate.bettingcomplete = state.bettingComplete !== undefined ? state.bettingComplete : false;
         dbUpdate.revealtargets = state.revealTargets || [];
       }
+      if (playersToWrite !== undefined) dbUpdate.players = playersToWrite;
       await supabase.from("rooms").update(dbUpdate).eq("id", roomId);
       console.log('💾 数据库同步成功');
       setDisconnected(false);
@@ -629,16 +641,11 @@ export default function ZhaJinHuaPage() {
       .channel(`zhajinhua:${roomId}`, { config: { broadcast: { ack: true } } })
       .on('broadcast', { event: 'gameState' }, (payload) => {
         const state = payload.payload;
-        // 🔧 修复：结构性同步广播（加入/离开房间）不受版本号丢弃限制，必须无条件处理，
-        // 否则重进玩家发出的广播永远被当成旧消息丢弃，导致人数/准备/牌堆全不同步
-        if (state.version && state.version <= versionRef.current && !state.structuralSync) {
-          console.log('⏭️ 忽略旧版本广播:', state.version, '当前:', versionRef.current);
-          return;
-        }
-        if (state.version && !state.structuralSync) {
-          versionRef.current = state.version;
-          setVersion(state.version);
-        }
+        // 🔧 根因修复：原版本号是"每客户端各自递增"的计数器，跨客户端根本无法比较大小，
+        // 导致其他玩家发来的【新鲜】广播被误判成"旧版本"直接丢弃 → 准备/压酒状态各手机对不上、压酒卡死。
+        // 改为不再因版本号丢弃任何广播；相位回退由专门的相位护栏拦截，玩家名单由并集保护，故可全部接受。
+        // 仅记录版本号便于排查。
+        versionRef.current = Math.max(versionRef.current, state.version || 0);
         const parsedPlayers = parsePlayers(state.players);
         // 🔧 任何广播都让内部名单(playersRef)立刻跟上最新，避免发起方(finishReveal/dealCards)
         // 用滞后快照算错下注顺序/归还判定。
@@ -1770,13 +1777,14 @@ export default function ZhaJinHuaPage() {
       if (error || !data) return;
       const dbPlayers = parsePlayers(data.players);
       const keyOf = (p: any) => p.cid || p.name;
-      const dbKeys = new Set(dbPlayers.map(keyOf));
       const dbReady = data.readyplayers || [];
       setPlayers(prev => {
         const localKeys = new Set(prev.map(keyOf));
-        let next = prev.filter((p: any) => dbKeys.has(keyOf(p))); // 移除已离开者（按编号或名字）
+        // 🔧 根因修复：保留本地全部玩家，不再因"库里暂时缺人"就删人（避免 3→2 闪退）。
+        // 库里多出的新加入者照常补齐；离开者已由 justUnready/leaveSync 广播精确移除，不会在此被复活。
+        let next = [...prev];
         dbPlayers.forEach((dp: any) => {
-          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐新加入者（用库里的完整对象）
+          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐库里多出的新加入者
         });
         return sortPlayers(next); // 🔧 统一按座位号排序
       });
