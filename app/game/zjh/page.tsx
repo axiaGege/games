@@ -755,7 +755,10 @@ export default function ZhaJinHuaPage() {
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "waiting" || newPhase === "dealing" || prevPhase === "waiting") {
+        } else if (newPhase === "dealing" || prevPhase === "waiting") {
+          // 🔧 仅两种情形接受等待/开局推进：①本地本就在等待界面(正常准备)；②收到开局(dealing)推进。
+          // 绝不在游戏进行中(dealing/betting/...)接受 waiting——否则一条迟到旧广播或轮询读到滞后的库相位，
+          // 就会把正在打牌的对局拽回准备(表现：发牌后顶部又冒出"等待开始(1/3 已准备)")。
           effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           effectivePhase = newPhase;
@@ -886,7 +889,9 @@ export default function ZhaJinHuaPage() {
         const cur = forwardPhases.indexOf(prevPhase);
         const nxt = forwardPhases.indexOf(data.phase || "waiting");
         let eff = data.phase || "waiting";
-        if (!(eff === "waiting" || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
+        if (!(eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
+          // 🔧 轮询同理：游戏进行中(dealing/betting/...)收到库里的 waiting 一律忽略(保留本地真实相位)，
+          // 不再因库相位滞后/写库慢半秒就把对局拽回准备。仅本地本就在等待、或收到合法前向推进时才采用库值。
           eff = prevPhase;
         }
         setPhase(eff); phaseRef.current = eff;
