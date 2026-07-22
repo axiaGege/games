@@ -742,7 +742,12 @@ export default function ZhaJinHuaPage() {
         setCurrentPlayerIndex(state.currentPlayerIndex || 0);
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
-        setReadyPlayers(state.readyPlayers || []);
+        // 🔧 结构性同步（加入/重连/非庄家离开）时，广播里的 readyPlayers 是发送者进房瞬间从库读的滞后快照，
+        // 若无条件覆盖会把已准备的其他人全冲掉（表现：准备到 N/4 又变回 1/4）。故结构性同步且非庄家离开时，
+        // 绝不覆盖本地准备名单，交由 3 秒 poll 的"本地∪库"并集兜底补齐。
+        if (!state.structuralSync || state.leaveSync) {
+          setReadyPlayers(state.readyPlayers || []);
+        }
         // 修复8：接收端牌堆保护——只在广播显式携带时才更新，避免漏带字段把本地进度误清零（与修复2写库保护对称）
         if (state.seed !== undefined) setSeed(state.seed);
         if (state.deckOffset !== undefined) setDeckOffset(state.deckOffset);
