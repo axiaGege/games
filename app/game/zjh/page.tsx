@@ -444,6 +444,13 @@ export default function ZhaJinHuaPage() {
   // 🔥 原庄家退返标记：庄家离开时记下其名字，待结算阶段开新局前、若其已回房则把庄家身份还给他（仅走广播，不改数据库）
   const [pendingReturnDealer, setPendingReturnDealer] = useState<string | null>(null);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
+
+  // 🔧 根因修复：各端 players 数组顺序不一致（谁先进房谁排前），而压酒轮转/下一个谁/重连定位
+  // 全用数组下标 currentPlayerIndex，顺序一不同→同一下标指不同的人→压酒卡死等问题。
+  // 用"稳定座位号 seatId"统一排序，所有客户端顺序完全一致，下标自然对得上号。一次性根治。
+  const bySeat = (a: any, b: any) => (a?.seatId ?? 9999) - (b?.seatId ?? 9999);
+  const sortPlayers = (arr: any[]) => [...(arr || [])].sort(bySeat);
+
   const [gameOver, setGameOver] = useState(false);
   const [result, setResult] = useState<string>("");
   const [resultDetails, setResultDetails] = useState<any[]>([]);
@@ -638,7 +645,7 @@ export default function ZhaJinHuaPage() {
         // 典型场景：原庄家返回时新庄家端名单靠 400ms 异步补齐且只更 state 不更 ref，
         // 导致点"开始新对局"时 ref 里无原庄家→归还失效、firstIdx 错位、压酒按钮不出。
         if (parsedPlayers.length > 0) {
-          playersRef.current = parsedPlayers;
+          playersRef.current = sortPlayers(parsedPlayers);
         }
 
         if (state.phase === "betting" || state.phase === "dealing" || state.phase === "waiting") {
@@ -708,7 +715,7 @@ export default function ZhaJinHuaPage() {
           if (state.justUnready) {
             merged = merged.filter((p: any) => p.name !== state.justUnready);
           }
-          return merged;
+          return sortPlayers(merged); // 🔧 统一按座位号排序，保证各端顺序一致
         });
 
         // 🔧 结构性同步（加入/离开房间）只更新玩家名单，绝不覆盖任何游戏状态
@@ -996,7 +1003,7 @@ export default function ZhaJinHuaPage() {
     }
 
     setRoomId(data.id);
-    const parsedPlayers = parsePlayers(data.players);
+    const parsedPlayers = sortPlayers(parsePlayers(data.players));
     setPlayers(parsedPlayers);
     playersRef.current = parsedPlayers;
     setJoined(true);
@@ -1052,7 +1059,7 @@ export default function ZhaJinHuaPage() {
     versionRef.current = Math.max(versionRef.current, dbVersion);
     setVersion(versionRef.current);
 
-    let currentPlayers = parsePlayers(roomData.players);
+    let currentPlayers = sortPlayers(parsePlayers(roomData.players));
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满(最多12人)");
       return;
@@ -1069,8 +1076,8 @@ export default function ZhaJinHuaPage() {
     if (existingIdx >= 0) {
       setRoomId(roomData.id);
       setJoined(true);
-      setPlayers(currentPlayers);
-      playersRef.current = currentPlayers;
+      setPlayers(sortPlayers(currentPlayers));
+      playersRef.current = sortPlayers(currentPlayers);
       setPhase(roomData.phase || "waiting");
       setDealerId(roomData.dealerid || null);
       setGameOver(roomData.gameover || false);
@@ -1193,7 +1200,7 @@ export default function ZhaJinHuaPage() {
       status: isGameActive ? 'watching' : 'playing',
       bet: 0,
     };
-    const updatedPlayers = [...currentPlayers, newPlayer];
+    const updatedPlayers = sortPlayers([...currentPlayers, newPlayer]);
 
     await supabase.from("rooms").update({
       players: updatedPlayers,
@@ -1771,7 +1778,7 @@ export default function ZhaJinHuaPage() {
         dbPlayers.forEach((dp: any) => {
           if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐新加入者（用库里的完整对象）
         });
-        return next;
+        return sortPlayers(next); // 🔧 统一按座位号排序
       });
       // 准备状态：准备阶段并集吸收(防冲掉)；游戏中以库为准(开局后库为[])
       setReadyPlayers(prevReady => {
@@ -1788,7 +1795,7 @@ export default function ZhaJinHuaPage() {
 
     // 🔧 开局前先以数据库权威名单补齐可能迟到的新玩家，避免发牌漏人（首局无手牌却能压酒）
     const authoritative = await fetchAuthoritativeRoom();
-    const workingPlayers = authoritative ? authoritative.players : players;
+    const workingPlayers = sortPlayers(authoritative ? authoritative.players : players);
     const workingReady = authoritative ? authoritative.ready : readyPlayers;
 
     const playingPlayers = workingPlayers.filter(p => p.status === 'playing');
@@ -1804,14 +1811,14 @@ export default function ZhaJinHuaPage() {
     }
 
     const firstDealer = playingPlayers[0].name;
-    const resetPlayers = workingPlayers.map(p => ({
+    const resetPlayers = sortPlayers(workingPlayers.map(p => ({
       ...p,
       cards: [],
       cardCount: 0,
       isDealer: p.name === firstDealer,
       status: 'playing', // 修复1：新对局开始时把观战者也转为玩家并发牌
       bet: 0,
-    }));
+    })));
     setPlayers(resetPlayers);
     playersRef.current = resetPlayers;
     setDealerId(firstDealer);
@@ -1889,8 +1896,8 @@ export default function ZhaJinHuaPage() {
 
     setDeckOffset(offset);
     setRemainingCards(52 - offset);
-    setPlayers(newPlayers);
-    playersRef.current = newPlayers;
+    setPlayers(sortPlayers(newPlayers));
+    playersRef.current = sortPlayers(newPlayers);
 
     const me = newPlayers.find(p => p.name === playerName);
     if (me) {
