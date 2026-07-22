@@ -537,7 +537,7 @@ export default function ZhaJinHuaPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [joined]);
 
-  const broadcastAndSyncDB = async (state: any) => {
+  const broadcastAndSyncDB = async (state: any, opts?: { readyMerge?: boolean; justUnready?: string }) => {
     const newVersion = versionRef.current + 1;
     versionRef.current = newVersion;
     setVersion(newVersion);
@@ -570,6 +570,16 @@ export default function ZhaJinHuaPage() {
     }
 
     try {
+      // 🔧 准备名单安全合并：仅 toggleReady 传 opts 时，写库前先读库当前名单做并集/剔除，
+      // 避免多人并发点准备用各自不全视角整体覆盖库、互相冲掉（表现：准备到 N/4 又变回 1/4）
+      let finalReady = state.readyPlayers || [];
+      if (opts?.readyMerge || opts?.justUnready) {
+        const { data: curRoom } = await supabase.from("rooms").select("readyplayers").eq("id", roomId).single();
+        const dbReady: string[] = (curRoom?.readyplayers as string[]) || [];
+        finalReady = opts.justUnready
+          ? dbReady.filter(p => p !== opts.justUnready)
+          : Array.from(new Set([...dbReady, ...(state.readyPlayers || [])]));
+      }
       await supabase.from("rooms").update({
         players: state.players,
         phase: state.phase,
@@ -578,7 +588,7 @@ export default function ZhaJinHuaPage() {
         currentplayerindex: state.currentPlayerIndex || 0,
         result: state.result || "",
         resultdetails: state.resultDetails || [],
-        readyplayers: state.readyPlayers || [],
+        readyplayers: finalReady,
         settlementstep: state.settlementStep || 0,
         seed: state.seed,
         // 修复2：仅在确实携带 deckOffset 时才写库，避免 undefined/0 把库里已有进度清零
@@ -742,11 +752,22 @@ export default function ZhaJinHuaPage() {
         setCurrentPlayerIndex(state.currentPlayerIndex || 0);
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
-        // 🔧 结构性同步（加入/重连/非庄家离开）时，广播里的 readyPlayers 是发送者进房瞬间从库读的滞后快照，
-        // 若无条件覆盖会把已准备的其他人全冲掉（表现：准备到 N/4 又变回 1/4）。故结构性同步且非庄家离开时，
-        // 绝不覆盖本地准备名单，交由 3 秒 poll 的"本地∪库"并集兜底补齐。
-        if (!state.structuralSync || state.leaveSync) {
+        // 🔧 准备名单同步（纯同步层，不碰玩法）：
+        // 1) 结构性同步且非庄家离开(加入/重连/普通离开)：不覆盖本地，交由3秒poll(869)并集兜底，避免迟到加入广播冲掉已准备的人；
+        // 2) 庄家离开(leaveSync)：沿用广播里的名单整体覆盖（已正确移除庄家），保持原行为；
+        // 3) 游戏已开始(广播phase非waiting)：准备名单作废清空，与发起方startGame的 setReadyPlayers([]) 一致，避免下一局残留上一局标记；
+        // 4) 正常准备/开始广播(waiting阶段)：用"并集"吸收，绝不整体覆盖，解决多人并发点准备互相冲掉→准备到N/4又变回1/4；取消准备(justUnready)时精确移除该玩家。
+        if (state.structuralSync && !state.leaveSync) {
+          // 加入/重连/普通离开：保留本地，poll 收敛
+        } else if (state.leaveSync) {
           setReadyPlayers(state.readyPlayers || []);
+        } else if (state.phase && state.phase !== "waiting") {
+          setReadyPlayers([]);
+        } else {
+          setReadyPlayers(prev => {
+            const merged = Array.from(new Set([...prev, ...(state.readyPlayers || [])]));
+            return state.justUnready ? merged.filter(n => n !== state.justUnready) : merged;
+          });
         }
         // 修复8：接收端牌堆保护——只在广播显式携带时才更新，避免漏带字段把本地进度误清零（与修复2写库保护对称）
         if (state.seed !== undefined) setSeed(state.seed);
@@ -1646,6 +1667,8 @@ export default function ZhaJinHuaPage() {
     }
     setReadyPlayers(newReady);
 
+    // 🔧 以"合并模式"广播+写库：写库前先读库当前名单做并集/精确剔除，避免多人并发点准备用各自不全视角整体覆盖库互相冲掉（准备到N/4又变回1/4）；
+    // justUnready 让接收端也能精确移除取消者
     await broadcastAndSyncDB({
       players: needStatusChange ? updatedPlayers : players,
       phase,
@@ -1655,6 +1678,7 @@ export default function ZhaJinHuaPage() {
       result,
       resultDetails,
       readyPlayers: newReady,
+      justUnready: isReady ? playerName : undefined,
       settlementStep: 0,
       seed,
       deckOffset,
@@ -1666,7 +1690,7 @@ export default function ZhaJinHuaPage() {
       allCompareData,
       globalDealerHand,
       globalDealerHandName,
-    });
+    }, { readyMerge: true, justUnready: isReady ? playerName : undefined });
 
     if (needStatusChange) {
       setErrorMsg("已自动转为玩家并已准备！");
