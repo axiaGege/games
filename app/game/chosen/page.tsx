@@ -244,9 +244,9 @@ export default function Chosen() {
   const isDealer = playerName && dealerId === playerName;
   const dealerName = (players.find((p: any) => p.name === dealerId)?.name) || dealerId || "—";
   const myPlayer = players.find((p) => p.name === playerName);
-  const playingCount = players.filter((p) => p.status === "playing").length;
+  const playingCount = players.filter((p) => p.status === "playing" && p.online !== false).length;
   // 公共杯 = 所有 playing 玩家本轮压酒之和（实时算）
-  const cup = players.filter((p) => p.status === "playing").reduce((s, p) => s + (p.pouredCups || 0), 0);
+  const cup = players.filter((p) => p.status === "playing" && p.online !== false).reduce((s, p) => s + (p.pouredCups || 0), 0);
   // 全员压完酒（暂离的人不算，避免卡死）：发牌按钮才出现，防止房主误发
   const allPoured = players.filter((p) => p.status === "playing" && p.online !== false).every((p) => p.hasPoured);
   const myCards = myPlayer?.cards || [];
@@ -377,8 +377,8 @@ export default function Chosen() {
     const currentWheel = parseArray(roomData.wheelsegments);
     if (currentPlayers.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
     const myCid = getOrCreateCid();
-    // 玩家已存在（重连/暂离回归）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
-    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+    // 认人放宽：cid 相同 或 名字相同都算同一人 —— 换设备/清缓存(cid变)回来靠名字也能认回原座位原牌，不会平白多一个人
+    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (p.name === name));
     if (existingIdx >= 0) {
       currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name, lastSeen: Date.now() } : p);
     }
@@ -419,8 +419,8 @@ export default function Chosen() {
       if (fe || !fresh) break;
       const cur = parseArray(fresh.players);
       const oldVer = fresh.version || 0;
-      // 自己是否已在（重连/暂离回归/上次重试已写入）
-      const ex = cur.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+      // 自己是否已在（重连/暂离回归/上次重试已写入）—— 认人放宽：cid 相同 或 名字相同
+      const ex = cur.findIndex((p: any) => (p.cid && p.cid === myCid) || (p.name === name));
       let nextList: any[];
       if (ex >= 0) {
         nextList = cur.map((p: any, i: number) => i === ex ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p);
@@ -648,7 +648,7 @@ export default function Chosen() {
 
   // 房主：开始游戏（冻结座位，进入第①轮倒酒）
   const startGame = () => {
-    const playing = players.filter((p) => p.status === "playing");
+    const playing = players.filter((p) => p.status === "playing" && p.online !== false);
     if (playing.length < 2) {
       setErrorMsg("至少 2 人才能开始游戏");
       return;
@@ -751,7 +751,7 @@ export default function Chosen() {
     const r = roundRef.current;
     const segs = ROUND_WHEELS[r - 1];
     const ps = playersRef.current;
-    const active = ps.filter((p) => p.status === "playing");
+    const active = ps.filter((p) => p.status === "playing" && p.online !== false);
     // 计算每人点数和（用于奇偶等比较）
     const sums = active.map((p) => roundCards(p.cards, r).reduce((s: number, c: number) => s + cardRank(c), 0));
     const maxSum = sums.length ? Math.max(...sums) : 0;
@@ -963,7 +963,7 @@ export default function Chosen() {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15 }}>公共杯：<b style={{ color: goldSoft }}>{cup}</b> 杯{phase === "pouring" && <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>（倒酒阶段）</span>}</div>
           {phase === "pouring" && (
-            <div style={{ fontSize: 12, color: goldSoft, marginTop: 2 }}>已倒完 {players.filter((p) => p.status === "playing" && p.hasPoured).length} / {playingCount} 人</div>
+            <div style={{ fontSize: 12, color: goldSoft, marginTop: 2 }}>已倒完 {players.filter((p) => p.status === "playing" && p.online !== false && p.hasPoured).length} / {playingCount} 人</div>
           )}
         </div>
         {pourFloat && (
