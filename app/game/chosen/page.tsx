@@ -235,6 +235,8 @@ export default function Chosen() {
   const channelRef = useRef<any>(null);
   const roundSeatsRef = useRef<number[]>([]);
   const dealingRef = useRef(false);
+  const spinBusyRef = useRef(false); // 转盘转动/揭晓中防重入（真随机重转期间禁止再点）
+  const wheelRotRef = useRef(0);     // 最新转盘角度（落空重转递归时 state 闭包过期，用 ref 取真值）
 
   const isDealer = playerName && dealerId === playerName;
   const dealerName = (players.find((p: any) => p.name === dealerId)?.name) || dealerId || "—";
@@ -242,6 +244,8 @@ export default function Chosen() {
   const playingCount = players.filter((p) => p.status === "playing").length;
   // 公共杯 = 所有 playing 玩家本轮压酒之和（实时算）
   const cup = players.filter((p) => p.status === "playing").reduce((s, p) => s + (p.pouredCups || 0), 0);
+  // 全员压完酒（暂离的人不算，避免卡死）：发牌按钮才出现，防止房主误发
+  const allPoured = players.filter((p) => p.status === "playing" && p.online !== false).every((p) => p.hasPoured);
   const myCards = myPlayer?.cards || [];
 
   useEffect(() => { playersRef.current = players; }, [players]);
@@ -270,26 +274,29 @@ export default function Chosen() {
       setErrorMsg("⚠️ 连接断开，请检查网络");
       return;
     }
-    try {
-      await supabase.from("rooms").update({
-        players: state.players,
-        phase: state.phase,
-        dealerid: state.dealerId,
-        gameover: false,
-        currentplayerindex: 0,
-        seed: state.seed,
-        ...(state.deckOffset !== undefined ? { deckoffset: state.deckOffset } : {}),
-        wheelvisible: state.wheelVisible || false,
-        wheelselected: state.wheelSelected || null,
-        wheelsegments: state.wheelSegments || [],
-        communitycard: state.roundSeats ? JSON.stringify(state.roundSeats) : null,
-        result: state.result || "",
-        resultdetails: JSON.stringify({ round: state.round, excluded: state.excluded || [] }),
-        readyplayers: state.readyPlayers || [],
-      }).eq("id", roomId);
-      setDisconnected(false);
-    } catch (e) {
-      console.error("⚠️ 数据库同步失败", e);
+    if (!state.skipWrite) {
+      try {
+        await supabase.from("rooms").update({
+          players: state.players,
+          phase: state.phase,
+          dealerid: state.dealerId,
+          gameover: false,
+          currentplayerindex: 0,
+          seed: state.seed,
+          ...(state.deckOffset !== undefined ? { deckoffset: state.deckOffset } : {}),
+          wheelvisible: state.wheelVisible || false,
+          wheelselected: state.wheelSelected || null,
+          wheelsegments: state.wheelSegments || [],
+          communitycard: state.roundSeats ? JSON.stringify(state.roundSeats) : null,
+          result: state.result || "",
+          resultdetails: JSON.stringify({ round: state.round, excluded: state.excluded || [] }),
+          readyplayers: state.readyPlayers || [],
+          version: newVersion, // 写入版本号：3秒对账据此判断库里数据新旧，防旧数据抹掉刚发的牌
+        }).eq("id", roomId);
+        setDisconnected(false);
+      } catch (e) {
+        console.error("⚠️ 数据库同步失败", e);
+      }
     }
   };
 
@@ -400,13 +407,40 @@ export default function Chosen() {
       await broadcastAndSyncDB({ structuralSync: true, players: revived, phase: roomData.phase || "waiting", dealerId: roomData.dealerid || null, seed: roomData.seed || null, deckOffset: roomData.deckoffset || 0, wheelVisible: roomData.wheelvisible || false, wheelSelected: roomData.wheelselected || null, wheelSegments: currentWheel.length ? currentWheel : ROUND_WHEELS[0], round: rd.round || 1, excluded: rd.excluded || [], readyPlayers: currentReady, result: roomData.result || "", drinkers: parseArray(roomData.drinkers) });
       return;
     }
-    const occupied = currentPlayers.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
-    let seatId = 0;
-    for (let i = 0; i < 10; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
-    const isActive = roomData.phase !== "waiting";
-    const newPlayer = { cid: myCid, lastSeen: Date.now(), name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false };
-    const updated = [...currentPlayers, newPlayer];
-    await supabase.from("rooms").update({ players: updated, readyplayers: currentReady }).eq("id", roomData.id);
+    // 乐观锁重试：并发加入时，后加入者用各自读到的旧名单覆盖先加入者 → 丢人。
+    // 改为「读最新名单→追加自己→带版本号条件写回」，版本已被别人递增则重读再写，最多 8 次。
+    let finalPlayers: any[] = currentPlayers;
+    let joinedOk = false;
+    for (let attempt = 0; attempt < 8 && !joinedOk; attempt++) {
+      const { data: fresh, error: fe } = await supabase.from("rooms").select("*").eq("id", roomData.id).single();
+      if (fe || !fresh) break;
+      const cur = parseArray(fresh.players);
+      const oldVer = fresh.version || 0;
+      // 自己是否已在（重连/暂离回归/上次重试已写入）
+      const ex = cur.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+      let nextList: any[];
+      if (ex >= 0) {
+        nextList = cur.map((p: any, i: number) => i === ex ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p);
+      } else {
+        if (cur.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
+        const occupied = cur.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
+        let seatId = 0;
+        for (let i = 0; i < 10; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
+        const isActive = (fresh.phase || roomData.phase) !== "waiting";
+        nextList = [...cur, { cid: myCid, lastSeen: Date.now(), name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false }];
+      }
+      const { data: upd } = await supabase.from("rooms")
+        .update({ players: nextList, readyplayers: currentReady, version: oldVer + 1 })
+        .eq("id", roomData.id).eq("version", oldVer)
+        .select();
+      if (Array.isArray(upd) && upd.length > 0) {
+        joinedOk = true;
+        finalPlayers = nextList;
+        versionRef.current = Math.max(versionRef.current, oldVer + 1);
+      }
+    }
+    if (!joinedOk) { setErrorMsg("加入失败，请稍后再试"); return; }
+    const updated = finalPlayers;
     setRoomId(roomData.id); setJoined(true); setPlayers(updated); playersRef.current = updated;
     setPhase(roomData.phase || "waiting"); setDealerId(roomData.dealerid || null);
     setSeed(roomData.seed || null); setDeckOffset(roomData.deckoffset || 0);
@@ -451,6 +485,7 @@ export default function Chosen() {
         if (st.wheelSelected !== undefined) setWheelSelected(st.wheelSelected);
         if (st.wheelRotation !== undefined) {
           setWheelRotation(st.wheelRotation);
+          wheelRotRef.current = st.wheelRotation; // 同步角度真值（换发牌人后新房主重转角度才连贯）
           setWheelSpinning(true);
           setTimeout(() => setWheelSpinning(false), 3050);
         }
@@ -493,6 +528,11 @@ export default function Chosen() {
           return p;
         }).filter(Boolean) as any[];
         if (changed) { try { await supabase.from("rooms").update({ players: ps }).eq("id", roomId); } catch (_) {} }
+        // 新鲜度保护：库里版本比本地旧（写库还没落盘/延迟），不许旧数据覆盖本地——
+        // 否则刚经广播收到的新牌会被这3秒对账用旧账本抹掉（"有的发了有的没发"根因）
+        const dbVer = data.version || 0;
+        if (dbVer < versionRef.current) return;
+        versionRef.current = dbVer;
         if (ps.length > 0) { setPlayers(ps); playersRef.current = ps; }
         if (data.phase) { setPhase(data.phase); phaseRef.current = data.phase; }
         if (data.dealerid !== undefined) setDealerId(data.dealerid);
@@ -601,8 +641,9 @@ export default function Chosen() {
     });
   };
 
-  // 玩家：一键压酒（点哪个直接定为 n 杯并标记已倒完；想改再点别的覆盖）
+  // 玩家：一键压酒（点哪个直接定为 n 杯并锁定，压过后不可再改）
   const doPour = (n: number) => {
+    if (myPlayer?.hasPoured) return; // 已压过则锁定，防止误改/连点
     const nn = Math.max(0, Math.min(MAX_POUR, n));
     const ps = players.map((p) => p.name === playerName ? { ...p, pouredCups: nn, hasPoured: true } : p);
     const rp = readyRef.current.includes(playerName) ? readyRef.current : [...readyRef.current, playerName];
@@ -673,7 +714,13 @@ export default function Chosen() {
   };
 
   // 转转盘（当轮发牌人 dealer 调用）
-  const spinWheel = () => {
+  // 真随机转盘：8格全保留、不预筛必中；转盘停稳后才判定符合者并公告（转的时候不剧透）；
+  // 落空（无人符合）→ 提示后自动重转，最多重转 3 次，仍落空则兜底选"符合人数最多"的格子
+  const spinWheel = (attempt: number = 0) => {
+    if (attempt === 0) {
+      if (spinBusyRef.current) return; // 转动/重转中禁止再点
+      spinBusyRef.current = true;
+    }
     const r = roundRef.current;
     const segs = ROUND_WHEELS[r - 1];
     const ps = playersRef.current;
@@ -682,59 +729,79 @@ export default function Chosen() {
     const sums = active.map((p) => roundCards(p.cards, r).reduce((s: number, c: number) => s + cardRank(c), 0));
     const maxSum = sums.length ? Math.max(...sums) : 0;
     const minSum = sums.length ? Math.min(...sums) : 0;
-    // 候选特征（排除已排除的）
-    let candidates = segs.filter((s) => !excluded.includes(s));
-    // 过滤：只保留场上有人符合的
-    const anyone = (f: string) => active.some((p, i) => {
+    const matchNames = (f: string) => active.filter((p, i) => {
       if (f === "得数奇数") return sums[i] % 2 === 1;
       if (f === "得数偶数") return sums[i] % 2 === 0;
       if (f === "点数最大") return sums[i] === maxSum;
       if (f === "点数最小") return sums[i] === minSum;
       return matchSingle(p.cards, r, f);
-    });
-    let pool = candidates.filter(anyone);
-    if (pool.length === 0) pool = candidates; // 极端兜底
-    const picked = pool[Math.floor(Math.random() * pool.length)];
+    }).map((p) => p.name);
+    // 候选特征（仅排除已排除的，不做"必中"预筛——真随机）
+    const candidates = segs.filter((s) => !excluded.includes(s));
+    let picked: string;
+    if (attempt >= 3) {
+      // 连落空3次兜底：选符合人数最多的格子，防无限空转
+      picked = candidates.reduce((best, f) => (matchNames(f).length > matchNames(best).length ? f : best), candidates[0]);
+    } else {
+      picked = candidates[Math.floor(Math.random() * candidates.length)];
+    }
     // 转盘旋转角度：让选中的格子转到最上方（12点）
     const idx = segs.indexOf(picked);
     const step = 360 / segs.length;
     const restAngle = -((idx + 0.5) * step); // 选中格到顶部的静止角度
-    const cur = wheelRotation;
+    const cur = wheelRotRef.current;
     const curMod = ((cur % 360) + 360) % 360;
     const restMod = ((restAngle % 360) + 360) % 360;
     const forward = (restMod - curMod + 360) % 360;
     const newRot = cur + 360 * 5 + forward; // 转5圈再落到结果格
+    wheelRotRef.current = newRot;
     setWheelRotation(newRot);
     setWheelSelected(picked);
     setWheelSpinning(true);
     setTimeout(() => setWheelSpinning(false), 3050);
-    // 计算喝的人
-    const drinkersList = active.filter((p, i) => {
-      if (picked === "得数奇数") return sums[i] % 2 === 1;
-      if (picked === "得数偶数") return sums[i] % 2 === 0;
-      if (picked === "点数最大") return sums[i] === maxSum;
-      if (picked === "点数最小") return sums[i] === minSum;
-      return matchSingle(p.cards, r, picked);
-    }).map((p) => p.name);
-    const totalCup = active.reduce((s, p) => s + (p.pouredCups || 0), 0);
-    const per = drinkersList.length > 0 ? Math.floor(totalCup / drinkersList.length) : 0;
-    const txt = drinkersList.length > 0
-      ? `🎡 指中【${picked}】→ ${drinkersList.join("、")} 喝（每人约 ${per} 杯）`
-      : `🎡 指中【${picked}】，本场无人符合，公共杯 ${totalCup} 杯留到下一轮`;
-    setResult(txt); setDrinkers(drinkersList);
-    setPhase("result");
+    // 先只广播"转盘在转"（不带谁喝的结果——防剧透），让所有端同步看转
     broadcastAndSyncDB({
-      players: ps, phase: "result", dealerId, seed: seedRef.current, deckOffset: deckOffsetRef.current,
+      players: ps, phase: "round", dealerId, seed: seedRef.current, deckOffset: deckOffsetRef.current,
       wheelVisible: true, wheelSelected: picked, wheelSegments: segs,
-      round: r, excluded, readyPlayers: readyRef.current, result: txt, drinkers: drinkersList, roundSeats: roundSeatsRef.current,
+      round: r, excluded, readyPlayers: readyRef.current, result: "", drinkers: [], roundSeats: roundSeatsRef.current,
       wheelRotation: newRot,
     });
+    // 转盘停稳后（3s动画+0.6s缓冲）才判定并公告
+    setTimeout(() => {
+      const drinkersList = matchNames(picked);
+      if (drinkersList.length === 0 && attempt < 3) {
+        // 落空：全场提示后自动重转（公共杯原样保留，无人喝不清）
+        const missTxt = `❌ 指中【${picked}】无人符合，转盘重新转！`;
+        setResult(missTxt);
+        broadcastAndSyncDB({
+          players: playersRef.current, phase: "round", dealerId, seed: seedRef.current, deckOffset: deckOffsetRef.current,
+          wheelVisible: true, wheelSelected: picked, wheelSegments: segs,
+          round: r, excluded, readyPlayers: readyRef.current, result: missTxt, drinkers: [], roundSeats: roundSeatsRef.current,
+        });
+        setTimeout(() => { setResult(""); spinWheel(attempt + 1); }, 1600);
+        return;
+      }
+      const txt = drinkersList.length === 1
+        ? `🎡 指中【${picked}】→ 🌟天选之子,你不喝谁喝（一口闷，别哼）`
+        : drinkersList.length > 1
+        ? `🎡 指中【${picked}】→ 有 ${drinkersList.length} 位天命人，（平分）`
+        : `🎡 指中【${picked}】，本场无人符合`;
+      setResult(txt); setDrinkers(drinkersList);
+      setPhase("result");
+      spinBusyRef.current = false;
+      broadcastAndSyncDB({
+        players: playersRef.current, phase: "result", dealerId, seed: seedRef.current, deckOffset: deckOffsetRef.current,
+        wheelVisible: true, wheelSelected: picked, wheelSegments: segs,
+        round: r, excluded, readyPlayers: readyRef.current, result: txt, drinkers: drinkersList, roundSeats: roundSeatsRef.current,
+      });
+    }, 3650);
   };
 
   // 房主：下一轮 或 洗牌重来
   const nextRound = () => {
     const r = roundRef.current;
     dealingRef.current = false; // 解锁发牌，允许下一轮发牌
+    spinBusyRef.current = false; // 复位转盘锁（防极端情况卡住不能再转）
     if (r < 4) {
       const nr = r + 1;
       let ps = playersRef.current.map((p) => ({ ...p, pouredCups: 0, hasPoured: false }));
@@ -841,7 +908,7 @@ export default function Chosen() {
             </div>
           ) : (
             <div style={{ textAlign: "center", fontSize: 14, color: goldSoft, minHeight: 20, marginTop: 4 }}>
-              {phase === "round" ? `本轮由 ${dealerName} 转转盘 🎡` : phase === "pouring" ? `往公共杯倒酒，本轮由 ${dealerName} 发牌` : ""}
+              {phase === "round" ? (result || `本轮由 ${dealerName} 转转盘 🎡`) : phase === "pouring" ? `往公共杯倒酒，本轮由 ${dealerName} 发牌` : ""}
             </div>
           )}
         </div>
@@ -890,7 +957,7 @@ export default function Chosen() {
                     </span>
                   );
                 }
-                return <span key={i} style={{ width: 15, height: 21, borderRadius: 3, background: "radial-gradient(circle at 50% 42%, #1a1030, #05050c)", border: "1px solid #00f0ff", boxShadow: "0 0 4px #00f0ff, inset 0 0 3px rgba(255,45,149,0.6)", display: "inline-block" }} />;
+                return <span key={i} style={{ width: 15, height: 21, borderRadius: 3, background: "radial-gradient(circle at 50% 42%, #1a1030, #05050c)", border: "1px solid rgba(255,255,255,0.18)", display: "inline-block" }} />;
               })}
             </div>
             <div style={{ fontSize: 10, color: isAway ? "rgba(255,255,255,0.45)" : (isWatching ? "rgba(255,255,255,0.45)" : (p.hasPoured ? goldSoft : "rgba(255,255,255,0.4)")), marginTop: 2 }}>{isRevealed ? "已偷看" : (isAway ? "暂离中" : (isWatching ? "观战中" : (p.hasPoured ? "已倒完" : "倒酒中")))}</div>
@@ -903,14 +970,14 @@ export default function Chosen() {
       <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 6, flexWrap: "wrap" }}>
         {myCards.length > 0 ? myCards.map((c: number, i: number) => {
           const isF = !!flipped[i];
-          const hit = drinkers.includes(playerName) && resultRevealed;
+          const hit = false; // 不自动高亮命中牌：玩家自己翻牌、自己算点数才有悬念
           return (
             <div key={i} onClick={() => setFlipped((prev) => { const n = [...prev]; n[i] = !n[i]; return n; })}
               style={{ width: 52, height: 74, borderRadius: 8, cursor: "pointer", perspective: 500 }}>
               <div style={{ position: "relative", width: "100%", height: "100%", transformStyle: "preserve-3d", transition: "transform 0.45s", transform: isF ? "rotateY(180deg)" : "rotateY(0deg)" }}>
-                {/* 牌背（盖着）—— 霓虹赛博：黑底 + 荧光青/品红发光边 */}
-                <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", borderRadius: 8, background: "radial-gradient(circle at 50% 42%, #1a1030, #05050c)", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #00f0ff", boxShadow: "0 0 8px #00f0ff, inset 0 0 12px rgba(255,45,149,0.55)" }}>
-                  <span style={{ fontSize: 26, fontWeight: 800, color: "#ff2d95", textShadow: "0 0 8px #ff2d95, 0 0 16px #00f0ff" }}>◆</span>
+                {/* 牌背（盖着）—— 朴素深色：不发光不闪，留悬念 */}
+                <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", borderRadius: 8, background: "radial-gradient(circle at 50% 42%, #1a1030, #05050c)", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid rgba(255,255,255,0.2)" }}>
+                  <span style={{ fontSize: 26, fontWeight: 800, color: "rgba(255,255,255,0.25)" }}>◆</span>
                 </div>
                 {/* 牌面（翻开）—— ①经典角标式：左上/右下角标 + 中央大花色 */}
                 <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", transform: "rotateY(180deg)", borderRadius: 8, background: "#fbf7ee", border: `2px solid ${hit ? "#c41e3a" : gold}`, boxShadow: hit ? "0 0 14px #c41e3a" : "none", overflow: "hidden" }}>
@@ -927,26 +994,27 @@ export default function Chosen() {
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>我的手牌（第 {round} 轮 · 共 {myCards.length} 张）</div>
 
-      {/* 压酒（玩家）：点哪个直接定为 N 杯，想改再点别的覆盖 */}
-      {phase === "pouring" && (
+      {/* 压酒（玩家）：点哪个直接定为 N 杯并锁定，压过后按钮消失 */}
+      {phase === "pouring" && !myPlayer?.hasPoured && (
         <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", justifyContent: "center" }}>
           {[0, 1, 2, 3].map((n) => (
-            <button key={n} onClick={() => doPour(n)} style={{ ...(n === 0 ? btnSecondary("#94a3b8") : btnSecondary(gold)), minWidth: 66, fontSize: 14, fontWeight: (myPlayer?.hasPoured && (myPlayer?.pouredCups || 0) === n) ? 800 : 400, border: (myPlayer?.hasPoured && (myPlayer?.pouredCups || 0) === n) ? `2px solid ${goldSoft}` : undefined }}>
+            <button key={n} onClick={() => doPour(n)} style={{ ...(n === 0 ? btnSecondary("#94a3b8") : btnSecondary(gold)), minWidth: 66, fontSize: 14, fontWeight: 600 }}>
               {n === 0 ? "🚫 不倒" : `🍺 ${n}杯`}
             </button>
           ))}
-          {myPlayer?.hasPoured && (
-            <div style={{ width: "100%", textAlign: "center", color: goldSoft, fontSize: 13, marginTop: 2 }}>已压 {myPlayer?.pouredCups || 0} 杯，等待 {dealerName} 发牌…</div>
-          )}
         </div>
+      )}
+      {phase === "pouring" && myPlayer?.hasPoured && (
+        <div style={{ width: "100%", textAlign: "center", color: goldSoft, fontSize: 13, marginBottom: 14 }}>已压 {myPlayer?.pouredCups || 0} 杯，等待 {dealerName} 发牌…</div>
       )}
 
       {/* 当轮发牌人控制条 */}
       {isDealer && (
         <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", justifyContent: "center" }}>
           {phase === "waiting" && <button onClick={startGame} style={btnPrimary(gold, goldSoft)}>▶ 开始游戏（冻结座位）</button>}
-          {phase === "pouring" && <button onClick={dealRound} style={btnPrimary(gold, goldSoft)}>🃏 发牌（第 {round} 轮）</button>}
-          {phase === "round" && <button onClick={spinWheel} style={btnPrimary(gold, goldSoft)}>🎡 转转盘</button>}
+          {phase === "pouring" && allPoured && <button onClick={dealRound} style={btnPrimary(gold, goldSoft)}>🃏 发牌（第 {round} 轮）</button>}
+          {phase === "pouring" && !allPoured && <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, padding: "8px 0" }}>⏳ 等待所有人倒酒…</div>}
+          {phase === "round" && <button onClick={() => spinWheel()} style={btnPrimary(gold, goldSoft)}>🎡 转转盘</button>}
           {phase === "result" && round < 4 && <button onClick={nextRound} style={btnPrimary(gold, goldSoft)}>➡ 下一轮</button>}
           {phase === "result" && round === 4 && <button onClick={nextRound} style={btnPrimary(gold, goldSoft)}>🔄 洗牌重来</button>}
         </div>
@@ -965,10 +1033,10 @@ export default function Chosen() {
             <p style={{ fontSize: 13, lineHeight: 1.7, color: "rgba(255,255,255,0.8)" }}>
               1. 一副 52 张牌，最多 10 人，中间一个公共酒杯。<br />
               2. 每轮大家往公共杯倒酒（0~3 杯），都倒完当轮发牌人发牌。<br />
-              3. 4 轮：①1张 ②2张 ③3张 ④5张（牌累积不弃）。<br />
+              3. 共 4 轮：每轮新发 +1/+1/+1/+2 张，手牌累计 1/2/3/5 张（牌累积不弃）。<br />
               4. 每轮由当轮发牌人（👑）转转盘，指中的特征 → 手牌符合的人喝公共杯（多人平分）。<br />
               5. 转盘特征：①大/小/单/双/花色 ②同花/同数/和超13/和低于12/奇数/偶数/点数最大/点数最小 ③豹子/同花顺/金花/顺子/对子/单张 ④没牛/牛一二/牛三四/牛五六/牛七/牛八/牛九/牛牛。<br />
-              6. 转盘只转一次：若转到无人符合的特征，公共杯保留到下轮继续累积。<br />
+              6. 转盘真随机：若转到无人符合的特征，转盘自动重新转，直到有人喝为止。<br />
               7. 5 张打完洗牌重来，无限循环。<br />
               8. 每轮由当轮发牌人（👑）负责发牌与转转盘，按进房顺序轮着来。
             </p>
