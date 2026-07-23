@@ -719,7 +719,7 @@ export default function ZhaJinHuaPage() {
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "waiting" || newPhase === "dealing" || prevPhase === "waiting") {
+        } else if (newPhase === "waiting" || newPhase === "dealing") {
           effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           effectivePhase = newPhase;
@@ -821,59 +821,6 @@ export default function ZhaJinHuaPage() {
     };
   }, [roomId, playerName]);
 
-  // ---------- 定时对账：每 3 秒以数据库权威账本兜底（漏听广播最多 3 秒自动追平） ----------
-  // 复用已存在的命名名单收敛函数，再补阶段/轮次/转盘/公牌等标量状态对账。
-  // 与黑杰克 syncFromDB 同思路：DB 即公共账本，永远最新，故对账直接以 DB 为准应用。
-  useEffect(() => {
-    if (!roomId) return;
-    const id = setInterval(async () => {
-      try {
-        const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
-        if (error || !data) return;
-        // 心跳 + 幽灵清理：刷新自己的 lastSeen，剔除超过 15 分钟没动静的幽灵（自己除外）
-        const myCid = (() => { try { return localStorage.getItem('zjh_cid') || ''; } catch { return ''; } })();
-        const now = Date.now();
-        let playersArr: any[] = parsePlayers(data.players);
-        let changed = false;
-        playersArr = playersArr.map((p: any) => {
-          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: now }; }
-          if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
-          return p;
-        }).filter(Boolean) as any[];
-        if (changed) {
-          try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
-        }
-        await reconcilePlayersFromDB(); // 名单收敛（已有函数，零风险）
-        // 阶段防护：沿用接收端 forwardPhases 逻辑，避免把对局中状态拉回 waiting
-        const prevPhase = phaseRef.current;
-        const forwardPhases = ["dealing", "betting", "reveal", "settlement", "wheel"];
-        const cur = forwardPhases.indexOf(prevPhase);
-        const nxt = forwardPhases.indexOf(data.phase || "waiting");
-        let eff = data.phase || "waiting";
-        if (!(eff === "waiting" || eff === "dealing" || prevPhase === "waiting" || (eff === "betting" && prevPhase === "reveal") || (nxt >= cur && cur >= 0))) {
-          eff = prevPhase;
-        }
-        setPhase(eff); phaseRef.current = eff;
-        setDealerId(data.dealerid || null);
-        setCurrentPlayerIndex(data.currentplayerindex || 0);
-        setSeed(data.seed);
-        if (data.deckoffset !== undefined && data.deckoffset !== null) setDeckOffset(data.deckoffset);
-        setWheelVisible(data.wheelvisible || false);
-        setWheelSelected(data.wheelselected || null);
-        setWheelSegments(data.wheelsegments || []);
-        if (data.communitycard !== undefined) setCommunityCard(data.communitycard);
-        setResult(data.result || "");
-        setResultDetails(data.resultdetails || []);
-        setReadyPlayers(data.readyplayers || []);
-        setBettingComplete(data.bettingcomplete !== undefined ? data.bettingcomplete : false);
-        bettingCompleteRef.current = data.bettingcomplete || false;
-        if (data.revealtargets) setRevealTargets(data.revealtargets);
-        if (data.deckoffset !== undefined) setRemainingCards(52 - data.deckoffset);
-      } catch (_) {}
-    }, 3000);
-    return () => clearInterval(id);
-  }, [roomId]);
-
   // ===== 新增：远程客户端自动同步转盘动画 =====
   useEffect(() => {
     // 当收到 wheelSpinning = true 且 wheelRotation = 0 时（表示开始旋转），所有客户端用相同的 seed 和 segments 计算目标角度
@@ -889,20 +836,6 @@ export default function ZhaJinHuaPage() {
     }
   }, [wheelSpinning, wheelRotation, wheelSegments, seed]);
   // ==========================================
-
-  // ============ 隐形身份证：每台设备一个永久编号，退出也不删，认人靠编号不靠名字 ============
-  const getOrCreateCid = () => {
-    try {
-      let c = localStorage.getItem('zjh_cid');
-      if (!c) {
-        c = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('zjh_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
-        localStorage.setItem('zjh_cid', c);
-      }
-      return c;
-    } catch (_) {
-      return 'zjh_' + Math.random().toString(36).slice(2);
-    }
-  };
 
   const createRoom = async () => {
     if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
@@ -920,7 +853,7 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    const newPlayer = { cid: getOrCreateCid(), lastSeen: Date.now(), name: playerName.trim(), cards: [], cardCount: 0, seatId: 0, isDealer: false, status: 'playing', bet: 0 };
+    const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, seatId: 0, isDealer: false, status: 'playing', bet: 0 };
     const { data, error } = await supabase
       .from("rooms")
       .insert({
@@ -1007,21 +940,14 @@ export default function ZhaJinHuaPage() {
     versionRef.current = Math.max(versionRef.current, dbVersion);
     setVersion(versionRef.current);
 
-    let currentPlayers = parsePlayers(roomData.players);
+    const currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
       setErrorMsg("房间已满(最多12人)");
       return;
     }
 
-    const myCid = getOrCreateCid();
-    // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
-    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim()));
-    if (existingIdx >= 0) {
-      currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name: playerName.trim(), lastSeen: Date.now() } : p);
-    }
-
     // 修复8：恢复会话分支也要触发广播，保证人数同步
-    if (existingIdx >= 0) {
+    if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
       setRoomId(roomData.id);
       setJoined(true);
       setPlayers(currentPlayers);
@@ -1138,8 +1064,6 @@ export default function ZhaJinHuaPage() {
     // 在 waiting 阶段则直接成为 playing
     const isGameActive = roomData.phase !== "waiting" && roomData.phase !== "settlement";
     const newPlayer = {
-      cid: myCid,
-      lastSeen: Date.now(),
       name: playerName.trim(),
       cards: [],
       cardCount: 0,
@@ -1315,16 +1239,15 @@ export default function ZhaJinHuaPage() {
     // 1. 判断离开的人是否是庄家
     const isDealerLeaving = playerName === dealerId || players.find(p => p.name === playerName)?.isDealer;
 
-    // 2. 过滤掉离开的人（按编号或名字兜底，绝不靠改名逃掉）
-    const myCid = getOrCreateCid();
-    let updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
+    // 2. 过滤掉离开的人
+    let updatedPlayers = players.filter(p => p.name !== playerName);
 
     // 3. 如果房间没人了，直接清理
     if (updatedPlayers.length === 0) {
       setJoined(false);
       setRoomId("");
       if (channelRef.current) supabase.removeChannel(channelRef.current);
-      try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); /* 保留 zjh_cid */ } catch (_) {}
+      try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); } catch (_) {}
       return;
     }
 
@@ -1518,7 +1441,7 @@ export default function ZhaJinHuaPage() {
     try {
       localStorage.removeItem('zjh_name');
       localStorage.removeItem('zjh_pass');
-      localStorage.removeItem('zjh_room'); /* 保留 zjh_cid */
+      localStorage.removeItem('zjh_room');
     } catch (_) {}
   };
 
@@ -1707,14 +1630,13 @@ export default function ZhaJinHuaPage() {
         .single();
       if (error || !data) return;
       const dbPlayers = parsePlayers(data.players);
-      const keyOf = (p: any) => p.cid || p.name;
-      const dbKeys = new Set(dbPlayers.map(keyOf));
+      const dbNames = new Set(dbPlayers.map((p: any) => p.name));
       const dbReady = data.readyplayers || [];
       setPlayers(prev => {
-        const localKeys = new Set(prev.map(keyOf));
-        let next = prev.filter((p: any) => dbKeys.has(keyOf(p))); // 移除已离开者（按编号或名字）
+        const localNames = new Set(prev.map((p: any) => p.name));
+        let next = prev.filter((p: any) => dbNames.has(p.name)); // 移除已离开者
         dbPlayers.forEach((dp: any) => {
-          if (!localKeys.has(keyOf(dp))) next.push(dp); // 补齐新加入者（用库里的完整对象）
+          if (!localNames.has(dp.name)) next.push(dp); // 补齐新加入者（用库里的完整对象）
         });
         return next;
       });
@@ -2550,7 +2472,7 @@ export default function ZhaJinHuaPage() {
   };
 
   const changeCommunityCard = async () => {
-    if (phase !== "betting") {
+    if (phase !== "betting" || myBet > 0) {
       setErrorMsg("当前阶段不能换公牌");
       return;
     }
@@ -2570,7 +2492,7 @@ export default function ZhaJinHuaPage() {
   };
 
   const doChangeCommunityCard = async () => {
-    if (phase !== "betting") {
+    if (phase !== "betting" || myBet > 0) {
       setErrorMsg("当前阶段不能换公牌");
       return;
     }
@@ -3180,55 +3102,52 @@ export default function ZhaJinHuaPage() {
 
   if (!joined) {
     return (
-      <div style={{ position:'relative', minHeight:'100dvh', width:'100%', background:'#060606', overflow:'hidden', fontFamily:"'Courier New',Courier,monospace", color:'#e8e8e8', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', boxSizing:'border-box', padding:'24px' }}>
-        <style>{`
-          @keyframes zjhDrift { 0%{top:28%} 100%{top:56%} }
-          @keyframes zjhFlick { 0%,100%{opacity:1} 92%{opacity:1} 94%{opacity:0.35} 96%{opacity:1} }
-          @keyframes zjhBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
-          @keyframes zjhFlow { 0%{background-position:0% 50%} 100%{background-position:300% 50%} }
-          .zjh-scan{position:absolute;inset:0;background:repeating-linear-gradient(to bottom,rgba(255,255,255,0.04) 0 1px,transparent 1px 3px);pointer-events:none;}
-          .zjh-noise{position:absolute;inset:0;opacity:0.05;background-image:radial-gradient(#fff 0.5px,transparent 0.5px);background-size:4px 4px;pointer-events:none;}
-          .zjh-title{font-size:66px;font-weight:900;letter-spacing:8px;color:#fff;text-shadow:-3px 0 #ff2b2b,3px 0 #00e5ff;animation:zjhFlick 4s infinite;margin:0;}
-          .zjh-flow{font-size:24px;font-weight:700;letter-spacing:5px;background:linear-gradient(90deg,#ff3b6b,#ffd24d,#00e5ff,#ff3b6b);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:zjhFlow 4s linear infinite;margin-top:14px;}
-          .zjh-term{border:1px solid #555;background:rgba(0,0,0,0.55);padding:18px 20px;width:100%;max-width:420px;box-sizing:border-box;position:relative;z-index:1;}
-          .zjh-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:22px;color:#d2d2d2;}
-          .zjh-prompt{color:#888;font-weight:bold;}
-          .zjh-input{flex:1;background:transparent;border:none;border-bottom:1px solid #444;color:#e8e8e8;font-family:inherit;font-size:22px;padding:4px 2px;outline:none;}
-          .zjh-input:focus{border-bottom-color:#ff3b3b;box-shadow:0 2px 8px -2px rgba(255,59,59,0.6);}
-          .zjh-input::placeholder{color:#666;}
-          .zjh-cursor{display:inline-block;width:11px;height:22px;background:#e8e8e8;vertical-align:-3px;animation:zjhBlink 1s step-end infinite;}
-          .zjh-btn{border:2px solid #ff3b3b;color:#ff5b5b;font-size:26px;font-weight:700;padding:14px 28px;background:rgba(255,43,43,0.08);letter-spacing:4px;cursor:pointer;font-family:inherit;margin-top:28px;}
-          .zjh-btn:active{background:rgba(255,43,43,0.22);}
-          .zjh-sub{font-size:16px;color:#7fd9e8;letter-spacing:1px;margin-top:18px;cursor:pointer;background:none;border:none;font-family:inherit;}
-          .zjh-band{position:absolute;left:0;right:0;height:70px;background:linear-gradient(to bottom,transparent,rgba(255,255,255,0.10),transparent);animation:zjhDrift 6s infinite alternate;pointer-events:none;}
-        `}</style>
-        <div className="zjh-scan"></div>
-        <div className="zjh-noise"></div>
-        <div className="zjh-band"></div>
-        <h1 className="zjh-title">炸金花</h1>
-        <div className="zjh-flow">第三张,想象为王</div>
-        <div className="zjh-term">
-          <div className="zjh-row">
-            <span className="zjh-prompt">&gt;</span>
-            <input className="zjh-input" placeholder="代号" value={playerName} onChange={(e) => setPlayerName(e.target.value)} />
-            <span className="zjh-cursor"></span>
+      <div style={styles.container}>
+        <div style={styles.cardGlow1}></div>
+        <div style={styles.cardGlow2}></div>
+        <div style={styles.cardGlow3}></div>
+        <div style={styles.card}>
+          <div style={styles.logoContainer}>
+            <span style={styles.logoEmoji}>♠</span>
+            <span style={styles.logoEmoji}>♥</span>
+            <span style={styles.logoEmoji}>♣</span>
+            <span style={styles.logoEmoji}>♦</span>
           </div>
-          <div className="zjh-row">
-            <span className="zjh-prompt">&gt;</span>
-            <input className="zjh-input" placeholder="暗号" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} />
+          <h1 style={styles.title}>
+            <span style={styles.titleRed}>公牌</span>
+            <span style={styles.titleGold}>炸金花</span>
+          </h1>
+          <p style={styles.subtitle}>♢ 第三张牌 · 想象为王 ♢</p>
+          <input
+            placeholder="👤 输入你的名字"
+            value={playerName}
+            onChange={(e) => setPlayerName(e.target.value)}
+            style={styles.input}
+          />
+          <input
+            placeholder="🔐 房间密码(设置或加入)"
+            value={roomPassword}
+            onChange={(e) => setRoomPassword(e.target.value)}
+            style={styles.input}
+          />
+          <div style={styles.btnGroup}>
+            <button onClick={createRoom} style={styles.btnPrimary}>🃏 创建房间</button>
+            <button onClick={joinRoom} style={styles.btnSecondary}>♢ 加入房间</button>
           </div>
+          {errorMsg && <div style={{ color: "#f87171", marginTop: 12, fontSize: 14 }}>{errorMsg}</div>}
+          {disconnected && <div style={{ color: "#f87171", marginTop: 8, fontSize: 14 }}>⚠️ 网络连接断开,请检查网络</div>}
         </div>
-        <button className="zjh-btn" onClick={joinRoom}>▶ 我要验牌</button>
-        <button className="zjh-sub" onClick={createRoom}>没有房间？点这里开桌</button>
-        {errorMsg && <div style={{ color:"#f87171", marginTop:16, fontSize:14 }}>{errorMsg}</div>}
-        {disconnected && <div style={{ color:"#f87171", marginTop:8, fontSize:14 }}>⚠️ 网络连接断开,请检查网络</div>}
       </div>
     );
   }
 
   const isMyBetTurn = phase === "betting" && currentPlayer?.name === playerName && !gameOver && !isDealer;
   const myPlayer = getMyPlayer();
-  const canChangeCommunity = phase === "betting" && deckOffset < 52 && deckOffset > 0;
+  const someonePressed = players.some(p => (p.bet ?? 0) > 0);
+  const canChangeCommunity = (
+    (isMyBetTurn && myBet === 0) ||                          // 闲家：轮到你压酒、且你还没压酒
+    (isDealer && phase === "betting" && !someonePressed)     // 庄家：下注阶段、且全场还没人压酒（发牌/重发后空档可换）
+  ) && deckOffset < 52 && deckOffset > 0;
 
   // 🔧 修复：想象牌兜底用 players 里"我"的真实手牌(myPlayer.cards)，而非 myCards 这个独立 state——
   // 重进/晚到的接收端不会触发 setMyCards，但 setPlayers 已正确更新 myPlayer.cards，否则想象牌恒显示"无牌"
