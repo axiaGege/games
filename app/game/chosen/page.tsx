@@ -439,6 +439,30 @@ export default function Chosen() {
         versionRef.current = Math.max(versionRef.current, oldVer + 1);
       }
     }
+    if (!joinedOk) {
+      // 兜底：乐观锁抢不到版本号（房主/其他客户端每 3 秒同步会递增版本号，极端并发下可能一直被抢先），
+      // 最后读一次最新名单、追加自己后无条件写回，确保能加入、绝不卡死。
+      // 只更新 players 字段，不碰 version，不覆盖别人的牌/酒；3 秒轮询会自然协调。
+      const { data: fresh2 } = await supabase.from("rooms").select("*").eq("id", roomData.id).single();
+      if (fresh2) {
+        const cur2 = parseArray(fresh2.players);
+        const ex2 = cur2.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+        let next2: any[];
+        if (ex2 >= 0) {
+          next2 = cur2.map((p: any, i: number) => i === ex2 ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p);
+        } else {
+          if (cur2.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
+          const occupied2 = cur2.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
+          let seatId2 = 0;
+          for (let i = 0; i < 10; i++) { if (!occupied2.includes(i)) { seatId2 = i; break; } }
+          const isActive2 = (fresh2.phase || roomData.phase) !== "waiting";
+          next2 = [...cur2, { cid: myCid, lastSeen: Date.now(), name, seatId: seatId2, isDealer: false, status: isActive2 ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false }];
+        }
+        await supabase.from("rooms").update({ players: next2 }).eq("id", roomData.id);
+        finalPlayers = next2;
+        joinedOk = true;
+      }
+    }
     if (!joinedOk) { setErrorMsg("加入失败，请稍后再试"); return; }
     const updated = finalPlayers;
     setRoomId(roomData.id); setJoined(true); setPlayers(updated); playersRef.current = updated;
