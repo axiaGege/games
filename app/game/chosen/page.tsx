@@ -11,7 +11,7 @@ const ROUND_WHEELS = [
   ["大", "小", "单", "双", "红桃", "黑桃", "梅花", "方片"],
   ["同花色", "同数字", "相加超13", "相加低于12", "得数奇数", "得数偶数", "点数最大", "点数最小"],
   ["豹子", "同花顺", "金花", "顺子", "对子", "单张"],
-  ["没牛", "牛一二", "牛三四", "牛五六", "牛七", "牛八", "牛九", "牛牛"],
+  ["没牛", "牛一", "牛二", "牛三", "牛四", "牛五", "牛六", "牛七", "牛八", "牛九", "牛牛"],
 ];
 const SUITS = ["♠", "♥", "♣", "♦"]; // 0黑桃 1红桃 2梅花 3方片
 const SUIT_NAMES = ["黑桃", "红桃", "梅花", "方片"];
@@ -72,9 +72,12 @@ function niuValue(cards: number[]) {
       }
   if (best < 0) return "没牛";
   if (best === 10) return "牛牛";
-  if (best <= 2) return "牛一二";
-  if (best <= 4) return "牛三四";
-  if (best <= 6) return "牛五六";
+  if (best === 1) return "牛一";
+  if (best === 2) return "牛二";
+  if (best === 3) return "牛三";
+  if (best === 4) return "牛四";
+  if (best === 5) return "牛五";
+  if (best === 6) return "牛六";
   if (best === 7) return "牛七";
   if (best === 8) return "牛八";
   return "牛九";
@@ -516,7 +519,7 @@ export default function Chosen() {
         if (st.wheelVisible !== undefined) setWheelVisible(st.wheelVisible);
         if (st.phase === "pouring") {
           setWheelRevealed(false); setResultRevealed(false);
-          if (st.round === 1) setFlipped([]); // 新局开始：清空本机翻牌状态（flipped 不进广播同步，接收端须自行重置，否则其他玩家旧翻牌残留导致新局牌直接亮出）
+          setRevealedOpponents({}); setFlipped([]); // 换轮倒酒：收起本机翻看的对手牌，并清空自己手牌翻开状态（flipped/revealedOpponents 不进广播，接收端须自行重置，否则旧翻牌残留一直敞着）
         }
         if (st.readyPlayers) setReadyPlayers(st.readyPlayers);
         if (st.round) setRound(st.round);
@@ -913,7 +916,15 @@ export default function Chosen() {
               {/* 盖面（酒红丝绒牌背，转前盖住轮盘） */}
               <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", borderRadius: "50%", background: "linear-gradient(135deg,#5c1a2e,#2e0a16)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `3px solid ${gold}`, boxShadow: "inset 0 0 18px rgba(0,0,0,0.6)" }}>
                 <style>{`@keyframes txspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
-                <span style={{ fontSize: 58, animation: wheelSpinning ? "txspin 1.1s linear infinite" : "none" }}>🎡</span>
+                <svg width="76" height="76" viewBox="0 0 100 100" style={{ animation: wheelSpinning ? "txspin 1.1s linear infinite" : "none", filter: "drop-shadow(0 0 6px rgba(212,175,55,0.55))" }}>
+                  <circle cx="50" cy="50" r="46" fill="none" stroke="#d4af37" strokeWidth="3" />
+                  <circle cx="50" cy="50" r="39" fill="none" stroke="rgba(212,175,55,0.35)" strokeWidth="1.5" />
+                  <polygon points="50,16 45,50 55,50" fill="#e23b54" />
+                  <polygon points="50,84 45,50 55,50" fill="#f3e6c0" />
+                  <circle cx="50" cy="50" r="4.5" fill="#d4af37" />
+                  <circle cx="50" cy="50" r="1.8" fill="#2e0a16" />
+                  <text x="50" y="11" textAnchor="middle" fontSize="10" fontWeight="700" fill="#d4af37" fontFamily="sans-serif">N</text>
+                </svg>
                 <span style={{ color: goldSoft, fontSize: 14, marginTop: 10, letterSpacing: 2 }}>{wheelSpinning ? "转动中…" : "天选转盘"}</span>
               </div>
               {/* 背面：真实轮盘（指中格金边脉冲高亮） */}
@@ -932,7 +943,7 @@ export default function Chosen() {
             </div>
           ) : (
             <div style={{ textAlign: "center", fontSize: 14, color: goldSoft, minHeight: 20, marginTop: 4 }}>
-              {phase === "round" ? (result || `本轮由 ${dealerName} 转转盘 🎡`) : phase === "pouring" ? `往公共杯倒酒，本轮由 ${dealerName} 发牌` : ""}
+              {phase === "round" ? (result || `本轮由 ${dealerName} 转转盘`) : phase === "pouring" ? `往公共杯倒酒，本轮由 ${dealerName} 发牌` : ""}
             </div>
           )}
         </div>
@@ -1038,7 +1049,7 @@ export default function Chosen() {
           {phase === "waiting" && <button onClick={startGame} style={btnPrimary(gold, goldSoft)}>▶ 开始游戏（冻结座位）</button>}
           {phase === "pouring" && allPoured && <button onClick={dealRound} style={btnPrimary(gold, goldSoft)}>🃏 发牌（第 {round} 轮）</button>}
           {phase === "pouring" && !allPoured && <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, padding: "8px 0" }}>⏳ 等待所有人倒酒…</div>}
-          {phase === "round" && <button onClick={() => spinWheel()} style={btnPrimary(gold, goldSoft)}>🎡 转转盘</button>}
+          {phase === "round" && <button onClick={() => spinWheel()} style={btnPrimary(gold, goldSoft)}>转转盘</button>}
           {phase === "result" && round < 4 && <button onClick={nextRound} style={btnPrimary(gold, goldSoft)}>➡ 下一轮</button>}
           {phase === "result" && round === 4 && <button onClick={nextRound} style={btnPrimary(gold, goldSoft)}>🔄 洗牌重来</button>}
         </div>
@@ -1059,7 +1070,7 @@ export default function Chosen() {
               2. 每轮大家往公共杯倒酒（0~3 杯），都倒完当轮发牌人发牌。<br />
               3. 共 4 轮：每轮新发 +1/+1/+1/+2 张，手牌累计 1/2/3/5 张（牌累积不弃）。<br />
               4. 每轮由当轮发牌人（👑）转转盘，指中的特征 → 手牌符合的人喝公共杯（多人平分）。<br />
-              5. 转盘特征：①大/小/单/双/花色 ②同花/同数/和超13/和低于12/奇数/偶数/点数最大/点数最小 ③豹子/同花顺/金花/顺子/对子/单张 ④没牛/牛一二/牛三四/牛五六/牛七/牛八/牛九/牛牛。<br />
+              5. 转盘特征：①大/小/单/双/花色 ②同花/同数/和超13/和低于12/奇数/偶数/点数最大/点数最小 ③豹子/同花顺/金花/顺子/对子/单张 ④没牛/牛一/牛二/牛三/牛四/牛五/牛六/牛七/牛八/牛九/牛牛。<br />
               6. 转盘真随机：若转到无人符合的特征，转盘自动重新转，直到有人喝为止。<br />
               7. 5 张打完洗牌重来，无限循环。<br />
               8. 每轮由当轮发牌人（👑）负责发牌与转转盘，按进房顺序轮着来。
