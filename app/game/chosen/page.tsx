@@ -142,7 +142,7 @@ function matchSingle(cards: number[], round: number, feature: string) {
 }
 
 // ===================== 转盘 SVG =====================
-function Wheel({ segments, selected, rotation = 0, size = 250 }: any) {
+function Wheel({ segments, selected, rotation = 0, size = 250, spinning = false }: any) {
   const n = segments.length;
   const cx = size / 2, cy = size / 2, r = size / 2 - 6;
   const slicesBg = [];
@@ -156,15 +156,17 @@ function Wheel({ segments, selected, rotation = 0, size = 250 }: any) {
     const mid = (a0 + a1) / 2;
     const tx = cx + (r * 0.6) * Math.cos(rad(mid));
     const ty = cy + (r * 0.6) * Math.sin(rad(mid));
-    const isSel = segments[i] === selected;
-    const base = i % 2 === 0 ? "#3a0d1c" : "#5a1326"; // 暗酒红交替
+    const isSel = !spinning && segments[i] === selected;
+    // 赛博霓虹：深夜蓝黑交替盘面 + 青色细分割线，指中格青光脉冲
+    const base = i % 2 === 0 ? "#10131c" : "#181d2a";
+    const NEON = ["#00e5ff", "#ff2e88", "#a3ff12", "#ffb300", "#b26bff", "#ff5c5c"];
     slicesBg.push(
       <path
         key={`bg-${i}`}
         d={`M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1} Z`}
-        fill={isSel ? "#c41e3a" : base}
-        stroke={isSel ? "#ffd76a" : "#d4af37"}
-        strokeWidth={isSel ? 3 : 1.5}
+        fill={isSel ? "#0e2f38" : base}
+        stroke={isSel ? "#00e5ff" : "rgba(0,229,255,0.28)"}
+        strokeWidth={isSel ? 3 : 1}
         style={isSel ? { animation: "selpulse 1s ease-in-out infinite" } : undefined}
       />
     );
@@ -173,26 +175,28 @@ function Wheel({ segments, selected, rotation = 0, size = 250 }: any) {
         key={`t-${i}`}
         x={tx} y={ty}
         transform={`rotate(${-rotation} ${tx} ${ty})`}
-        fill={isSel ? "#fff" : "#f0c75e"}
+        fill={isSel ? "#fff" : NEON[i % NEON.length]}
         fontSize={segments[i].length > 3 ? 11 : 14}
         fontWeight={700}
         textAnchor="middle"
         dominantBaseline="middle"
+        style={isSel ? undefined : { filter: `drop-shadow(0 0 4px ${NEON[i % NEON.length]})` }}
       >
         {segments[i]}
       </text>
     );
   }
   return (
-    <svg width={size} height={size} style={{ filter: "drop-shadow(0 0 18px rgba(196,30,58,0.5))" }}>
+    <svg width={size} height={size} style={{ filter: "drop-shadow(0 0 18px rgba(0,229,255,0.35))" }}>
       <style>{`@keyframes selpulse{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
-      <g style={{ transform: `rotate(${rotation}deg)`, transformOrigin: `${cx}px ${cy}px`, transition: "transform 3s cubic-bezier(.15,.85,.25,1)" }}>
+      <g style={{ transform: `rotate(${rotation}deg)`, transformOrigin: `${cx}px ${cy}px`, transition: "transform 4s cubic-bezier(0.33,1,0.68,1)" }}>
         {slicesBg}
         {sliceTexts}
       </g>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#d4af37" strokeWidth={3} />
-      <circle cx={cx} cy={cy} r={22} fill="#0a0a0f" stroke="#d4af37" strokeWidth={2} />
-      <text x={cx} y={cy} fill="#d4af37" fontSize={18} textAnchor="middle" dominantBaseline="middle">🍷</text>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#00e5ff" strokeWidth={2} />
+      <circle cx={cx} cy={cy} r={r - 4} fill="none" stroke="rgba(0,229,255,0.25)" strokeWidth={1} />
+      <circle cx={cx} cy={cy} r={22} fill="#0a0d14" stroke="#00e5ff" strokeWidth={2} />
+      <text x={cx} y={cy} fill="#00e5ff" fontSize={18} textAnchor="middle" dominantBaseline="middle">🍷</text>
     </svg>
   );
 }
@@ -240,6 +244,7 @@ export default function Chosen() {
   const dealingRef = useRef(false);
   const spinBusyRef = useRef(false); // 转盘转动/揭晓中防重入（真随机重转期间禁止再点）
   const wheelRotRef = useRef(0);     // 最新转盘角度（落空重转递归时 state 闭包过期，用 ref 取真值）
+  const leavingRef = useRef(false);  // 主动暂离/返回键离开中：true 时心跳不再把自己标回在线，保护暂离状态
 
   const isDealer = playerName && dealerId === playerName;
   const dealerName = (players.find((p: any) => p.name === dealerId)?.name) || dealerId || "—";
@@ -329,6 +334,20 @@ export default function Chosen() {
     }
   };
 
+  // 窄写：结构变更（重进 / 新加入）时，只把「自己那一行」写进数据库，绝不整套覆盖。
+  // 写前重新读一次库里最新名单，避免把 joinRoom 开头抄到的（可能过期的）旧快照刻回源头
+  // ——这是「别人牌被擦成 0 张 / 5 张」的深层病根（污染了数据库源头，之后谁刷新都中招）。
+  const narrowWriteSelf = async (rid: string, selfRow: any, extra?: any) => {
+    try {
+      const { data } = await supabase.from("rooms").select("players").eq("id", rid).maybeSingle();
+      let list = parseArray(data?.players);
+      const idx = list.findIndex((p: any) => (p.cid && selfRow.cid && p.cid === selfRow.cid) || (p.name && selfRow.name && p.name === selfRow.name));
+      if (idx >= 0) list = list.map((p: any, i: number) => (i === idx ? { ...p, ...selfRow } : p));
+      else list = [...list, selfRow];
+      await supabase.from("rooms").update({ players: list, ...(extra || {}) }).eq("id", rid);
+    } catch (_) {}
+  };
+
   const createRoom = async () => {
     if (!playerName.trim()) { setErrorMsg("请输入名字"); return; }
     if (!roomPassword.trim()) { setErrorMsg("请设置房间密码"); return; }
@@ -344,7 +363,7 @@ export default function Chosen() {
       readyplayers: [playerName.trim()],
     }).select().single();
     if (error) { setErrorMsg("创建失败: " + error.message); return; }
-    setRoomId(data.id); setPlayers([newPlayer]); playersRef.current = [newPlayer];
+    setRoomId(data.id); setPlayers([newPlayer]); playersRef.current = [newPlayer]; leavingRef.current = false;
     setDealerId(playerName.trim()); setSeed(null); setDeckOffset(0); setRound(1); setPhase("waiting");
     setReadyPlayers([playerName.trim()]); setWheelSegments(ROUND_WHEELS[0]); setWheelSelected(null);
     setWheelVisible(false); setExcluded([]); setResult(""); setDrinkers([]);
@@ -383,10 +402,26 @@ export default function Chosen() {
       currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name, lastSeen: Date.now() } : p);
     }
     if (existingIdx >= 0) {
-      // 重进（含暂离回归）：恢复全套，并把 online 设回 true（牌与座位一直在服务器，直接续上）
-      const revived = currentPlayers.map((p: any) => (p.name === name ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p));
+      leavingRef.current = false;
+      // 重进（含暂离回归）：恢复全套，并把 online 设回 true（牌与座位一直在服务器，直接续上）。
+      // 用 roomData（joinRoom 开头查到的最新房间）恢复本机 + 广播/写库完整状态——
+      // 带的是当前最新进度，绝不丢别人牌、绝不把正在玩的人拽回旧轮次。（对齐已知可用版本 6d8da7f）
+      const isMidGame = (roomData.phase || "waiting") !== "waiting";
+      const revived = currentPlayers.map((p: any) => {
+        if (!((p.cid && p.cid === myCid) || (p.name === name))) return p;
+        // 重进：恢复在线身份 + 认回原座位原牌
+        const base = { ...p, cid: myCid, name, online: true, lastSeen: Date.now() };
+        // 区分两种「回来」：
+        // 1) 暂离/返回键回来：之前被标记 online:false，座位+手牌一直在服务器。直接续上原身份、保留手牌，不让其降级为观战（兑现「牌会保留，回来直接续上」）。
+        // 2) 退出/刷新重进：并未主动暂离，online 仍是过期的 true。对局进行中则先转观战、清牌，等下一轮 promoteWatchers 自动转正补发缺的牌，避免被强行塞进当前轮。
+        const wasPaused = p.online === false;
+        if (!wasPaused && isMidGame && p.status === "playing") {
+          return { ...base, status: "watching", cards: [], pouredCups: 0, hasPoured: false };
+        }
+        return base; // 暂离回来：保留原 status(playing) 与 cards，online 设回 true，直接续上
+      });
       setRoomId(roomData.id); setJoined(true); setPlayers(revived); playersRef.current = revived;
-      // 重进重置本机翻牌/轮盘视觉状态：避免回来后之前翻开的牌/轮盘残留（下一轮 pouring 也会清，但 result 阶段回来会怪）
+      // 重进重置本机翻牌/轮盘视觉状态：避免回来后之前翻开的牌/轮盘残留
       setFlipped([]); setWheelRevealed(false); setResultRevealed(false); setRevealedOpponents({}); setWheelSpinning(false);
       setPhase(roomData.phase || "waiting"); setDealerId(roomData.dealerid || null);
       setSeed(roomData.seed || null); setDeckOffset(roomData.deckoffset || 0);
@@ -407,67 +442,24 @@ export default function Chosen() {
       } catch (_) {}
       let retries = 0;
       while (!channelRef.current && retries < 30) { await new Promise((r) => setTimeout(r, 100)); retries++; }
-      await broadcastAndSyncDB({ structuralSync: true, players: revived, phase: roomData.phase || "waiting", dealerId: roomData.dealerid || null, seed: roomData.seed || null, deckOffset: roomData.deckoffset || 0, wheelVisible: roomData.wheelvisible || false, wheelSelected: roomData.wheelselected || null, wheelSegments: currentWheel.length ? currentWheel : ROUND_WHEELS[0], round: rd.round || 1, excluded: rd.excluded || [], readyPlayers: currentReady, result: roomData.result || "", drinkers: parseArray(roomData.drinkers) });
+      // 只喊「我自己回来了」：带发件人签名 + skipWrite（不把抄来的整套旧快照写回库），
+      // 接收端据签名只更新「我」这一条，别人牌一根都不碰。
+      const mySelfRow = revived.find((p: any) => (p.cid && p.cid === myCid) || (p.name === name));
+      await broadcastAndSyncDB({ structuralSync: true, skipWrite: true, senderCid: myCid, senderName: name, players: revived });
+      // 窄写：只把自己那一行（在线 + 观战/续玩状态）写进库，源头不被污染
+      if (mySelfRow) await narrowWriteSelf(roomData.id, mySelfRow);
       return;
     }
-    // 乐观锁重试：并发加入时，后加入者用各自读到的旧名单覆盖先加入者 → 丢人。
-    // 改为「读最新名单→追加自己→带版本号条件写回」，版本已被别人递增则重读再写，最多 8 次。
-    let finalPlayers: any[] = currentPlayers;
-    let joinedOk = false;
-    for (let attempt = 0; attempt < 8 && !joinedOk; attempt++) {
-      const { data: fresh, error: fe } = await supabase.from("rooms").select("*").eq("id", roomData.id).single();
-      if (fe || !fresh) break;
-      const cur = parseArray(fresh.players);
-      const oldVer = fresh.version || 0;
-      // 自己是否已在（重连/暂离回归/上次重试已写入）—— 认人放宽：cid 相同 或 名字相同
-      const ex = cur.findIndex((p: any) => (p.cid && p.cid === myCid) || (p.name === name));
-      let nextList: any[];
-      if (ex >= 0) {
-        nextList = cur.map((p: any, i: number) => i === ex ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p);
-      } else {
-        if (cur.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
-        const occupied = cur.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
-        let seatId = 0;
-        for (let i = 0; i < 10; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
-        const isActive = (fresh.phase || roomData.phase) !== "waiting";
-        nextList = [...cur, { cid: myCid, lastSeen: Date.now(), name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false }];
-      }
-      const { data: upd } = await supabase.from("rooms")
-        .update({ players: nextList, readyplayers: currentReady, version: oldVer + 1 })
-        .eq("id", roomData.id).eq("version", oldVer)
-        .select();
-      if (Array.isArray(upd) && upd.length > 0) {
-        joinedOk = true;
-        finalPlayers = nextList;
-        versionRef.current = Math.max(versionRef.current, oldVer + 1);
-      }
-    }
-    if (!joinedOk) {
-      // 兜底：乐观锁抢不到版本号（房主/其他客户端每 3 秒同步会递增版本号，极端并发下可能一直被抢先），
-      // 最后读一次最新名单、追加自己后无条件写回，确保能加入、绝不卡死。
-      // 只更新 players 字段，不碰 version，不覆盖别人的牌/酒；3 秒轮询会自然协调。
-      const { data: fresh2 } = await supabase.from("rooms").select("*").eq("id", roomData.id).single();
-      if (fresh2) {
-        const cur2 = parseArray(fresh2.players);
-        const ex2 = cur2.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
-        let next2: any[];
-        if (ex2 >= 0) {
-          next2 = cur2.map((p: any, i: number) => i === ex2 ? { ...p, cid: myCid, name, online: true, lastSeen: Date.now() } : p);
-        } else {
-          if (cur2.length >= 10) { setErrorMsg("房间已满（最多10人）"); return; }
-          const occupied2 = cur2.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
-          let seatId2 = 0;
-          for (let i = 0; i < 10; i++) { if (!occupied2.includes(i)) { seatId2 = i; break; } }
-          const isActive2 = (fresh2.phase || roomData.phase) !== "waiting";
-          next2 = [...cur2, { cid: myCid, lastSeen: Date.now(), name, seatId: seatId2, isDealer: false, status: isActive2 ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false }];
-        }
-        await supabase.from("rooms").update({ players: next2 }).eq("id", roomData.id);
-        finalPlayers = next2;
-        joinedOk = true;
-      }
-    }
-    if (!joinedOk) { setErrorMsg("加入失败，请稍后再试"); return; }
-    const updated = finalPlayers;
+    // 全新加入（之前从未进过这房）：直接追加自己，广播/写库完整状态（对齐已知可用版本 6d8da7f）
+    const occupied = currentPlayers.map((p: any) => p.seatId).filter((id: any) => id !== undefined);
+    let seatId = 0;
+    for (let i = 0; i < 10; i++) { if (!occupied.includes(i)) { seatId = i; break; } }
+    const isActive = roomData.phase !== "waiting";
+    const newPlayer = { cid: myCid, lastSeen: Date.now(), name, seatId, isDealer: false, status: isActive ? "watching" : "playing", cards: [], pouredCups: 0, hasPoured: false };
+    const updated = [...currentPlayers, newPlayer];
+    // 窄写：重读库里最新名单后只追加自己这一行，绝不用开头抄到的（可能过期的）整套名单覆盖库
+    await narrowWriteSelf(roomData.id, newPlayer, { readyplayers: currentReady });
+    leavingRef.current = false;
     setRoomId(roomData.id); setJoined(true); setPlayers(updated); playersRef.current = updated;
     setPhase(roomData.phase || "waiting"); setDealerId(roomData.dealerid || null);
     setSeed(roomData.seed || null); setDeckOffset(roomData.deckoffset || 0);
@@ -490,7 +482,8 @@ export default function Chosen() {
     } catch (_) {}
     let retries = 0;
     while (!channelRef.current && retries < 30) { await new Promise((r) => setTimeout(r, 100)); retries++; }
-    await broadcastAndSyncDB({ structuralSync: true, players: updated, phase: roomData.phase || "waiting", dealerId: roomData.dealerid || null, seed: roomData.seed || null, deckOffset: roomData.deckoffset || 0, wheelVisible: roomData.wheelvisible || false, wheelSelected: roomData.wheelselected || null, wheelSegments: currentWheel.length ? currentWheel : ROUND_WHEELS[0], round: rd.round || 1, excluded: rd.excluded || [], readyPlayers: currentReady, result: roomData.result || "", drinkers: parseArray(roomData.drinkers) });
+    // 只喊「我这个新人进来了」：带发件人签名 + skipWrite；接收端据签名把我追加为新人，别人牌不动
+    await broadcastAndSyncDB({ structuralSync: true, skipWrite: true, senderCid: myCid, senderName: name, players: updated });
   };
 
   // ---------- 接收端 ----------
@@ -502,6 +495,47 @@ export default function Chosen() {
         if (st.version && st.version <= versionRef.current && !st.structuralSync) return;
         if (st.version && !st.structuralSync) { versionRef.current = st.version; }
         if (st.roundSeats) roundSeatsRef.current = st.roundSeats;
+        // 结构同步（重进/新加入）：只据「发件人签名」采用他自己那一条，别人一律只合并在线状态、牌 / 座位铁打不动。
+        // 且绝不碰 phase/round/seed/wheel 等游戏进度（那些只听当前发牌人的非结构广播）——从根上杜绝旧快照擦别人牌 / 卡轮次。
+        if (st.structuralSync) {
+          const incoming = st.players || [];
+          const senderCid = st.senderCid;
+          const senderName = st.senderName;
+          if (incoming.length > 0) {
+            const myCid = getOrCreateCid();
+            const myName = (playerName || "").trim();
+            // 铁律：结构广播（有人进来 / 重进 / 暂离返回）只允许「发件人宣布自己那一条」，
+            // 绝不允许发件人拿着抄来的（可能过期的）名单替别人代言手牌 / 身份。
+            // 从本地(prev)出发逐条决定，天然保证别人的牌 / 座位铁打不动。
+            setPlayers((prev) => {
+              const next = prev.map((p: any) => {
+                // 「接收者自己」这条永远以本地为准（远端对自己只会是回声 / 旧信），只把自己标在线
+                if ((p.cid && p.cid === myCid) || (myName && p.name === myName)) {
+                  return { ...p, online: true };
+                }
+                const q = incoming.find((x: any) => (x.cid && p.cid && x.cid === p.cid) || (x.name && p.name && x.name === p.name));
+                if (!q) return p; // incoming 没这人 → 保留本地（防旧名单漏人擦人）
+                // 「发件人自己」那条：采用他带来的最新状态（观战 / 续玩 / 在线 / 补牌都只是他自己的事），
+                // 带新鲜度校验：只有他那条不比本地旧才采用，防「迟到广播」把已被转正的他打回观战 0 张
+                const isSender = (senderCid && q.cid === senderCid) || (senderName && q.name === senderName);
+                if (isSender) {
+                  return ((q.lastSeen || 0) >= (p.lastSeen || 0)) ? { ...q } : p;
+                }
+                // 其他老玩家：只做「在线保护」——本地在线就保持在线，牌 / 身份 / 座位一律本地，过期空牌再也擦不动
+                return { ...p, online: p.online || q.online };
+              });
+              // incoming 里有、本地没有的人 = 真正的全新玩家 → 追加（本地无旧数据可保，采用他的）
+              for (const q of incoming) {
+                const has = next.some((p: any) => (q.cid && p.cid && q.cid === p.cid) || (q.name && p.name && q.name === p.name));
+                if (!has) next.push({ ...q });
+              }
+              playersRef.current = next;
+              return next;
+            });
+          }
+          setDisconnected(false);
+          return;
+        }
         const ps = st.players || [];
         if (ps.length > 0) { setPlayers(ps); playersRef.current = ps; }
         if (st.phase) { setPhase(st.phase); phaseRef.current = st.phase; }
@@ -513,8 +547,9 @@ export default function Chosen() {
         if (st.wheelRotation !== undefined) {
           setWheelRotation(st.wheelRotation);
           wheelRotRef.current = st.wheelRotation; // 同步角度真值（换发牌人后新房主重转角度才连贯）
+          setWheelRevealed(true);   // 立即翻开盖子露出真转盘（杜绝盖子匀速转与真转盘减速转脱节跳位）
           setWheelSpinning(true);
-          setTimeout(() => setWheelSpinning(false), 3050);
+          setTimeout(() => setWheelSpinning(false), 4100); // 真转盘CSS减速动画4秒，spinning须等满才停
         }
         if (st.wheelVisible !== undefined) setWheelVisible(st.wheelVisible);
         if (st.phase === "pouring") {
@@ -526,7 +561,6 @@ export default function Chosen() {
         if (st.excluded) setExcluded(st.excluded);
         if (st.result !== undefined) setResult(st.result);
         if (st.drinkers) setDrinkers(st.drinkers);
-        if (st.structuralSync) return;
         setDisconnected(false);
       })
       .subscribe();
@@ -534,61 +568,25 @@ export default function Chosen() {
     return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); channelRef.current = null; };
   }, [roomId]);
 
-  // ---------- 定时对账：每 3 秒以数据库权威账本兜底，漏听广播最多 3 秒自动追平 ----------
-  // 天选已有版本号单调闸 + 重连恢复，独缺这道"定时翻账本"。与黑杰克 syncFromDB 同思路，
-  // 直接从 rooms 表读最新权威状态应用到本地（DB 即公共账本，永远最新，故不比较版本号）。
+  // ---------- 返回键拦截：进房后按返回键先弹确认，确定则当暂离（保留座位手牌） ----------
   useEffect(() => {
-    if (!roomId) return;
-    const id = setInterval(async () => {
-      try {
-        const { data, error } = await supabase.from("rooms").select("*").eq("id", roomId).single();
-        if (error || !data) return;
-        // 心跳 + 幽灵清理：刷新自己的 lastSeen；只清"仍显示在线、但超过15分钟没心跳"的幽灵；
-        // 主动暂离(online===false)的人保留座位，绝不误伤
-        const myCid = (() => { try { return localStorage.getItem('txzz_cid') || ''; } catch { return ''; } })();
-        const now = Date.now();
-        let ps: any[] = parseArray(data.players);
-        let changed = false;
-        ps = ps.map((p: any) => {
-          if ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)) { changed = true; return { ...p, lastSeen: now }; }
-          if (p.online !== false && p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
-          return p;
-        }).filter(Boolean) as any[];
-        if (changed) { try { await supabase.from("rooms").update({ players: ps }).eq("id", roomId); } catch (_) {} }
-        // 新鲜度保护：库里版本比本地旧（写库还没落盘/延迟），不许旧数据覆盖本地——
-        // 否则刚经广播收到的新牌会被这3秒对账用旧账本抹掉（"有的发了有的没发"根因）
-        const dbVer = data.version || 0;
-        if (dbVer < versionRef.current) return;
-        versionRef.current = dbVer;
-        if (ps.length > 0) { setPlayers(ps); playersRef.current = ps; }
-        if (data.phase) { setPhase(data.phase); phaseRef.current = data.phase; }
-        if (data.dealerid !== undefined) setDealerId(data.dealerid);
-        if (data.seed !== undefined) setSeed(data.seed);
-        if (data.deckoffset !== undefined) setDeckOffset(data.deckoffset);
-        if (data.wheelsegments) setWheelSegments(data.wheelsegments);
-        if (data.wheelselected !== undefined) setWheelSelected(data.wheelselected);
-        if (data.wheelvisible !== undefined) setWheelVisible(data.wheelvisible);
-        if (data.communitycard) { try { roundSeatsRef.current = JSON.parse(data.communitycard); } catch (_) {} }
-        if (data.readyplayers) setReadyPlayers(data.readyplayers);
-        if (data.resultdetails) {
-          try {
-            const rd = JSON.parse(data.resultdetails);
-            if (rd.round) setRound(rd.round);
-            if (rd.excluded) setExcluded(rd.excluded);
-          } catch (_) {}
-        }
-        if (data.result !== undefined) setResult(data.result);
-        if (data.drinkers) setDrinkers(parseArray(data.drinkers));
-      } catch (_) {}
-    }, 3000);
-    return () => clearInterval(id);
-  }, [roomId]);
+    if (!joined) return;
+    const onPop = () => {
+      history.pushState(null, "", location.href); // 重新压入一条历史，阻止真正后退离开页面
+      if (window.confirm("确定离开对局吗？\n（离开后保留座位和手牌，回来可直接续上）")) {
+        leaveRoom();
+      }
+    };
+    history.pushState(null, "", location.href); // 进房先压一条历史，让“返回键”先命中此处而不是直接退出
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [joined]);
 
-  // 转盘停稳后：结果先盖着（揭晓中），延迟翻面亮出
+  // 转盘翻面：转动期间确保盖子翻开（双保险——广播处理函数里已设，effect 再保证一次，防 React 批量更新吞掉）
   useEffect(() => {
-    if (wheelSpinning) { setResultRevealed(false); setWheelRevealed(false); return; }
+    if (wheelSpinning) { setResultRevealed(false); setWheelRevealed(true); return; }
     if (phase === "result" && result) {
-      const t = setTimeout(() => { setResultRevealed(true); setWheelRevealed(true); }, 650);
+      const t = setTimeout(() => { setResultRevealed(true); }, 650);
       return () => clearTimeout(t);
     }
   }, [wheelSpinning, phase, result]);
@@ -606,9 +604,40 @@ export default function Chosen() {
     } catch (_) {}
   }, []);
 
+  // ---------- 在线状态轻量兜底：每4秒只核对「谁在线/谁暂离」，绝不碰牌/轮次/阶段 ----------
+  // 背景：之前删掉乱擦牌的心跳后，别人看到你「已回来在线」全靠重进那一条广播。若广播恰巧丢包，
+  // 别人会短暂残留「暂离」。此轮询只读 rooms.players 这一列，把远端(别人自己写入的权威 online)合并到本地，
+  // 且只更新 online 一个字段：
+  //  - 自己：以本地为准，绝不让自己本机已确认的状态被远端旧值覆盖（防自己写库延迟被误标离线）；
+  //  - 别人：采用远端 online（别人暂离/在线都由他自己写入，最权威），既纠正丢包残留，也绝不碰其牌与座位。
+  useEffect(() => {
+    if (!joined || !roomPassword) return;
+    const myCid = getOrCreateCid();
+    const id = setInterval(async () => {
+      try {
+        const { data, error } = await supabase.from("rooms").select("players").eq("password", roomPassword.trim()).maybeSingle();
+        if (error || !data) return;
+        const remote = parseArray(data.players);
+        if (!remote.length) return;
+        setPlayers((prev) => {
+          const next = prev.map((p: any) => {
+            const isSelf = (p.cid && p.cid === myCid) || (p.name && p.name === playerName.trim());
+            if (isSelf) return p; // 自己以本地为准，不受远端旧值干扰
+            const r: any = remote.find((q: any) => (q.cid && p.cid && q.cid === p.cid) || (q.name && p.name && q.name === p.name));
+            return r ? { ...p, online: r.online } : p;
+          });
+          playersRef.current = next;
+          return next;
+        });
+      } catch (_) {}
+    }, 4000);
+    return () => clearInterval(id);
+  }, [joined, roomPassword, playerName]);
+
   // ---------- 离开 ----------
   const leaveRoom = async () => {
     if (!roomId) return;
+    leavingRef.current = true; // 主动暂离/返回键离开：心跳护栏，避免被标回在线
     const me = playerName;
     // 暂离：保留玩家（含手牌/座位），只标记 offline，回来牌还在、座位不丢
     let updated = players.map((p) => (p.name === me ? { ...p, online: false } : p));
@@ -630,7 +659,7 @@ export default function Chosen() {
       // 无人接手则保留房主标记（暂离期间游戏暂停，回来继续）
     }
     await supabase.from("rooms").update({ players: updated, dealerid: newDealer, readyplayers: newReady }).eq("id", roomId);
-    await broadcastAndSyncDB({ structuralSync: true, players: updated, phase: phase, dealerId: newDealer, seed: seed, deckOffset: deckOffset, wheelVisible: wheelVisible, wheelSelected: wheelSelected, wheelSegments: wheelSegments, round: round, excluded: excluded, readyPlayers: newReady, result: result, drinkers: drinkers });
+    await broadcastAndSyncDB({ players: updated, phase: phase, dealerId: newDealer, seed: seed, deckOffset: deckOffset, wheelVisible: wheelVisible, wheelSelected: wheelSelected, wheelSegments: wheelSegments, round: round, excluded: excluded, readyPlayers: newReady, result: result, drinkers: drinkers });
     setJoined(false); setRoomId(""); // 本机退出界面，但服务器仍保留该玩家（online=false），牌与座位都在
     try { localStorage.removeItem("txzz_name"); localStorage.removeItem("txzz_pass"); localStorage.removeItem("txzz_room"); /* 保留 txzz_cid */ } catch (_) {}
     if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
@@ -680,8 +709,11 @@ export default function Chosen() {
     setTimeout(() => setPourFloat(null), 900);
   };
 
-  // 中途加入的观战者，在「下一轮 / 洗牌重来」时转正为玩家，并补发其缺的牌
-  // （按当前种子牌堆顺序续接 deckOffset，保证牌合法不重复；cumsum=各轮累积张数前缀和）
+  // 中途加入的观战者，在「下一轮 / 洗牌重来」时转正为玩家，并补发其缺的历史牌。
+  // 只处理 status==="watching" 的人——补牌只由 dealer 一人算、一次广播，其它端只接收 players，绝不本地各自补牌
+  // （否则各端 seed/deckOffset 中间态不一致 → 同一个人在不同端补到的牌不同 = "第三轮有人3张有人2张"）。
+  // playing 玩家若因重进/暂离链路漏了历史牌，改由 dealRound 发牌时统一兜底补齐（同样只在 dealer 端算一次）。
+  // （按当前种子牌堆顺序续接 deckOffset 追加到末尾，roundCards 取的是前 N 张，顺序不乱、牌合法不重复；cumsum=各轮累积张数前缀和）
   const promoteWatchers = (list: any[], nr: number) => {
     const cumsum = [1, 2, 3, 5];
     const need = nr <= 1 ? 0 : cumsum[nr - 2];
@@ -717,6 +749,8 @@ export default function Chosen() {
     try {
     const r = roundRef.current;
     const n = ROUND_HANDS[r - 1];
+    const cumsum = [1, 2, 3, 5];
+    const prevNeed = r <= 1 ? 0 : cumsum[r - 2]; // 本轮发牌前，玩家手里应有的「上一轮累积」张数
     const deck = shuffleDeck(seedRef.current || 1);
     let off = deckOffsetRef.current;
     const ps = playersRef.current.map((p) => ({ ...p, cards: [...(p.cards || [])] }));
@@ -726,6 +760,9 @@ export default function Chosen() {
     seats.forEach((seat) => {
       const p = ps.find((x) => x.seatId === seat);
       if (!p) return;
+      // 兜底补牌：若该玩家因重进/暂离链路漏了历史牌（牌数不足上一轮累积数），先补齐到 prevNeed——
+      // 只在 dealer 端算、随本次广播一起下发，各端只接收，保证所有人牌数一致（根治"有人3张有人2张"）
+      while (p.cards.length < prevNeed) { p.cards.push(deck[off]); off++; }
       // 累积发牌：保留之前轮次手牌，本轮再追加 n 张新牌
       for (let k = 0; k < n; k++) { p.cards.push(deck[off]); off++; }
     });
@@ -784,8 +821,9 @@ export default function Chosen() {
     wheelRotRef.current = newRot;
     setWheelRotation(newRot);
     setWheelSelected(picked);
+    setWheelRevealed(true);    // 转动开始就翻开盖子：全程看真转盘减速转，杜绝盖子匀速转→翻开跳位
     setWheelSpinning(true);
-    setTimeout(() => setWheelSpinning(false), 3050);
+    setTimeout(() => setWheelSpinning(false), 4100); // 真转盘CSS减速动画4秒，spinning等满才停
     // 先只广播"转盘在转"（不带谁喝的结果——防剧透），让所有端同步看转
     broadcastAndSyncDB({
       players: ps, phase: "round", dealerId, seed: seedRef.current, deckOffset: deckOffsetRef.current,
@@ -793,7 +831,7 @@ export default function Chosen() {
       round: r, excluded, readyPlayers: readyRef.current, result: "", drinkers: [], roundSeats: roundSeatsRef.current,
       wheelRotation: newRot,
     });
-    // 转盘停稳后（3s动画+0.6s缓冲）才判定并公告
+    // 转盘停稳后（4s减速动画+0.2s缓冲）才判定并公告
     setTimeout(() => {
       const drinkersList = matchNames(picked);
       if (drinkersList.length === 0 && attempt < 3) {
@@ -821,7 +859,7 @@ export default function Chosen() {
         wheelVisible: true, wheelSelected: picked, wheelSegments: segs,
         round: r, excluded, readyPlayers: readyRef.current, result: txt, drinkers: drinkersList, roundSeats: roundSeatsRef.current,
       });
-    }, 3650);
+    }, 4200);
   };
 
   // 房主：下一轮 或 洗牌重来
@@ -914,22 +952,25 @@ export default function Chosen() {
           <div style={{ perspective: 800, display: "flex", justifyContent: "center" }}>
             <div style={{ width: 230, height: 230, position: "relative", transformStyle: "preserve-3d", transition: "transform 0.6s", transform: wheelRevealed ? "rotateY(180deg)" : "rotateY(0deg)" }}>
               {/* 盖面（酒红丝绒牌背，转前盖住轮盘） */}
-              <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", borderRadius: "50%", background: "linear-gradient(135deg,#5c1a2e,#2e0a16)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `3px solid ${gold}`, boxShadow: "inset 0 0 18px rgba(0,0,0,0.6)" }}>
+              <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", borderRadius: "50%", background: "linear-gradient(135deg,#131826,#0a0d14)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "3px solid #00e5ff", boxShadow: "inset 0 0 18px rgba(0,0,0,0.7), 0 0 16px rgba(0,229,255,0.35)" }}>
                 <style>{`@keyframes txspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
-                <svg width="76" height="76" viewBox="0 0 100 100" style={{ animation: wheelSpinning ? "txspin 1.1s linear infinite" : "none", filter: "drop-shadow(0 0 6px rgba(212,175,55,0.55))" }}>
-                  <circle cx="50" cy="50" r="46" fill="none" stroke="#d4af37" strokeWidth="3" />
-                  <circle cx="50" cy="50" r="39" fill="none" stroke="rgba(212,175,55,0.35)" strokeWidth="1.5" />
-                  <polygon points="50,16 45,50 55,50" fill="#e23b54" />
-                  <polygon points="50,84 45,50 55,50" fill="#f3e6c0" />
-                  <circle cx="50" cy="50" r="4.5" fill="#d4af37" />
-                  <circle cx="50" cy="50" r="1.8" fill="#2e0a16" />
-                  <text x="50" y="11" textAnchor="middle" fontSize="10" fontWeight="700" fill="#d4af37" fontFamily="sans-serif">N</text>
+                <svg width="76" height="76" viewBox="0 0 100 100" style={{ animation: wheelSpinning ? "txspin 1.1s linear infinite" : "none", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.6))" }}>
+                  {/* 电光准星：外环 + 虚线雷达环 + 十字准星线 + 顶部粉色锁定标记 + 中心锁定圈 */}
+                  <circle cx="50" cy="50" r="46" fill="none" stroke="#00e5ff" strokeWidth="3" />
+                  <circle cx="50" cy="50" r="34" fill="none" stroke="rgba(0,229,255,0.35)" strokeWidth="1.5" strokeDasharray="4 5" />
+                  <line x1="50" y1="7" x2="50" y2="27" stroke="#00e5ff" strokeWidth="2.5" />
+                  <line x1="50" y1="73" x2="50" y2="93" stroke="#00e5ff" strokeWidth="2.5" />
+                  <line x1="7" y1="50" x2="27" y2="50" stroke="#00e5ff" strokeWidth="2.5" />
+                  <line x1="73" y1="50" x2="93" y2="50" stroke="#00e5ff" strokeWidth="2.5" />
+                  <polygon points="50,1 43,15 57,15" fill="#ff2e88" />
+                  <circle cx="50" cy="50" r="13" fill="none" stroke="#8ef6ff" strokeWidth="2" />
+                  <circle cx="50" cy="50" r="3.2" fill="#ff2e88" />
                 </svg>
-                <span style={{ color: goldSoft, fontSize: 14, marginTop: 10, letterSpacing: 2 }}>{wheelSpinning ? "转动中…" : "天选转盘"}</span>
+                <span style={{ color: "#8ef6ff", fontSize: 14, marginTop: 10, letterSpacing: 2, textShadow: "0 0 8px rgba(0,229,255,0.5)" }}>{wheelSpinning ? "转动中…" : "天选转盘"}</span>
               </div>
               {/* 背面：真实轮盘（指中格金边脉冲高亮） */}
               <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}>
-                <Wheel segments={wheelSegments} selected={wheelSelected} rotation={wheelRotation} size={230} />
+                <Wheel segments={wheelSegments} selected={wheelSelected} rotation={wheelRotation} size={230} spinning={wheelSpinning} />
               </div>
             </div>
           </div>
@@ -1024,7 +1065,7 @@ export default function Chosen() {
             </div>
           );
         }) : (
-          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, padding: "20px 0" }}>等待 {dealerName} 发牌…</div>
+          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, padding: "20px 0" }}>{myPlayer?.status === "watching" && phase !== "waiting" ? "👁 观战中，下一轮自动加入" : `等待 ${dealerName} 发牌…`}</div>
         )}
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>我的手牌（第 {round} 轮 · 共 {myCards.length} 张）</div>
