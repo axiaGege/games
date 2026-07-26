@@ -1015,6 +1015,8 @@ export default function BlackjackPage() {
     setSeed(newSeed);
     setLocalDeck(createDeckWithSeed(newSeed));
     setDeckOffset(0);
+    deckOffsetRef.current = 0;
+    seedRef.current = newSeed;
 
     setPhase("dealing");
     setReadyPlayers([]);
@@ -1079,6 +1081,7 @@ export default function BlackjackPage() {
     });
 
     setDeckOffset(offset);
+    deckOffsetRef.current = offset;
     setPlayers(newPlayers);
 
     const me = newPlayers.find(p => p.name === playerName);
@@ -2232,6 +2235,8 @@ for (const r of results) {
     setSeed(newSeed);
     setLocalDeck(createDeckWithSeed(newSeed));
     setDeckOffset(0);
+    deckOffsetRef.current = 0;
+    seedRef.current = newSeed;
 
     await broadcastAndSyncDB({
       players: resetPlayers,
@@ -2285,6 +2290,8 @@ for (const r of results) {
     setSeed(newSeed);
     setLocalDeck(newDeck);
     setDeckOffset(0);
+    deckOffsetRef.current = 0;
+    seedRef.current = newSeed;
 
     const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
     const freeSeats: number[] = [];
