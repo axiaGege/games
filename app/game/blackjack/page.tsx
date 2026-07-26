@@ -275,6 +275,10 @@ export default function BlackjackPage() {
   const drawTimeoutFiredRef = useRef(false);
   // 记录已本地起算过倒计时的那一轮 deadline 值，避免每次亮牌广播都重置倒计时
   const drawDeadlineCtrlRef = useRef<number | null>(null);
+  // 同步 drawSubPhase 最新值到 ref：广播接收端闭包依赖为 [roomId,playerName]，
+  // 直接用 drawSubPhase 会拿到旧值；用 ref 才能拿到当前"抽庄进行中/已完成"状态做相位护栏判断
+  const drawSubPhaseRef = useRef<"choose" | "reveal" | "done">("choose");
+  useEffect(() => { drawSubPhaseRef.current = drawSubPhase; }, [drawSubPhase]);
 
   // ==================== ConfirmDialog 组件 ====================
   const ConfirmDialog = () => {
@@ -371,9 +375,12 @@ export default function BlackjackPage() {
       for (const p of dbPlayers) if (!seen.has(keyOf(p))) out.push(p);
       return out;
     });
-    // 仅非对局阶段全量同步其他状态，避免回退进行中的 phase/准备
+    // 仅非对局阶段全量同步其他状态，避免回退进行中的 phase/准备；
+    // 例外：卡在 wheel 且抽庄已定(drawSubPhase==="done")时，允许向前进入新一局(dealing/player_turn/dealer_turn)，
+    // 避免漏掉广播的玩家被死锁在"抽庄中"（拿牌/停牌按钮出不来）
     const ph: string = row.phase;
-    if (ph === 'waiting' || ph === 'waiting_for_dealer' || ph === 'wheel') {
+    const forwardFromWheel = (ph === 'dealing' || ph === 'player_turn' || ph === 'dealer_turn') && phase === 'wheel' && drawSubPhase === 'done';
+    if (ph === 'waiting' || ph === 'waiting_for_dealer' || ph === 'wheel' || forwardFromWheel) {
       setPhase(ph);
       setReadyPlayers(row.readyplayers || []);
       setDealerId(row.dealerid || null);
@@ -454,16 +461,17 @@ export default function BlackjackPage() {
         });
 
         setPhase(prevPhase => {
-          // 防回退（方向一）：已进入对局中时，拒绝被迟到旧广播拉回 抽庄/等待/结算
-          const inRound = prevPhase === "dealing" || prevPhase === "player_turn" || prevPhase === "dealer_turn";
-          if (inRound && (state.phase === "wheel" || state.phase === "waiting" || state.phase === "waiting_for_dealer")) {
-            return prevPhase;
-          }
-          // 防回退（方向二）：已结算/选庄时，拒绝被迟到"对局中"旧广播戳回（避免结算单一闪而过）
-          const settled = prevPhase === "waiting_for_dealer" || prevPhase === "wheel";
-          if (settled && (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn")) {
-            return prevPhase;
-          }
+          const isGameplay = (p: string) => p === "dealing" || p === "player_turn" || p === "dealer_turn";
+          // 方向一：已进入对局中时，拒绝被迟到旧广播拉回 抽庄/等待(开始)；
+          //        【放行 waiting_for_dealer】——它只由正常结算产生，是"对局中→结算"的正向推进而非回退，
+          //        误挡会让部分玩家卡在 player_turn/dealer_turn+gameOver 的中间态（结算文字+重置按钮一闪而过）
+          if (isGameplay(prevPhase) && (state.phase === "waiting" || state.phase === "wheel")) return prevPhase;
+          // 方向二：结算(waiting_for_dealer)时，拒绝被迟到"对局中"旧广播戳回（避免结算单一闪而过）
+          if (prevPhase === "waiting_for_dealer" && isGameplay(state.phase)) return prevPhase;
+          // 抽庄进行中(choose/reveal)：同样拒绝被迟到旧广播戳回，保护抽庄画面不被戳回
+          if (prevPhase === "wheel" && drawSubPhaseRef.current !== "done" && isGameplay(state.phase)) return prevPhase;
+          // 抽庄已完成(done)：这是"本局结束、即将开新局"，放行 wheel → dealing/player_turn，让新一局正常开始
+          if (prevPhase === "wheel" && drawSubPhaseRef.current === "done" && isGameplay(state.phase)) return state.phase;
           if (state.phase === "waiting_for_dealer") return "waiting_for_dealer";
           return state.phase || "waiting";
         });
