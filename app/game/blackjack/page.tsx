@@ -267,16 +267,12 @@ export default function BlackjackPage() {
   const [confirmDialog, setConfirmDialog] = useState<{show:boolean, message:string, callback:any}>({show:false, message:'', callback:null});
   const [spectators, setSpectators] = useState<string[]>([]);
   const [showRules, setShowRules] = useState(false);
-  const [dealerBjPopup, setDealerBjPopup] = useState(false);
   const channelRef = useRef<any>(null);
   const playersRef = useRef<any[]>([]);
   const seedRef = useRef<number | null>(null);
   const deckOffsetRef = useRef(0);
   const isSettlingRef = useRef(false);
   const drawTimeoutFiredRef = useRef(false);
-  // 自己准备意图的权威值：syncFromDB 的 postgres_changes 回音可能带旧值把"已准备"打回"准备"，
-  // 用此 ref 让自己的点击意图不可被迟到回音推翻，根除"准备→已准备→准备"闪回
-  const myReadyRef = useRef(false);
 
   // ==================== ConfirmDialog 组件 ====================
   const ConfirmDialog = () => {
@@ -327,13 +323,13 @@ export default function BlackjackPage() {
         currentplayerindex: state.currentPlayerIndex,
         result: state.result,
         resultdetails: state.resultDetails,
+        readyplayers: state.readyPlayers,
         settlementstep: state.settlementStep || 0,
         seed: state.seed,
         deckoffset: state.deckOffset || 0,
         wheelvisible: state.wheelVisible || false,
         wheelselected: state.wheelSelected || null,
         wheelsegments: state.wheelSegments || [],
-        dealerbjpopup: state.dealerBjPopup || false,
       }).eq("id", roomId);
       console.log('💾 数据库同步成功');
       setDisconnected(false);
@@ -374,55 +370,20 @@ export default function BlackjackPage() {
       return out;
     });
     // 仅非对局阶段全量同步其他状态，避免回退进行中的 phase/准备
-    // 逻辑与广播接收端 phase 护栏保持一致
     const ph: string = row.phase;
-    const isPhaseBackwards = (currentPhase: string) => {
-      const inRound = currentPhase === "dealing" || currentPhase === "player_turn" || currentPhase === "dealer_turn";
-      if (inRound && (ph === "wheel" || ph === "waiting" || ph === "waiting_for_dealer")) return true;
-      const settled = currentPhase === "waiting_for_dealer" || currentPhase === "wheel";
-      if (settled && (ph === "dealing" || ph === "player_turn" || ph === "dealer_turn")) {
-        if (!(currentPhase === "wheel" && ph === "dealing")) return true;
-      }
-      if (currentPhase === "wheel" && ph === "waiting_for_dealer") return true;
-      return false;
-    };
-
-    setPhase(prevPhase => isPhaseBackwards(prevPhase) ? prevPhase : (ph as typeof prevPhase));
-
-    // 数据状态无条件同步（seed/deckOffset 等是权威数据，必须每次更新）
-    // 仅 phase 有防回退护栏（上面已处理）
-    // readyPlayers：以数据库为其他人真相，但自己这一位的意图用 myReadyRef 锁定，
-    // 迟到回音(可能带旧 readyplayers)无法再把"已准备"打回"准备"
-    setReadyPlayers(prev => {
-      const dbSet = new Set<string>(row.readyplayers || []);
-      if (dbSet.size === 0) { myReadyRef.current = false; return []; }
-      if (myReadyRef.current) dbSet.add(playerName); else dbSet.delete(playerName);
-      return [...dbSet];
-    });
-    setDealerId(row.dealerid || null);
-    setResultDetails(row.resultdetails || []);
-    setSpectators(row.spectators || []);
-    setSeed(row.seed ?? null);
-    // deckOffset 与广播接收端一致：同 seed 用 Math.max 防倒退，避免轮询旧值把发牌位置拉低→牌堆错乱/"牌堆用完"
-    {
-      const _inc = row.deckoffset || 0;
-      if (row.seed === null || row.seed === undefined) { setDeckOffset(0); deckOffsetRef.current = 0; }
-      else if (row.seed !== seedRef.current) { setDeckOffset(_inc); deckOffsetRef.current = _inc; }
-      else { setDeckOffset(prev => Math.max(prev, _inc)); deckOffsetRef.current = Math.max(deckOffsetRef.current, _inc); }
-      seedRef.current = row.seed ?? null;
+    if (ph === 'waiting' || ph === 'waiting_for_dealer' || ph === 'wheel') {
+      setPhase(ph);
+      setReadyPlayers(row.readyplayers || []);
+      setDealerId(row.dealerid || null);
+      setResultDetails(row.resultdetails || []);
+      setSpectators(row.spectators || []);
+      setSeed(row.seed ?? null);
+      setDeckOffset(row.deckoffset || 0);
+      setWheelVisible(row.wheelvisible || false);
+      setWheelSelected(row.wheelselected || null);
+      setWheelSegments(row.wheelsegments || []);
     }
-    setWheelVisible(row.wheelvisible || false);
-    setWheelSelected(row.wheelselected || null);
-    setWheelSegments(row.wheelsegments || []);
-    if (row.dealerbjpopup) setDealerBjPopup(true);
   };
-
-  // 庄家黑杰克弹窗：3.5秒后自动消失
-  useEffect(() => {
-    if (!dealerBjPopup) return;
-    const t = setTimeout(() => setDealerBjPopup(false), 3500);
-    return () => clearTimeout(t);
-  }, [dealerBjPopup]);
 
   // ==================== Supabase 订阅 ====================
   useEffect(() => {
@@ -486,15 +447,8 @@ export default function BlackjackPage() {
             return prevPhase;
           }
           // 防回退（方向二）：已结算/选庄时，拒绝被迟到"对局中"旧广播戳回（避免结算单一闪而过）
-          // 例外：wheel→dealing 放行（抽庄结束→新一局发牌）
           const settled = prevPhase === "waiting_for_dealer" || prevPhase === "wheel";
           if (settled && (state.phase === "dealing" || state.phase === "player_turn" || state.phase === "dealer_turn")) {
-            if (!(prevPhase === "wheel" && state.phase === "dealing")) {
-              return prevPhase;
-            }
-          }
-          // 防回退（方向三）：选庄中(wheel)时，拒绝被迟到"等待庄家抽牌"旧广播拉回（避免庄家ID被篡改）
-          if (prevPhase === "wheel" && state.phase === "waiting_for_dealer") {
             return prevPhase;
           }
           if (state.phase === "waiting_for_dealer") return "waiting_for_dealer";
@@ -522,7 +476,7 @@ export default function BlackjackPage() {
         setCurrentPlayerIndex(state.currentPlayerIndex || 0);
         setResult(state.result || "");
         setResultDetails(state.resultDetails || []);
-        if (state.dealerBjPopup) setDealerBjPopup(true);
+        setReadyPlayers(state.readyPlayers || []);
         if (state.newDealerName !== undefined) setNewDealerName(state.newDealerName);
         if (state.spectators !== undefined) setSpectators(state.spectators);
         setSettlementStep(state.settlementStep || 0);
@@ -970,14 +924,12 @@ export default function BlackjackPage() {
     setIsDealer(false);
     setMySeatId(null);
     setReadyPlayers([]);
-    myReadyRef.current = false;
     setSettlementStep(0);
     setErrorMsg("");
     setDisconnected(false);
     setSeed(null);
     setLocalDeck([]);
     setDeckOffset(0);
-    deckOffsetRef.current = 0;
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
@@ -1010,37 +962,8 @@ export default function BlackjackPage() {
       return;
     }
     const isReady = readyPlayers.includes(playerName);
-    const prevReady = readyPlayers;
     const newReady = isReady ? readyPlayers.filter(p => p !== playerName) : [...readyPlayers, playerName];
-    myReadyRef.current = !isReady;
     setReadyPlayers(newReady);
-    // 先读数据库最新准备名单，合并自己状态后写回（避免用本地旧闭包整列覆盖别人）
-    const { data: latest, error: readErr } = await supabase
-      .from('rooms')
-      .select('readyplayers')
-      .eq('id', roomId)
-      .single();
-    if (readErr || !latest) {
-      myReadyRef.current = isReady;
-      setReadyPlayers(prevReady);
-      setErrorMsg('准备失��，请重试');
-      return;
-    }
-    const dbReady: string[] = latest.readyplayers || [];
-    const mergedReady = isReady
-      ? dbReady.filter(p => p !== playerName)
-      : Array.from(new Set([...dbReady, playerName]));
-    const { error: writeErr } = await supabase
-      .from('rooms')
-      .update({ readyplayers: mergedReady })
-      .eq('id', roomId);
-    if (writeErr) {
-      myReadyRef.current = isReady;
-      setReadyPlayers(prevReady);
-      setErrorMsg('准备失败，请重试');
-      return;
-    }
-    // 广播其他状态（readyplayers 靠 postgres_changes 自动同步，不再走 broadcastAndSyncDB 写库）
     await broadcastAndSyncDB({
       spectators: spectators || [],
       players,
@@ -1050,7 +973,7 @@ export default function BlackjackPage() {
       gameOver,
       result,
       resultDetails,
-      readyPlayers: mergedReady,
+      readyPlayers: newReady,
       settlementStep: 0,
       seed,
       deckOffset,
@@ -1063,8 +986,6 @@ export default function BlackjackPage() {
   // ==================== 开始游戏 ====================
   const startGame = async () => {
     if (phase !== "waiting") return;
-    setErrorMsg("");
-    setDealerBjPopup(false);
     // 先从数据库拉最新房间，确保名单包含所有已加入者（避免本地名单过时漏人）
     const { data: latest } = await supabase.from("rooms").select("*").eq("id", roomId).single();
     const basePlayers = latest ? parsePlayers(latest.players) : players;
@@ -1092,15 +1013,11 @@ export default function BlackjackPage() {
 
     const newSeed = Math.floor(Math.random() * 1000000);
     setSeed(newSeed);
-    seedRef.current = newSeed;
     setLocalDeck(createDeckWithSeed(newSeed));
     setDeckOffset(0);
-    deckOffsetRef.current = 0;
 
     setPhase("dealing");
     setReadyPlayers([]);
-    myReadyRef.current = false;
-    supabase.from("rooms").update({ readyplayers: [] }).eq("id", roomId).then(() => {});
     setShowMyCards(false);
     setMyCards([]);
     setMyCardCount(0);
@@ -1162,7 +1079,6 @@ export default function BlackjackPage() {
     });
 
     setDeckOffset(offset);
-    deckOffsetRef.current = offset;
     setPlayers(newPlayers);
 
     const me = newPlayers.find(p => p.name === playerName);
@@ -1175,7 +1091,6 @@ export default function BlackjackPage() {
     const dealer = newPlayers.find(p => p.name === dealerName);
     if (dealer && isBlackjack(dealer.cards)) {
       setGameOver(true);
-      setDealerBjPopup(true);
       const resultMsg = `庄家黑杰克！所有玩家各喝 2 杯！`;
       setResult(resultMsg);
       const details = [
@@ -1212,7 +1127,6 @@ export default function BlackjackPage() {
         wheelVisible: false,
         wheelSelected: null,
         wheelSegments: [],
-        dealerBjPopup: true,
       });
       return;
     }
@@ -1288,7 +1202,7 @@ export default function BlackjackPage() {
 
   let deck = localDeck;
   let offset = deckOffsetRef.current;
-  // 牌堆用完则自动停牌（沿用历史稳定版本 9cd494d 的发牌逻辑，避免后两次"修复"引入的牌堆/400 问题）
+  // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
   if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，自动停牌");
     await handleStand(true);
@@ -1560,7 +1474,7 @@ export default function BlackjackPage() {
 
   let deck = localDeck;
   let offset = deckOffsetRef.current;
-  // 牌堆用完则自动停牌（沿用历史稳定版本 9cd494d 的发牌逻辑，避免后两次"修复"引入的牌堆/400 问题）
+  // 🔥 修改：牌堆用完则自动停牌，不再重新生成新牌堆
   if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，庄家自动停牌");
     await handleDealerStand(true);
@@ -2189,7 +2103,7 @@ for (const r of results) {
     await broadcastAndSyncDB({
       spectators: spectators || [],
       players,
-      phase: "wheel",
+      phase: "waiting",
       dealerId: winner,
       currentPlayerIndex,
       gameOver: true,
@@ -2271,9 +2185,7 @@ for (const r of results) {
   // ==================== 下一局 ====================
   const startNextRound = async (newDealerName: string) => {
     console.log('🔄 开始新一局，庄家:', newDealerName);
-    setErrorMsg("");
 
-    setDealerBjPopup(false);
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
@@ -2289,8 +2201,6 @@ for (const r of results) {
     setResultDetails([]);
     setSettlementStep(0);
     setReadyPlayers([]);
-    myReadyRef.current = false;
-    supabase.from("rooms").update({ readyplayers: [] }).eq("id", roomId).then(() => {});
     setShowMyCards(false);
     setMyCards([]);
     setMyCardCount(0);
@@ -2320,10 +2230,8 @@ for (const r of results) {
 
     const newSeed = Math.floor(Math.random() * 1000000);
     setSeed(newSeed);
-    seedRef.current = newSeed;
     setLocalDeck(createDeckWithSeed(newSeed));
     setDeckOffset(0);
-    deckOffsetRef.current = 0;
 
     await broadcastAndSyncDB({
       players: resetPlayers,
@@ -2351,7 +2259,6 @@ for (const r of results) {
 
   const resetGame = async () => {
     setGameOver(false);
-    setDealerBjPopup(false);
     setResult("");
     setResultDetails([]);
     setPhase("waiting");
@@ -2363,8 +2270,6 @@ for (const r of results) {
     setIsDealer(false);
     setSettlementStep(0);
     setReadyPlayers([]);
-    myReadyRef.current = false;
-    supabase.from("rooms").update({ readyplayers: [] }).eq("id", roomId).then(() => {});
     setWheelVisible(false);
     setWheelSelected(null);
     setWheelSegments([]);
@@ -2380,7 +2285,6 @@ for (const r of results) {
     setSeed(newSeed);
     setLocalDeck(newDeck);
     setDeckOffset(0);
-    deckOffsetRef.current = 0;
 
     const occupiedSeats = players.map(p => p.seatId).filter((id: number) => id !== undefined);
     const freeSeats: number[] = [];
@@ -3242,49 +3146,6 @@ for (const r of results) {
                 <div style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>即将开始新一局...</div>
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {dealerBjPopup && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-          backgroundColor: 'rgba(10,2,8,0.85)',
-          display: 'flex', justifyContent: 'center', alignItems: 'center',
-          zIndex: 1000,
-        }}>
-          <div style={{
-            background: 'linear-gradient(145deg, #2a1018, #1a0510)',
-            borderRadius: '24px', padding: '36px 40px',
-            maxWidth: '380px', width: '88%',
-            textAlign: 'center',
-            border: '2px solid rgba(255,210,122,0.5)',
-            boxShadow: '0 0 60px rgba(255,210,122,0.25), 0 0 30px rgba(180,60,110,0.3), 0 20px 60px rgba(0,0,0,0.8)',
-            animation: 'pulse 1.2s ease-in-out infinite',
-          }}>
-            <div style={{ fontSize: '48px', marginBottom: '12px' }}>♠️</div>
-            <div style={{
-              fontSize: '28px', fontWeight: 900, color: '#ffd27a',
-              textShadow: '0 0 20px rgba(255,210,122,0.6)',
-              letterSpacing: '2px', marginBottom: '8px',
-            }}>
-              庄家黑杰克！
-            </div>
-            <div style={{ fontSize: '16px', color: '#f0a8c4', marginBottom: '16px' }}>
-              {dealerId}{dealerId === playerName ? '（你）' : ''}
-            </div>
-            <div style={{
-              fontSize: '18px', color: '#fff', fontWeight: 600,
-              background: 'rgba(255,90,122,0.15)',
-              border: '1px solid rgba(255,90,122,0.3)',
-              borderRadius: '12px', padding: '10px 20px',
-              display: 'inline-block',
-            }}>
-              所有玩家各喝 2 杯 🍻
-            </div>
-            <div style={{ marginTop: '16px', fontSize: '12px', color: 'rgba(255,255,255,0.35)' }}>
-              即进入下一局抽庄...
-            </div>
           </div>
         </div>
       )}
