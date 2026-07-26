@@ -1286,34 +1286,17 @@ export default function BlackjackPage() {
     timeoutRef.current = null;
   }
 
-  // 取牌位置由"所有玩家已同步的牌面"推算（不再依赖易失的 deckOffset 计数器）
-  // 无论几人玩，位置 = 所有人手牌总数，天然 ≤ 实际已发牌数，根除"牌堆用完"
-  const currentTaken = pNow.reduce((sum, p) => sum + (p.cards?.length || 0), 0);
-  const effectiveSeed = (seedRef.current != null && seedRef.current !== undefined) ? seedRef.current
-    : (seed != null && seed !== undefined) ? seed
-    : null;
-  const deck = effectiveSeed != null ? createDeckWithSeed(effectiveSeed) : localDeck;
-  if (deck.length === 0) {
-    setErrorMsg("牌堆未就绪，请稍候再试");
-    return;
-  }
-  if (currentTaken >= 52) {
+  let deck = localDeck;
+  let offset = deckOffsetRef.current;
+  // 牌堆用完则自动停牌（沿用历史稳定版本 9cd494d 的发牌逻辑，避免后两次"修复"引入的牌堆/400 问题）
+  if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，自动停牌");
     await handleStand(true);
     return;
   }
-  // 防重复兜底：若同步延迟导致 currentTaken 偏小、目标牌已被他人持有，顺延到下一张未被持有的牌
-  // 这样无论几人、网络如何，都绝不会发重复牌、也不会超界报错
-  const heldKeys = new Set(pNow.flatMap(p => p.cards || []).map((c: any) => `${c.suit}|${c.rank}`));
-  let pos = currentTaken;
-  while (pos < 52 && heldKeys.has(`${deck[pos].suit}|${deck[pos].rank}`)) pos++;
-  if (pos >= 52) {
-    setErrorMsg("牌堆已用完，自动停牌");
-    await handleStand(true);
-    return;
-  }
-  const card = deck[pos];
-  const offset = pos + 1;
+
+  const card = deck[offset];
+  offset++;
   deckOffsetRef.current = offset;
   setDeckOffset(offset);
   const newCards = [...myCards, card];
@@ -1575,32 +1558,17 @@ export default function BlackjackPage() {
     timeoutRef.current = null;
   }
 
-  // 取牌位置由"所有玩家已同步的牌面"推算（与 handleHit 一致），根除庄家补牌时的"牌堆用完"
-  const currentTaken = pNow.reduce((sum, p) => sum + (p.cards?.length || 0), 0);
-  const effectiveSeed = (seedRef.current != null && seedRef.current !== undefined) ? seedRef.current
-    : (seed != null && seed !== undefined) ? seed
-    : null;
-  const deck = effectiveSeed != null ? createDeckWithSeed(effectiveSeed) : localDeck;
-  if (deck.length === 0) {
-    setErrorMsg("牌堆未就绪，请稍候再试");
-    return;
-  }
-  if (currentTaken >= 52) {
+  let deck = localDeck;
+  let offset = deckOffsetRef.current;
+  // 牌堆用完则自动停牌（沿用历史稳定版本 9cd494d 的发牌逻辑，避免后两次"修复"引入的牌堆/400 问题）
+  if (deck.length === 0 || offset >= 52) {
     setErrorMsg("牌堆已用完，庄家自动停牌");
     await handleDealerStand(true);
     return;
   }
-  // 防重复兜底：目标牌若已被持有则顺延（与 handleHit 一致）
-  const heldKeys = new Set(pNow.flatMap(p => p.cards || []).map((c: any) => `${c.suit}|${c.rank}`));
-  let pos = currentTaken;
-  while (pos < 52 && heldKeys.has(`${deck[pos].suit}|${deck[pos].rank}`)) pos++;
-  if (pos >= 52) {
-    setErrorMsg("牌堆已用完，庄家自动停牌");
-    await handleDealerStand(true);
-    return;
-  }
-  const card = deck[pos];
-  const offset = pos + 1;
+
+  const card = deck[offset];
+  offset++;
   deckOffsetRef.current = offset;
   setDeckOffset(offset);
   const newCards = [...dealer.cards, card];
