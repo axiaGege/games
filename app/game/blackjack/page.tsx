@@ -1262,41 +1262,6 @@ export default function BlackjackPage() {
     }, 30000);
   };
 
-  // —— 根治「牌堆重复/牌堆乱」：用数据库权威计数器 deckoffset 做 read-modify-write ——
-  // 每次拿牌先从 DB 读最新 deckoffset（全局唯一正确的下一张位置），抽 deck[offset]，再把 offset+1 写回库。
-  // 回合计序保证同一时刻只有一人拿牌，故此序号全局唯一、绝不重复、绝不超界（与本地卡不卡、网快网慢无关）。
-  const drawNextCard = async () => {
-    const { data: latest, error: rerr } = await supabase
-      .from("rooms")
-      .select("deckoffset, seed")
-      .eq("id", roomId)
-      .single();
-    let offset: number;
-    let drawSeed: number | null;
-    if (rerr || !latest) {
-      // 读库失败 → 退回本地计数，保证游戏不卡死（极少数情况）
-      offset = deckOffsetRef.current;
-      drawSeed = seedRef.current != null ? seedRef.current : (seed != null ? seed : null);
-      console.warn("⚠️ 读牌堆权威计数失败，退回本地:", rerr);
-    } else {
-      offset = latest.deckoffset != null ? latest.deckoffset : 0;
-      drawSeed = latest.seed != null
-        ? latest.seed
-        : (seedRef.current != null ? seedRef.current : (seed != null ? seed : null));
-    }
-    const effectiveSeed = drawSeed != null
-      ? drawSeed
-      : (seedRef.current != null ? seedRef.current : (seed != null ? seed : null));
-    const deck = effectiveSeed != null ? createDeckWithSeed(effectiveSeed) : localDeck;
-    if (deck.length === 0) return { card: null, newOffset: offset, exhausted: true };
-    if (offset >= 52) return { card: null, newOffset: offset, exhausted: true };
-    const card = deck[offset];
-    const newOffset = offset + 1;
-    deckOffsetRef.current = newOffset;
-    setDeckOffset(newOffset);
-    return { card, newOffset, exhausted: false };
-  };
-
   // ==================== 玩家操作 ====================
   const handleHit = async () => {
   console.log('🔥 handleHit 被调用');
@@ -1321,16 +1286,36 @@ export default function BlackjackPage() {
     timeoutRef.current = null;
   }
 
-  // —— 根治：取牌位置用「数据库权威计数器 deckoffset」做 read-modify-write ——
-  // 不再数本地手牌总数（网络延迟下本地偏少→抽到别人已拿的牌=重复牌/牌堆乱）。
-  const drawn = await drawNextCard();
-  if (drawn.exhausted || !drawn.card) {
+  // 取牌位置由"所有玩家已同步的牌面"推算（不再依赖易失的 deckOffset 计数器）
+  // 无论几人玩，位置 = 所有人手牌总数，天然 ≤ 实际已发牌数，根除"牌堆用完"
+  const currentTaken = pNow.reduce((sum, p) => sum + (p.cards?.length || 0), 0);
+  const effectiveSeed = (seedRef.current != null && seedRef.current !== undefined) ? seedRef.current
+    : (seed != null && seed !== undefined) ? seed
+    : null;
+  const deck = effectiveSeed != null ? createDeckWithSeed(effectiveSeed) : localDeck;
+  if (deck.length === 0) {
+    setErrorMsg("牌堆未就绪，请稍候再试");
+    return;
+  }
+  if (currentTaken >= 52) {
     setErrorMsg("牌堆已用完，自动停牌");
     await handleStand(true);
     return;
   }
-  const card = drawn.card;
-  const newOffset = drawn.newOffset;
+  // 防重复兜底：若同步延迟导致 currentTaken 偏小、目标牌已被他人持有，顺延到下一张未被持有的牌
+  // 这样无论几人、网络如何，都绝不会发重复牌、也不会超界报错
+  const heldKeys = new Set(pNow.flatMap(p => p.cards || []).map((c: any) => `${c.suit}|${c.rank}`));
+  let pos = currentTaken;
+  while (pos < 52 && heldKeys.has(`${deck[pos].suit}|${deck[pos].rank}`)) pos++;
+  if (pos >= 52) {
+    setErrorMsg("牌堆已用完，自动停牌");
+    await handleStand(true);
+    return;
+  }
+  const card = deck[pos];
+  const offset = pos + 1;
+  deckOffsetRef.current = offset;
+  setDeckOffset(offset);
   const newCards = [...myCards, card];
   const newCount = newCards.length;
   const total = calculateHand(newCards);
@@ -1374,7 +1359,7 @@ export default function BlackjackPage() {
       readyPlayers,
       settlementStep: 0,
       seed,
-      deckOffset: newOffset,
+      deckOffset: offset,
       wheelVisible,
       wheelSelected,
       wheelSegments,
@@ -1396,7 +1381,7 @@ export default function BlackjackPage() {
     readyPlayers,
     settlementStep: 0,
     seed,
-    deckOffset: newOffset,
+    deckOffset: offset,
     wheelVisible,
     wheelSelected,
     wheelSegments,
@@ -1590,15 +1575,34 @@ export default function BlackjackPage() {
     timeoutRef.current = null;
   }
 
-  // —— 根治（与 handleHit 同）：数据库权威计数器 deckoffset 的 read-modify-write ——
-  const drawn = await drawNextCard();
-  if (drawn.exhausted || !drawn.card) {
+  // 取牌位置由"所有玩家已同步的牌面"推算（与 handleHit 一致），根除庄家补牌时的"牌堆用完"
+  const currentTaken = pNow.reduce((sum, p) => sum + (p.cards?.length || 0), 0);
+  const effectiveSeed = (seedRef.current != null && seedRef.current !== undefined) ? seedRef.current
+    : (seed != null && seed !== undefined) ? seed
+    : null;
+  const deck = effectiveSeed != null ? createDeckWithSeed(effectiveSeed) : localDeck;
+  if (deck.length === 0) {
+    setErrorMsg("牌堆未就绪，请稍候再试");
+    return;
+  }
+  if (currentTaken >= 52) {
     setErrorMsg("牌堆已用完，庄家自动停牌");
     await handleDealerStand(true);
     return;
   }
-  const card = drawn.card;
-  const newOffset = drawn.newOffset;
+  // 防重复兜底：目标牌若已被持有则顺延（与 handleHit 一致）
+  const heldKeys = new Set(pNow.flatMap(p => p.cards || []).map((c: any) => `${c.suit}|${c.rank}`));
+  let pos = currentTaken;
+  while (pos < 52 && heldKeys.has(`${deck[pos].suit}|${deck[pos].rank}`)) pos++;
+  if (pos >= 52) {
+    setErrorMsg("牌堆已用完，庄家自动停牌");
+    await handleDealerStand(true);
+    return;
+  }
+  const card = deck[pos];
+  const offset = pos + 1;
+  deckOffsetRef.current = offset;
+  setDeckOffset(offset);
   const newCards = [...dealer.cards, card];
   const newCount = newCards.length;
   const total = calculateHand(newCards);
@@ -1645,7 +1649,7 @@ export default function BlackjackPage() {
       readyPlayers,
       settlementStep: 0,
       seed,
-      deckOffset: newOffset,
+      deckOffset: offset,
       wheelVisible,
       wheelSelected,
       wheelSegments,
@@ -1667,7 +1671,7 @@ export default function BlackjackPage() {
     readyPlayers,
     settlementStep: 0,
     seed,
-    deckOffset: newOffset,
+    deckOffset: offset,
     wheelVisible,
     wheelSelected,
     wheelSegments,
