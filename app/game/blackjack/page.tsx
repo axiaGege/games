@@ -384,6 +384,17 @@ export default function BlackjackPage() {
       setWheelVisible(row.wheelvisible || false);
       setWheelSelected(row.wheelselected || null);
       setWheelSegments(row.wheelsegments || []);
+      // 数据库轮询路径也要解包抽庄赢家，确保未收到广播的玩家也能显示"XX成为新庄家"庆祝画面
+      const _dbCtrl = row.wheelselected || null;
+      if (_dbCtrl) {
+        try {
+          const _c = unpackDrawCtrl(_dbCtrl);
+          if (_c && _c.winner) {
+            setDrawWinner(_c.winner);
+            setDrawSubPhase("done");
+          }
+        } catch (_) {}
+      }
     }
   };
 
@@ -2117,7 +2128,7 @@ for (const r of results) {
     await broadcastAndSyncDB({
       spectators: spectators || [],
       players,
-      phase: "waiting",
+      phase: "wheel",
       dealerId: winner,
       currentPlayerIndex,
       gameOver: true,
