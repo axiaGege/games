@@ -273,6 +273,8 @@ export default function BlackjackPage() {
   const deckOffsetRef = useRef(0);
   const isSettlingRef = useRef(false);
   const drawTimeoutFiredRef = useRef(false);
+  // 记录已本地起算过倒计时的那一轮 deadline 值，避免每次亮牌广播都重置倒计时
+  const drawDeadlineCtrlRef = useRef<number | null>(null);
 
   // ==================== ConfirmDialog 组件 ====================
   const ConfirmDialog = () => {
@@ -497,8 +499,18 @@ export default function BlackjackPage() {
             setDrawOwner(ctrl.owner || null);
             setDrawRule(ctrl.rule || null);
             setDrawSubPhase(ctrl.rule ? "reveal" : "choose");
-            // 倒计时改为各自本地起算，避免各手机时钟偏差导致显示不一致
-            setDrawDeadline(ctrl.deadline ? Date.now() + 8000 : null);
+            // 倒计时各自本地起算，避免各手机时钟偏差；
+            // 但只在"进入新一轮亮牌"(ctrl.deadline 值变化)时重置一次，
+            // 亮牌更新(同一轮 deadline 不变)不再重置，避免数字反复跳回 8 秒
+            if (ctrl.deadline) {
+              if (ctrl.deadline !== drawDeadlineCtrlRef.current) {
+                setDrawDeadline(Date.now() + 8000);
+                drawDeadlineCtrlRef.current = ctrl.deadline;
+              }
+            } else {
+              setDrawDeadline(null);
+              drawDeadlineCtrlRef.current = null;
+            }
             const revealed = ctrl.revealed ? new Set<string>(ctrl.revealed) : new Set<string>();
             setDrawRevealed(revealed);
             const cards = unpackDrawCards(state.wheelSegments);
@@ -1911,6 +1923,7 @@ for (const r of results) {
     setDrawRevealed(new Set<string>());
     setDrawSubPhase("reveal");
     setDrawDeadline(now + 8000);
+    drawDeadlineCtrlRef.current = now + 8000;
     setDrawCountdown(8);
     setDrawOwner(owner);
     setDrawWinner(null);
@@ -2054,6 +2067,7 @@ for (const r of results) {
       setWheelSelected(newCtrl);
       setWheelSegments(JSON.stringify(newCards));
       setDrawDeadline(now + 8000);
+      drawDeadlineCtrlRef.current = now + 8000;
       setDrawCountdown(8);
       drawTimeoutFiredRef.current = false;
 
