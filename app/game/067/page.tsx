@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 const rollDice = () => Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
 
 // 骰子 SVG，41px，1和4红色，其余蓝色
-const DiceSVG = ({ value, size = 41 }: { value: number; size?: number }) => {
+const DiceSVG = ({ value, size = 41, highlight = false }: { value: number; size?: number; highlight?: boolean }) => {
   const dotPositions: Record<number, [number, number][]> = {
     1: [[50, 50]],
     2: [[30, 30], [70, 70]],
@@ -17,11 +17,28 @@ const DiceSVG = ({ value, size = 41 }: { value: number; size?: number }) => {
     6: [[30, 30], [70, 30], [30, 50], [70, 50], [30, 70], [70, 70]],
   };
   const dots = dotPositions[value] || [];
-  const dotColor = (value === 1 || value === 4) ? "#e53e3e" : "#3182ce";
+  const dotColor = highlight ? "#92400e" : (value === 1 || value === 4) ? "#e53e3e" : "#3182ce";
 
   return (
     <svg width={size} height={size} viewBox="0 0 100 100">
-      <rect x="2" y="2" width="96" height="96" rx="12" fill="white" stroke="#ccc" strokeWidth="2" />
+      <defs>
+        <linearGradient id={`diceGold-${value}`} x1="0" y1="0" x2="100" y2="100">
+          <stop offset="0%" stopColor="#fff7ed" />
+          <stop offset="50%" stopColor="#fcd34d" />
+          <stop offset="100%" stopColor="#f59e0b" />
+        </linearGradient>
+      </defs>
+      <rect
+        x="2"
+        y="2"
+        width="96"
+        height="96"
+        rx="12"
+        fill={highlight ? `url(#diceGold-${value})` : "white"}
+        stroke={highlight ? "#f59e0b" : "#ccc"}
+        strokeWidth={highlight ? 3 : 2}
+        style={highlight ? { filter: "drop-shadow(0 0 5px rgba(251,191,36,0.7))" } : undefined}
+      />
       {dots.map((pos, idx) => (
         <circle key={idx} cx={pos[0]} cy={pos[1]} r="8" fill={dotColor} />
       ))}
@@ -141,6 +158,10 @@ export default function GamePage() {
   const [warning, setWarning] = useState("");
   const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
   const [nextStarter, setNextStarter] = useState<string | null>(null);
+  const [loserName, setLoserName] = useState<string>(""); // 开盅结算时记录的权威输家名字（广播同步，摊牌浮层显示"谁喝"不再各自推算）
+  const playAgainLockRef = useRef(false); // 再来一局防并发锁：点过一次后短时间内禁止重复发起
+  const gameOverRef = useRef(false); // 实时镜像 gameOver：openDice 防"本地状态未刷新间隙"重复开盅
+  const settledOpenerRef = useRef<string>(""); // 本局已接受的结算开牌人：双抢开时先到先得，拒收第二份不同结算（只拦重复结算，绝不拦新一局信号）
   const [mySeatId, setMySeatId] = useState<number | null>(null);
   const [hasRolledLocal, setHasRolledLocal] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
@@ -150,6 +171,7 @@ export default function GamePage() {
   const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
   const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const advanceFiredRef = useRef(false); // 进叫牌哨兵防重复触发锁：本轮 rolling 只广播一次推进，离开 rolling 自动复位
 
   // 叫牌面板
   const [bidPage, setBidPage] = useState(0);
@@ -182,18 +204,51 @@ export default function GamePage() {
         audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       const ctx = audioCtxRef.current;
-      for (let i = 0; i < 12; i++) {
-        setTimeout(() => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.frequency.value = 800 + Math.random() * 400;
-          osc.type = "square";
-          gain.gain.value = 0.05 + Math.random() * 0.05;
-          osc.start();
-          osc.stop(ctx.currentTime + 0.03);
-        }, i * 60);
+      const now = ctx.currentTime;
+      const sampleRate = ctx.sampleRate;
+      const totalDur = 0.75;
+      const buffer = ctx.createBuffer(1, Math.floor(sampleRate * totalDur), sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+
+      // 低频轰鸣（骰盅滚动）
+      const rumble = ctx.createBufferSource();
+      rumble.buffer = buffer;
+      const rumbleFilter = ctx.createBiquadFilter();
+      rumbleFilter.type = "lowpass";
+      rumbleFilter.frequency.value = 180;
+      const rumbleGain = ctx.createGain();
+      rumbleGain.gain.setValueAtTime(0, now);
+      rumbleGain.gain.linearRampToValueAtTime(0.35, now + 0.1);
+      rumbleGain.gain.exponentialRampToValueAtTime(0.05, now + totalDur - 0.05);
+      rumble.connect(rumbleFilter).connect(rumbleGain).connect(ctx.destination);
+      rumble.start();
+      rumble.stop(now + totalDur);
+
+      // 短促碰撞声（骰子互撞/撞壁）
+      for (let i = 0; i < 16; i++) {
+        const t = now + 0.06 + i * 0.04 + Math.random() * 0.02;
+        const dur = 0.025 + Math.random() * 0.03;
+        const burstBuf = ctx.createBuffer(1, Math.floor(sampleRate * dur), sampleRate);
+        const burstData = burstBuf.getChannelData(0);
+        for (let j = 0; j < burstData.length; j++) {
+          burstData[j] = Math.random() * 2 - 1;
+        }
+        const burst = ctx.createBufferSource();
+        burst.buffer = burstBuf;
+        const burstFilter = ctx.createBiquadFilter();
+        burstFilter.type = "bandpass";
+        burstFilter.frequency.value = 600 + Math.random() * 1200;
+        burstFilter.Q.value = 1.2;
+        const burstGain = ctx.createGain();
+        burstGain.gain.setValueAtTime(0, t);
+        burstGain.gain.linearRampToValueAtTime(0.08 + Math.random() * 0.06, t + 0.005);
+        burstGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        burst.connect(burstFilter).connect(burstGain).connect(ctx.destination);
+        burst.start(t);
+        burst.stop(t + dur);
       }
     } catch (e) {}
   };
@@ -246,6 +301,17 @@ export default function GamePage() {
 
   // ============ 远端状态应用（广播接收 + 定时对账共用，逻辑只写一处） ============
   const applyRemoteState = (state: any) => {
+    // 双抢开"先到先得"：本局已接受一份结算后，再收到"同样是结算、但开牌人不同"的第二份 → 整条丢弃，
+    // 防两人同时抢开时各端按到达顺序后到者覆盖、不同手机结局不一致。
+    // ⚠️只拦 ended 状态下的重复结算；gameOver=false 的消息(新一局/正常对局)永远放行——绝不重蹈07-21终点锁误拦新局的覆辙。
+    if (state.gameOver) {
+      if (gameOverRef.current && settledOpenerRef.current && state.opener && state.opener !== settledOpenerRef.current) return;
+      if (state.opener) settledOpenerRef.current = state.opener;
+      gameOverRef.current = true;
+    } else {
+      gameOverRef.current = false;
+      settledOpenerRef.current = "";
+    }
     const parsedPlayers = parsePlayers(state.players);
     // 按名字合并骰子：拒绝被陈旧广播把"已摇好的骰子"冲空。
     // 并发摇骰时，甲在收到乙骰子前就广播，会把乙记为空；若两人本地版号撞车、版本闸拦不住，
@@ -273,6 +339,7 @@ export default function GamePage() {
     } else {
       setShowReveal(false);
       revealDismissedRef.current = false; // 新一局开始，重置标记，下一局摊牌照常弹出
+      playAgainLockRef.current = false; // 新一局已开，释放"再来一局"并发锁
     }
     setRvOpenerName(state.opener || "");
     setRvIsSnapOpen(state.isSnapOpen || false);
@@ -294,6 +361,7 @@ export default function GamePage() {
     setCupOpened(state.cupOpened || false);
     setSelectedTargets(state.selectedTargets || []);
     setNextStarter(state.nextStarter || null);
+    setLoserName(state.loserName || "");
     setDiceShaking(state.diceShaking || false);
     if (state.lastBid) {
       setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
@@ -335,6 +403,20 @@ export default function GamePage() {
           if (p.lastSeen && now - p.lastSeen > 15 * 60 * 1000) { changed = true; return null; }
           return p;
         }).filter(Boolean) as any[];
+        // 账本治愈：并发落库(整字段覆盖)可能把别人已摇的骰子从账本抹掉，本地若比账本全则补写回去。
+        // 只补不删(账本空、本地非空才补)，多客户端同时补也只会补齐缺口不会互相冲掉；搭现有心跳写入的便车，不新增写库频率。
+        // 版本保险：仅当本地版本追上账本(≥)时才补，防止落后客户端把上一局的旧骰子塞进新一局账本。
+        const savedPeek = (() => { try { return data.resultdetails ? JSON.parse(data.resultdetails) : null; } catch { return null; } })();
+        const healAllowed = (savedPeek?.version ?? 0) <= gVersionRef.current;
+        const localForHeal = playersRef.current;
+        if (healAllowed && localForHeal.length > 0) {
+          playersArr = playersArr.map((p: any) => {
+            if (p.dice && p.dice.length > 0) return p;
+            const loc = localForHeal.find((lp: any) => (lp.cid && p.cid && lp.cid === p.cid) || lp.name === p.name);
+            if (loc && loc.dice && loc.dice.length > 0) { changed = true; return { ...p, dice: loc.dice }; }
+            return p;
+          });
+        }
         if (changed) {
           try { await supabase.from("rooms").update({ players: playersArr }).eq("id", roomId); } catch (_) {}
         }
@@ -348,6 +430,50 @@ export default function GamePage() {
     }, 3000);
     return () => clearInterval(t);
   }, [roomId]);
+
+  // ============ 进叫牌哨兵：盯着名单/阶段变化，活跃玩家(不算观战)全摇完就推进到叫牌 ============
+  // 根治两类永久卡死：①没摇的人中途退出(摇骰按钮全灰没人能再触发旧检查) ②观战者被算进人头数导致判定永不满足。
+  // 摇骰/退房/幽灵清理/对账合并任何一条路径更新了名单，这里都会重新评估。
+  useEffect(() => {
+    if (phase !== "rolling") { advanceFiredRef.current = false; return; }
+    if (!roomId) return;
+    if (advanceFiredRef.current) return;
+    const activePlayers = players.filter((p: any) => p.status !== "watching");
+    if (activePlayers.length < 2) return;
+    const rolledCount = activePlayers.filter((p: any) => p.dice && p.dice.length > 0).length;
+    if (rolledCount !== activePlayers.length) return;
+    // 唯一权威：只让座位序最小的活跃玩家广播推进，防止多人同时喊"进叫牌"互相覆盖
+    const sortedActive = [...activePlayers].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
+    if (sortedActive[0].name !== playerName) return;
+    // 首叫玩家：上局输家优先，但必须还是活跃玩家（不在场/观战则回落到座位序最小者）
+    const starterValid = nextStarter && activePlayers.some((p: any) => p.name === nextStarter);
+    const firstPlayer = starterValid ? (nextStarter as string) : sortedActive[0].name;
+    advanceFiredRef.current = true;
+    setNextStarter(null);
+    setCurrentPlayer(firstPlayer);
+    setGameStarted(true);
+    setPhase("bidding");
+    setHasRolled(true);
+    setDiceShaking(false);
+    setErrorMsg("");
+    broadcastState(roomId, {
+      players,
+      currentPlayer: firstPlayer,
+      gameStarted: true,
+      gameOver: false,
+      result: "",
+      lastBid: null,
+      phase: "bidding",
+      hasRolled: true,
+      oneSealed: false,
+      bidHistory: [],
+      warning: "",
+      cupOpened: false,
+      selectedTargets: [],
+      nextStarter: null,
+      diceShaking: false,
+    });
+  }, [roomId, phase, players, nextStarter, playerName]);
 
   // ============ 修改1: broadcastState 接收 roomId 参数 ============
   const broadcastState = async (roomId: string, state: any) => {
@@ -433,11 +559,14 @@ export default function GamePage() {
       warning: saved?.warning || "",
       cupOpened: saved?.cupOpened || false,
       selectedTargets: saved?.selectedTargets || [],
-      nextStarter: saved?.nextStarter || null,
+      // 离开者正是"该开局的人"(上局输家/指定开局者)时清掉指定，否则开始按钮只显示给已离场的人、全房没人能开始
+      nextStarter: (saved?.nextStarter === playerName) ? null : (saved?.nextStarter || null),
       diceShaking: saved?.diceShaking || false,
     });
     setJoined(false);
     setRoomId("");
+    gameOverRef.current = false; // 退房清结算标记，防下次进房残留
+    settledOpenerRef.current = "";
     try { localStorage.removeItem('067_name'); localStorage.removeItem('067_pass'); /* 保留 067_cid：退出房间也不删，回头再进仍被认出 */ } catch (_) {}
     setPlayers([]);
     setGameStarted(false);
@@ -562,7 +691,21 @@ export default function GamePage() {
 
     const myCid = getOrCreateCid();
     // 玩家已存在（重连）：优先按编号认人，老房间无编号按名字兜底；认出后补编号、同步最新昵称
-    const existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+    let existingIdx = currentPlayers.findIndex((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name));
+    // 同名双人拦截：房里已有同名但设备编号不同的条目（换手机/清缓存重进会撞上）
+    if (existingIdx < 0) {
+      const sameNameIdx = currentPlayers.findIndex((p: any) => p.name === name && p.cid && p.cid !== myCid);
+      if (sameNameIdx >= 0) {
+        const ls = currentPlayers[sameNameIdx].lastSeen;
+        // 心跳每3秒刷一次；超过30秒没心跳 = 掉线残留 → 接管旧座位（视为换设备重连，骰子/座位原样继承）
+        if (!ls || Date.now() - ls > 30 * 1000) {
+          existingIdx = sameNameIdx;
+        } else {
+          setErrorMsg("该名字已有人在用（在线中），请换一个昵称");
+          return;
+        }
+      }
+    }
     if (existingIdx >= 0) {
       currentPlayers = currentPlayers.map((p, i) => i === existingIdx ? { ...p, cid: myCid, name, lastSeen: Date.now() } : p);
     }
@@ -811,36 +954,8 @@ export default function GamePage() {
       diceShaking: true,
     });
 
-    const rolledCount = updatedPlayers.filter(p => p.dice && p.dice.length > 0).length;
-    if (rolledCount === updatedPlayers.length && updatedPlayers.length >= 2) {
-      const sortedForStart = [...updatedPlayers].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
-      const firstPlayer = nextStarter || sortedForStart[0].name;
-      setNextStarter(null);
-      setCurrentPlayer(firstPlayer);
-      setGameStarted(true);
-      setPhase("bidding");
-      setHasRolled(true);
-      setDiceShaking(false);
-      setErrorMsg("");
-      
-      await broadcastState(roomId, {
-        players: updatedPlayers,
-        currentPlayer: firstPlayer,
-        gameStarted: true,
-        gameOver: false,
-        result: "",
-        lastBid: null,
-        phase: "bidding",
-        hasRolled: true,
-        oneSealed: false,
-        bidHistory: [],
-        warning: "",
-        cupOpened: false,
-        selectedTargets: [],
-        nextStarter: null,
-        diceShaking: false,
-      });
-    }
+    // 旧的"全员摇完→进叫牌"检查已移除：改由进叫牌哨兵 useEffect 统一评估（排除观战者、
+    // 响应退房/清理等一切名单变化、只由座位序最小的活跃玩家广播推进），避免双通道抢跑。
   };
 
   // 快捷加叫
@@ -890,7 +1005,8 @@ export default function GamePage() {
     const newHistory = [...bidHistory, `${playerName} 叫了 ${count}个${value}`];
     setBidHistory(newHistory);
 
-    const sortedPlayers = [...players].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
+    // 用实时名单(playersRef)而非闭包旧快照：防止有人刚离开、界面未刷新时把轮次交给已离场的人
+    const sortedPlayers = [...playersRef.current].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
     // 观战者不进入叫牌轮转，避免轮到空手观战者导致卡死
     const activePlayers = sortedPlayers.filter((p: any) => p.status !== "watching");
     const playerNames = activePlayers.map((p) => p.name);
@@ -952,6 +1068,9 @@ export default function GamePage() {
     setSelectedTargets(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
   };
   const openDice = async (targetPlayers?: string[], isSnapOpen: boolean = false) => {
+    // 观战者（中途进来、还没轮到下一局的人）不能开骰/抢开
+    const meOpen = players.find((p: any) => p.name === playerName);
+    if (meOpen?.status === "watching") { setErrorMsg("你正在观战，下一局再加入"); return; }
     if (phase !== "bidding") {
       setErrorMsg("当前不是叫牌阶段");
       return;
@@ -960,11 +1079,22 @@ export default function GamePage() {
       setErrorMsg("没人叫牌，无法开");
       return;
     }
+    // 已结算过(本地 state 可能还没刷新到 ended，故用 ref)就拦住，防本地状态刷新间隙重复开盅/双抢开
+    if (gameOverRef.current) {
+      setErrorMsg("本局已经开过盅了");
+      return;
+    }
 
     // 支持多选：勾中多个人一起开（输赢仍数全桌，与单选完全一致）；什么都不勾默认开上一个叫牌者
     const targets = (targetPlayers && targetPlayers.length > 0) ? targetPlayers : [lastBid.player];
+    // 不能开自己：放在 targets 算出之后，统一挡住"默认回落成自己/勾选被广播污染含自己"等所有来路
+    if (targets.includes(playerName)) {
+      setErrorMsg("不能开自己");
+      return;
+    }
     for (const t of targets) {
-      const hasCalled = bidHistory.some(entry => entry.includes(t));
+      // startsWith 精确匹配"名字 叫了 "，防"小明/明"这类名字包含关系误放行
+      const hasCalled = bidHistory.some(entry => entry.startsWith(t + " 叫了 "));
       if (!hasCalled) {
         setErrorMsg(`${t} 本轮尚未叫牌，不能开`);
         return;
@@ -1018,6 +1148,8 @@ export default function GamePage() {
     }
 
     setGameOver(true);
+    gameOverRef.current = true; // 本地立刻标记已结算，不等广播绕回，堵住间隙里的第二次开盅
+    settledOpenerRef.current = caller;
     setIsLidOpen(false);
     setRvOpenerName(caller);
     setRvIsSnapOpen(isSnapOpen);
@@ -1032,6 +1164,7 @@ export default function GamePage() {
     }
     resultMsg += cupLabel;
     setResult(resultMsg);
+    setLoserName(loser); // 权威输家：结算时一次算定，所有人显示一致
 
     if (isSnapOpen) {
       setNextStarter(caller);
@@ -1056,6 +1189,7 @@ export default function GamePage() {
       cupOpened,
       selectedTargets: targets,
       nextStarter: isSnapOpen ? caller : loser,
+      loserName: loser,
       diceShaking: false,
     });
   };
@@ -1065,7 +1199,11 @@ export default function GamePage() {
     setPlayers(resetPlayers);
     setGameStarted(false);
     setGameOver(false);
+    gameOverRef.current = false;
+    settledOpenerRef.current = "";
     setShowReveal(false);
+    setLoserName("");
+    playAgainLockRef.current = false;
     setRvOpenerName("");
     setRvIsSnapOpen(false);
     setResult("");
@@ -1111,6 +1249,11 @@ export default function GamePage() {
   // 第一局仍走 startGame（要求全员准备）；只有“再来一局”走这里——
   // 重置手牌/状态后立刻进入摇骰阶段，不再等任何人点准备，避免每局都卡在准备。
   const playAgain = async () => {
+    if (playAgainLockRef.current) return; // 防并发：已有人（或自己重复点击）发起新一局，直接忽略
+    playAgainLockRef.current = true;
+    gameOverRef.current = false; // 新一局：清结算标记与先到先得记录
+    settledOpenerRef.current = "";
+    setLoserName(""); // 清掉上一局的输家记录
     const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(true);
@@ -1255,10 +1398,10 @@ export default function GamePage() {
   }
 
   // 结论行配色：自己是否为输家（要喝的人）
-  const iAmDrinker = rvTotal >= (rvBidCnt ?? 0)
-    ? rvOpenerName === playerName
-    : (lastBid?.player === playerName);
-  const drinkerName = rvTotal >= (rvBidCnt ?? 0) ? rvOpenerName : (lastBid?.player ?? '');
+  // 优先用开盅结算时记录的权威输家名字（含顺子特殊规则，所有人一致）；老数据无此字段时退回本地推算兜底
+  const fallbackDrinker = rvTotal >= (rvBidCnt ?? 0) ? rvOpenerName : (lastBid?.player ?? '');
+  const drinkerName = loserName || fallbackDrinker;
+  const iAmDrinker = drinkerName === playerName;
   const rvCups = rvIsSnapOpen ? 2 : 1;
 
   if (!joined) {
@@ -1349,9 +1492,9 @@ export default function GamePage() {
                     ))}
                   </div>
                 ) : isLidOpen && myDice.length > 0 ? (
-                  <div style={styles.diceRow}>
+                  <div style={{...styles.diceRow, ...(isStraight(myDice) ? { border: '2px solid #fbbf24', borderRadius: '14px', padding: '6px 10px', boxShadow: '0 0 16px rgba(251,191,36,0.55), inset 0 0 10px rgba(251,191,36,0.25)', background: 'rgba(251,191,36,0.08)' } : {})}}>
                     {myDice.map((val, idx) => (
-                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={34} /></div>
+                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={34} highlight={isStraight(myDice)} /></div>
                     ))}
                   </div>
                 ) : myDice.length === 0 ? (
@@ -1444,7 +1587,7 @@ export default function GamePage() {
         >
           {!gameStarted && phase !== "rolling" ? (
             <span style={styles.statusText}>
-              ⏳ 等待开始 {players.length >= 2 ? `（${(nextStarter || '房主')}点击"开始游戏"）` : '（至少2人）'}
+              ⏳ 等待开始 {players.length >= 2 ? `（${((nextStarter && players.some(p => p.name === nextStarter)) ? nextStarter : (players.find(p => p.seatId === 0)?.name || '房主'))}点击"开始游戏"）` : '（至少2人）'}
             </span>
           ) : gameOver ? (
             <span style={styles.resultText}>{result}</span>
@@ -1504,7 +1647,13 @@ export default function GamePage() {
                   {players.find(p => p.name === playerName)?.ready ? '✅ 已准备' : '⏳ 准备'}
                 </button>
               )}
-              {players.length >= 2 && playerName === (nextStarter || players.find(p => p.seatId === 0)?.name) && (
+              {players.length >= 2 && playerName === (() => {
+                // 该开局的人：指定者(上局输家)还在场用指定者；不在场兜底到0号位；0号位也空缺则落给座位号最小的在场玩家——保证任何时候都有人能开始
+                const starterHere = nextStarter && players.some(p => p.name === nextStarter);
+                if (starterHere) return nextStarter;
+                return players.find(p => p.seatId === 0)?.name
+                  || [...players].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId))[0]?.name;
+              })() && (
                 <button onClick={startGame} style={styles.btnStart} disabled={diceShaking}>
                   {diceShaking ? '摇骰中...' : '🚀 开始游戏'}
                 </button>
@@ -1627,7 +1776,14 @@ export default function GamePage() {
             </>
           )}
           {gameOver && (
-            <button onClick={playAgain} style={styles.btnReset}>🔄 再来一局</button>
+            drinkerName === playerName || !drinkerName ? (
+              <button onClick={playAgain} style={styles.btnReset}>🔄 再来一局</button>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                <span style={{ color: '#aaa', fontSize: 13 }}>⏳ 等待 {drinkerName} 开启新一局</span>
+                <button onClick={playAgain} style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '12px', cursor: 'pointer', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.2)', color: '#ccc' }}>我来开</button>
+              </div>
+            )
           )}
           {errorMsg && <div style={{ color: "#f87171", fontSize: 13, marginTop: 8 }}>{errorMsg}</div>}
           {disconnected && <div style={{ color: "#f87171", fontSize: 13, marginTop: 4 }}>⚠️ 网络连接断开，部分操作可能无法同步</div>}
@@ -1643,12 +1799,9 @@ export default function GamePage() {
       {showReveal && gameOver && lastBid && (
         <div onClick={() => { setShowReveal(false); revealDismissedRef.current = true; }} style={{ position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.72)', backdropFilter:'blur(4px)', WebkitBackdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width:'100%', maxWidth:'420px', maxHeight:'82vh', background:'linear-gradient(160deg,#1c1430,#120c20)', border:'1px solid rgba(34,211,238,0.4)', borderRadius:'20px', padding:'18px 16px', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)', animation:'fadeIn 0.3s ease' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
-              <div style={{ color:'#22d3ee', fontSize:'16px', fontWeight:'bold' }}>🎴 摊牌 · 自己数数够不够</div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+              <div style={{ flex:1, textAlign:'center', color:'#22d3ee', fontSize:'16px', fontWeight:'bold' }}>🎲 · 数数够不够</div>
               <button onClick={() => { setShowReveal(false); revealDismissedRef.current = true; }} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
-            </div>
-            <div style={{ textAlign:'center', color:'rgba(255,255,255,0.5)', fontSize:'11px', marginBottom:'10px' }}>
-              金框 = 叫的 {rvBidVal} 点　青框 = 百搭1️⃣（{rvWildOn ? '算入' : '已封印不算'}）
             </div>
             <div style={{ overflowY:'auto', flex:'1 1 auto', display:'flex', flexDirection:'column', gap:'8px', paddingRight:'2px' }}>
               {players.filter(p => p.dice && p.dice.length > 0).map((p, i) => {
@@ -1666,7 +1819,7 @@ export default function GamePage() {
                       const isWild = d === 1 && rvWildOn && !isStraight(p.dice);
                       return (
                         <span key={di} style={{ display:'inline-block', padding:'3px', borderRadius:'9px', border: isMatch ? '2px solid #fbbf24' : isWild ? '2px solid #22d3ee' : (opened ? '2px solid rgba(236,72,153,0.5)' : '2px solid transparent'), boxShadow: isMatch ? '0 0 10px rgba(251,191,36,0.5)' : isWild ? '0 0 8px rgba(34,211,238,0.4)' : (opened ? '0 0 8px rgba(236,72,153,0.4)' : 'none') }}>
-                          <DiceSVG value={d} size={27} />
+                          <DiceSVG value={d} size={27} highlight={isStraight(p.dice)} />
                         </span>
                       );
                     })}
@@ -1678,9 +1831,11 @@ export default function GamePage() {
             <div style={{ textAlign:'center', marginTop:'12px', fontSize:'14px', color:'#fff', borderTop:'1px solid rgba(255,255,255,0.1)', paddingTop:'10px' }}>
               全场共 <strong style={{ color:'#fbbf24', fontSize:'18px' }}>{rvTotal}</strong> 个 {rvBidVal}
               {!rvAnyStraight ? (
-                <span>　|　叫 {rvBidCnt ?? 0} 个 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong></span>
+                <span>　|　{lastBid.player} 叫 {rvBidCnt ?? 0} 个 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong></span>
+              ) : drinkerName ? (
+                <span>　|　按规则 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong>（{rvIsSnapOpen ? '抢开' : '顺开'}）</span>
               ) : (
-                <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'12px' }}>　（有人是顺子，按规则判，见上方结论 · {rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）</span>
+                <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'12px' }}>　（有人是顺子，按规则判 · {rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）</span>
               )}
             </div>
           </div>
