@@ -72,6 +72,80 @@ const countForValue = (dice: number[], V: number, sealed: boolean): number => {
   return c;
 };
 
+// 多抢开/单开 逐人结算：对 opened 中每个被开者，拿他自己最后一次叫牌(N个Y)，与全场实际Y数比对；
+// 够→开牌者输(开牌者喝cupsPer)；不够→被开者输(被开者喝cupsPer)；双方顺子→开牌者输。返回逐人判定+杯数汇总。
+type OpenVerdict = {
+  name: string;
+  count: number;
+  value: number;
+  actual: number;
+  enough: boolean;
+  straight: boolean;
+  callerStraight: boolean;
+  drinker: string;
+  cups: number;
+  reason: string;
+};
+
+const settleOpened = (
+  opened: string[],
+  players: any[],
+  bidHistory: string[],
+  oneSealed: boolean,
+  isSnapOpen: boolean,
+  callerName: string
+): { verdicts: OpenVerdict[]; tally: Record<string, number>; nextStarter: string; resultMsg: string } => {
+  const cupsPer = isSnapOpen ? 2 : 1;
+  const callerData = players.find((p: any) => p.name === callerName);
+  const callerIsStraight = callerData ? isStraight(callerData.dice) : false;
+  const getBidOf = (name: string): { count: number; value: number } | null => {
+    for (let i = bidHistory.length - 1; i >= 0; i--) {
+      const e = bidHistory[i];
+      if (e.startsWith(name + " 叫了 ")) {
+        const m = e.match(/叫了 (\d+)个(\d+)$/);
+        if (m) return { count: parseInt(m[1], 10), value: parseInt(m[2], 10) };
+      }
+    }
+    return null;
+  };
+  const verdicts: OpenVerdict[] = [];
+  let callerDrank = false;
+  for (const t of opened) {
+    const td: any = players.find((p: any) => p.name === t);
+    if (!td || !td.dice || td.dice.length === 0) continue;
+    const bid = getBidOf(t);
+    if (!bid) continue;
+    const tStraight = isStraight(td.dice);
+    let actual = 0;
+    for (const p of players) {
+      if (p.dice && p.dice.length > 0) actual += countForValue(p.dice, bid.value, oneSealed);
+    }
+    let enough: boolean;
+    let drinker: string;
+    let reason: string;
+    if (tStraight && callerIsStraight) {
+      enough = true;
+      drinker = callerName;
+      reason = "双方顺子，谁开谁喝";
+    } else {
+      enough = actual >= bid.count;
+      drinker = enough ? callerName : t;
+      reason = enough ? `实际${actual}≥${bid.count}，够，开牌者喝` : `实际${actual}<${bid.count}，不够，${t}喝`;
+    }
+    if (drinker === callerName) callerDrank = true;
+    verdicts.push({ name: t, count: bid.count, value: bid.value, actual, enough, straight: tStraight, callerStraight: callerIsStraight, drinker, cups: cupsPer, reason });
+  }
+  const tally: Record<string, number> = {};
+  for (const v of verdicts) {
+    if (v.drinker) tally[v.drinker] = (tally[v.drinker] || 0) + v.cups;
+  }
+  const nextStarter = callerDrank ? callerName : (opened[0] || callerName);
+  const tallyStr = Object.entries(tally).map(([n, c]) => `${n}喝${c}杯`).join("，");
+  const cupLabel = isSnapOpen ? "（抢开×2杯）" : "（顺开×1杯）";
+  const resultMsg = `🍺 结算：${tallyStr || "无人喝"}${cupLabel}`;
+  return { verdicts, tally, nextStarter, resultMsg };
+};
+
 // 计算067规则（修正封印1后围骰不加成）—— 此函数未使用，可保留或删除
 const calc067 = (dice: number[], targetValue: number, oneSealed: boolean) => {
   if (isStraight(dice)) {
@@ -153,10 +227,12 @@ export default function GamePage() {
   const [diceShaking, setDiceShaking] = useState(false);
   const [isLidOpen, setIsLidOpen] = useState(false);
   const [cupOpened, setCupOpened] = useState(false);
+  const [showGrabModal, setShowGrabModal] = useState(false);
   const [oneSealed, setOneSealed] = useState(false);
   const [bidHistory, setBidHistory] = useState<string[]>([]);
   const [warning, setWarning] = useState("");
-  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]); // 开盅后广播/同步来的“被开者”名单，仅供摊牌浮层/座位高亮，绝不被本地多选改动
+  const [myTargets, setMyTargets] = useState<string[]>([]); // 本地抢开浮层多选勾选，后台轮询/广播一律不动它，避免勾选被冲掉
   const [nextStarter, setNextStarter] = useState<string | null>(null);
   const [loserName, setLoserName] = useState<string>(""); // 开盅结算时记录的权威输家名字（广播同步，摊牌浮层显示"谁喝"不再各自推算）
   const playAgainLockRef = useRef(false); // 再来一局防并发锁：点过一次后短时间内禁止重复发起
@@ -204,52 +280,21 @@ export default function GamePage() {
         audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       const ctx = audioCtxRef.current;
-      const now = ctx.currentTime;
-      const sampleRate = ctx.sampleRate;
-      const totalDur = 0.75;
-      const buffer = ctx.createBuffer(1, Math.floor(sampleRate * totalDur), sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        data[i] = Math.random() * 2 - 1;
+      if (ctx.state === 'suspended') ctx.resume();
+      const sr = ctx.sampleRate;
+      const seconds = 4;
+      const buf = ctx.createBuffer(1, Math.floor(sr * seconds), sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) {
+        // 白噪声 + 起伏包络，模拟骰盅里骰子碰撞的哗啦声
+        const env = 0.5 + 0.5 * Math.sin(i / sr * Math.PI * 22);
+        d[i] = (Math.random() * 2 - 1) * 0.35 * env;
       }
-
-      // 低频轰鸣（骰盅滚动）
-      const rumble = ctx.createBufferSource();
-      rumble.buffer = buffer;
-      const rumbleFilter = ctx.createBiquadFilter();
-      rumbleFilter.type = "lowpass";
-      rumbleFilter.frequency.value = 180;
-      const rumbleGain = ctx.createGain();
-      rumbleGain.gain.setValueAtTime(0, now);
-      rumbleGain.gain.linearRampToValueAtTime(0.35, now + 0.1);
-      rumbleGain.gain.exponentialRampToValueAtTime(0.05, now + totalDur - 0.05);
-      rumble.connect(rumbleFilter).connect(rumbleGain).connect(ctx.destination);
-      rumble.start();
-      rumble.stop(now + totalDur);
-
-      // 短促碰撞声（骰子互撞/撞壁）
-      for (let i = 0; i < 16; i++) {
-        const t = now + 0.06 + i * 0.04 + Math.random() * 0.02;
-        const dur = 0.025 + Math.random() * 0.03;
-        const burstBuf = ctx.createBuffer(1, Math.floor(sampleRate * dur), sampleRate);
-        const burstData = burstBuf.getChannelData(0);
-        for (let j = 0; j < burstData.length; j++) {
-          burstData[j] = Math.random() * 2 - 1;
-        }
-        const burst = ctx.createBufferSource();
-        burst.buffer = burstBuf;
-        const burstFilter = ctx.createBiquadFilter();
-        burstFilter.type = "bandpass";
-        burstFilter.frequency.value = 600 + Math.random() * 1200;
-        burstFilter.Q.value = 1.2;
-        const burstGain = ctx.createGain();
-        burstGain.gain.setValueAtTime(0, t);
-        burstGain.gain.linearRampToValueAtTime(0.08 + Math.random() * 0.06, t + 0.005);
-        burstGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-        burst.connect(burstFilter).connect(burstGain).connect(ctx.destination);
-        burst.start(t);
-        burst.stop(t + dur);
-      }
+      const src = ctx.createBufferSource(); src.buffer = buf;
+      const filt = ctx.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 1100;
+      const g = ctx.createGain(); g.gain.value = 0.5;
+      src.connect(filt); filt.connect(g); g.connect(ctx.destination);
+      src.start();
     } catch (e) {}
   };
 
@@ -584,6 +629,7 @@ export default function GamePage() {
     setBidHistory([]);
     setWarning("");
     setSelectedTargets([]);
+    setMyTargets([]);
     setNextStarter(null);
     setMySeatId(null);
     setHasRolledLocal(false);
@@ -924,16 +970,16 @@ export default function GamePage() {
     setHasRolledLocal(true);
     playShakeSound();
     if (navigator.vibrate) navigator.vibrate(100);
-    // 自己骰子翻滚动画：明显翻滚约 1.8s 后定格为真实值（拉长更有真实摇骰感）
+    // 自己骰子翻滚动画：明显翻滚约 4s 后定格为真实值（拉长更有真实摇骰感，配合骰盅声）
     if (rollTimerRef.current) clearInterval(rollTimerRef.current);
     if (rollTimeoutRef.current) clearTimeout(rollTimeoutRef.current);
     setRolling(true);
     setRollingDice(rollDice());
-    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 60);
+    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 110);
     rollTimeoutRef.current = setTimeout(() => {
       if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
       setRolling(false);
-    }, 1800);
+    }, 4000);
 
     // 广播时保留 gameStarted = true (此时游戏已开始)
     await broadcastState(roomId, {
@@ -1065,7 +1111,7 @@ export default function GamePage() {
 
   // 抢开/开骰 支持多选：点击玩家名在“被开名单”里加入/移除
   const toggleTarget = (name: string) => {
-    setSelectedTargets(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
+    setMyTargets(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
   };
   const openDice = async (targetPlayers?: string[], isSnapOpen: boolean = false) => {
     // 观战者（中途进来、还没轮到下一局的人）不能开骰/抢开
@@ -1109,43 +1155,10 @@ export default function GamePage() {
     setErrorMsg("");
     setSelectedTargets(targets); // 保留被开者名单，供摊牌弹窗高亮
 
-    // 被开者中任一是顺子 即算“对方顺子”，用于双方顺子特殊规则
-    const anyStraight = targets.some(t => {
-      const td = players.find(p => p.name === t);
-      return td ? isStraight(td.dice) : false;
-    });
     const caller = playerName;
-    const bidder = lastBid.player;
-    const calledCount = lastBid.count;
-    const callerData = players.find(p => p.name === caller);
-    const callerIsStraight = callerData ? isStraight(callerData.dice) : false;
-
-    let totalCount = 0;
-    let winner = "";
-    let loser = "";
-
-    // 情况1：被开者中有顺子 且 开牌者也是顺子 → 开牌者输（特殊规则保留）
-    if (anyStraight && callerIsStraight) {
-      loser = caller;
-      winner = bidder;
-    }
-    // 通用：遍历所有玩家，各自按规则算有效个数（顺子手自动归零、豹子加成、封印1），求和判定；任意人数都适用
-    else {
-      let total = 0;
-      for (const p of players) {
-        if (p.dice && p.dice.length > 0) {
-          total += countForValue(p.dice, lastBid.value, oneSealed);
-        }
-      }
-      totalCount = total;
-      if (totalCount >= calledCount) {
-        winner = bidder;
-        loser = caller;
-      } else {
-        winner = caller;
-        loser = bidder;
-      }
-    }
+    // 逐人结算：每个被开者拿自己那手叫牌跟全场实际比；够→开牌者喝，不够→被开者喝；双方顺子→开牌者喝
+    const { verdicts, tally, nextStarter, resultMsg } = settleOpened(targets, players, bidHistory, oneSealed, isSnapOpen, caller);
+    const firstDrinker = Object.keys(tally)[0] || "";
 
     setGameOver(true);
     gameOverRef.current = true; // 本地立刻标记已结算，不等广播绕回，堵住间隙里的第二次开盅
@@ -1155,22 +1168,8 @@ export default function GamePage() {
     setRvIsSnapOpen(isSnapOpen);
     setShowReveal(true);
     setPhase("ended");
-    let resultMsg = "";
-    const cupLabel = isSnapOpen ? '（抢开×2杯）' : '（顺开×1杯）';
-    if (anyStraight && callerIsStraight) {
-      resultMsg = `🍺 ${loser} 输了！（双方都是顺子，谁开谁喝）`;
-    } else {
-      resultMsg = `🍺 ${loser} 输了！${bidder}叫了 ${calledCount}个${lastBid.value}，全场实际有 ${totalCount} 个${lastBid.value}`;
-    }
-    resultMsg += cupLabel;
     setResult(resultMsg);
-    setLoserName(loser); // 权威输家：结算时一次算定，所有人显示一致
-
-    if (isSnapOpen) {
-      setNextStarter(caller);
-    } else {
-      setNextStarter(loser);
-    }
+    setLoserName(firstDrinker); // 兼容旧高亮：取第一个喝酒的人（多喝酒者在摊牌浮层逐人展示）
 
     await broadcastState(roomId, {
       players,
@@ -1188,8 +1187,8 @@ export default function GamePage() {
       warning: "",
       cupOpened,
       selectedTargets: targets,
-      nextStarter: isSnapOpen ? caller : loser,
-      loserName: loser,
+      nextStarter,
+      loserName: firstDrinker,
       diceShaking: false,
     });
   };
@@ -1215,6 +1214,7 @@ export default function GamePage() {
     setBidHistory([]);
     setWarning("");
     setSelectedTargets([]);
+    setMyTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
     setHasRolledLocal(false);
@@ -1270,6 +1270,7 @@ export default function GamePage() {
     setBidHistory([]);
     setWarning("");
     setSelectedTargets([]);
+    setMyTargets([]);
     setIsLidOpen(false);
     setCupOpened(false);
     setHasRolledLocal(false);
@@ -1319,66 +1320,119 @@ export default function GamePage() {
 
   // ==================== 座位渲染（椭圆桌） ====================
   const renderSeats = () => {
-    const topSeats = [];
-    for (let i = 0; i < 6; i++) {
-      const left = 5 + i * 16;
-      topSeats.push({ seatId: i, row: 'top', left });
-    }
-    const bottomSeats = [];
-    for (let i = 0; i < 6; i++) {
-      const left = 5 + i * 16;
-      bottomSeats.push({ seatId: i + 6, row: 'bottom', left });
-    }
-    const allSeats = [...topSeats, ...bottomSeats];
+    // 固定 12 个槽位（顶部4 + 左列4 + 右列4）；按 seatId 固定映射，玩家进出座位不跳动。空位显示虚线占位卡。
+    const slotDefs = [
+      { id: 0, area: 'top' }, { id: 1, area: 'top' }, { id: 2, area: 'top' }, { id: 3, area: 'top' },
+      { id: 4, area: 'left' }, { id: 5, area: 'left' }, { id: 6, area: 'left' }, { id: 7, area: 'left' },
+      { id: 8, area: 'right' }, { id: 9, area: 'right' }, { id: 10, area: 'right' }, { id: 11, area: 'right' },
+    ];
+    const topSlots = slotDefs.filter(s => s.area === 'top');
+    const leftSlots = slotDefs.filter(s => s.area === 'left');
+    const rightSlots = slotDefs.filter(s => s.area === 'right');
 
-    return allSeats.map((seat) => {
-      const player = players.find(p => p.seatId === seat.seatId) || null;
+    const seatCard = (seatId: number) => {
+      const player = players.find(p => p.seatId === seatId) || null;
       const isMe = player?.name === playerName;
       const isActive = player?.name === currentPlayer && gameStarted && !gameOver;
       const isReady = player?.ready || false;
       const isHost = player?.seatId === 0;
-      const isTarget = selectedTargets.includes(player?.name);
-
+      const isTarget = player ? selectedTargets.includes(player.name) : false;
+      if (!player) {
+        return <div key={`empty-${seatId}`} className="seat-placeholder" />;
+      }
       return (
         <div
-          key={seat.seatId}
+          key={seatId}
+          className="seat-card"
           style={{
-            position: 'absolute',
-            left: `${seat.left}%`,
-            top: seat.row === 'top' ? '3%' : '87%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '52px',
-            height: '52px',
-            background: isActive ? 'rgba(34,211,238,0.22)' : (isTarget ? 'rgba(236,72,153,0.18)' : (player ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.05)')),
-            borderRadius: '50%',
-            border: isActive ? '3px solid #22d3ee' : (isTarget ? '2px solid #ec4899' : (player ? '2px solid rgba(34,211,238,0.35)' : '2px dashed rgba(255,255,255,0.2)')),
-            boxShadow: isActive ? '0 0 22px rgba(34,211,238,0.6)' : (isReady ? '0 0 10px rgba(34,211,238,0.3)' : 'none'),
-            transition: 'all 0.3s',
-            cursor: 'default',
-            fontSize: '11px',
-            color: '#ddd',
-            textAlign: 'center',
+            background: isActive ? 'rgba(34,211,238,0.18)' : (isTarget ? 'rgba(236,72,153,0.16)' : 'rgba(255,255,255,0.05)'),
+            border: isActive ? '2px solid #22d3ee' : (isTarget ? '2px solid #ec4899' : '1px solid rgba(255,255,255,0.12)'),
+            boxShadow: isActive ? '0 0 16px rgba(34,211,238,0.5)' : (isReady ? '0 0 8px rgba(34,211,238,0.25)' : 'none'),
           }}
         >
-          {player ? (
-            <>
-              <span style={{ fontSize: '24px' }}>👤</span>
-              <span style={{ fontSize: '11px', color: isMe ? '#fbbf24' : '#ddd', marginTop: '2px', maxWidth: '56px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {isMe ? `你` : player.name}
-              </span>
-              {isHost && <span style={{ fontSize: '12px', color: '#fbbf24', marginTop: '1px' }}>👑</span>}
-              {isReady && <span style={{ fontSize: '10px', color: '#22d3ee', marginLeft: '2px' }}>✅</span>}
-            </>
-          ) : (
-            <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>+</span>
-          )}
+          <span style={{ fontSize: '26px' }}>👤</span>
+          <span style={{
+            fontSize: '12px', color: isMe ? '#fbbf24' : '#ddd', marginTop: '2px',
+            maxWidth: '64px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {isMe ? '你' : player.name}
+          </span>
+          <span style={{ fontSize: '11px', marginTop: '1px', minHeight: '14px', lineHeight: '14px' }}>
+            {isHost ? '👑' : ''}{isReady ? '✅' : ''}
+          </span>
         </div>
       );
-    });
+    };
+
+    return (
+      <>
+        <div className="seat-top-row">{topSlots.map(s => seatCard(s.id))}</div>
+        <div className="seat-mid-row">
+          <div className="seat-side">{leftSlots.map(s => seatCard(s.id))}</div>
+
+          <div className={`cup-zone ${isLidOpen ? 'show-own' : ''}`}>
+            <div
+              className={`real-cup ${rolling ? 'shaking' : ''}`}
+              onClick={handleLidToggle}
+              style={{ transition: 'transform 0.5s ease' }}
+            >
+              <div className="cup-rim" />
+              <div className="cup-opening"><span className="question">?</span></div>
+              <div className="cup-body-real" />
+              <div className={`cup-dice-inside ${rolling ? 'shaking' : ''}`} style={{ opacity: isLidOpen ? 1 : (rolling ? 0.95 : 0) }}>
+                {rolling ? (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:'3px', justifyContent:'center', width:'78px' }}>
+                    {rollingDice.map((val, idx) => (
+                      <div key={idx} className="dice-roll-anim"><DiceSVG value={val} size={20} /></div>
+                    ))}
+                  </div>
+                ) : isLidOpen && myDice.length > 0 ? (
+                  <div style={{
+                    display:'flex', flexWrap:'wrap', gap:'3px', justifyContent:'center', width:'78px',
+                    ...(isStraight(myDice) ? { border:'2px solid #fbbf24', borderRadius:'14px', padding:'4px 6px', boxShadow:'0 0 16px rgba(251,191,36,0.55)' } : {}),
+                  }}>
+                    {myDice.map((val, idx) => (
+                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={20} highlight={isStraight(myDice)} /></div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div style={styles.lidControls}>
+              {!gameStarted ? (
+                <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '13px' }}>等待开始...</span>
+              ) : diceShaking ? (
+                <span style={{ color: '#fbbf24', fontSize: '15px' }}>🎲 摇骰中...</span>
+              ) : (
+                <span style={{ fontSize: '12px', color: 'transparent', minHeight: '16px' }}>{' '}</span>
+              )}
+            </div>
+
+            {isLidOpen && myDice.length > 0 && (() => {
+              const counts = Array(7).fill(0);
+              for (const d of myDice) counts[d]++;
+              const ones = counts[1];
+              const maxCount = Math.max(...counts);
+              const maxVal = counts.indexOf(maxCount);
+              let label = '';
+              if (maxCount === 5) label = `🔥 纯豹 (7个${maxVal})`;
+              else if (!oneSealed && ones > 0 && counts.slice(2).filter(c => c > 0).length === 1) {
+                const val = counts.indexOf(Math.max(...counts.slice(2)));
+                if (val > 0) label = `💫 豹子 (6个${val})`;
+              }
+              return label ? (
+                <div style={styles.diceStats}>
+                  <span style={{ color: '#fbbf24', fontSize: '14px' }}>{label}</span>
+                </div>
+              ) : null;
+            })()}
+          </div>
+
+          <div className="seat-side">{rightSlots.map(s => seatCard(s.id))}</div>
+        </div>
+      </>
+    );
   };
 
   // 摊牌浮层数据：开牌后展示全场骰子，供所有人自己数"够不够"
@@ -1396,6 +1450,11 @@ export default function GamePage() {
       }
     });
   }
+
+  // 摊牌浮层逐人判定：用同步来的被开名单+叫牌记录，本地确定性重算每个人的输赢（与开牌者客户端算法一致，无需新增广播字段）
+  const revealSettle = selectedTargets.length > 0
+    ? settleOpened(selectedTargets, players, bidHistory, oneSealed, rvIsSnapOpen, rvOpenerName || playerName)
+    : null;
 
   // 结论行配色：自己是否为输家（要喝的人）
   // 优先用开盅结算时记录的权威输家名字（含顺子特殊规则，所有人一致）；老数据无此字段时退回本地推算兜底
@@ -1481,82 +1540,6 @@ export default function GamePage() {
       <div style={styles.tableContainer} className="table-container">
         <div style={styles.table}>
           {renderSeats()}
-
-          <div style={styles.diceCenter}>
-            <div style={styles.diceBase}>
-              <div style={styles.diceDisplay}>
-                {rolling ? (
-                  <div style={styles.diceRow}>
-                    {rollingDice.map((val, idx) => (
-                      <div key={idx} className="dice-roll-anim"><DiceSVG value={val} size={32} /></div>
-                    ))}
-                  </div>
-                ) : isLidOpen && myDice.length > 0 ? (
-                  <div style={{...styles.diceRow, ...(isStraight(myDice) ? { border: '2px solid #fbbf24', borderRadius: '14px', padding: '6px 10px', boxShadow: '0 0 16px rgba(251,191,36,0.55), inset 0 0 10px rgba(251,191,36,0.25)', background: 'rgba(251,191,36,0.08)' } : {})}}>
-                    {myDice.map((val, idx) => (
-                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={34} highlight={isStraight(myDice)} /></div>
-                    ))}
-                  </div>
-                ) : myDice.length === 0 ? (
-                  <span style={{ fontSize: '28px', color: 'rgba(255,255,255,0.2)' }}>🎲</span>
-                ) : null}
-              </div>
-
-              <div
-                className="cup-glass"
-                onClick={handleLidToggle}
-                style={{
-                  ...styles.diceLid,
-                  transform: isLidOpen
-                    ? 'translate(-50%, -50%) translateY(-64px) rotateX(-12deg) scale(0.92)'
-                    : 'translate(-50%, -50%)',
-                  opacity: isLidOpen ? 0.35 : (rolling ? 0.22 : 1),
-                  transition: 'transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease, box-shadow 0.3s ease',
-                  animation: rolling ? 'cupShake 0.4s ease-in-out infinite' : 'none',
-                }}
-              >
-                <div style={styles.lidGloss} />
-                <div style={styles.lidInner}>
-                  <span style={styles.lidHandle}>🎲</span>
-                  <span style={styles.lidLabel}>骰盅</span>
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.lidControls}>
-              {!gameStarted ? (
-                <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '13px' }}>等待开始...</span>
-              ) : diceShaking ? (
-                <span style={{ color: '#fbbf24', fontSize: '15px' }}>🎲 摇骰中...</span>
-              ) : (
-                <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '12px' }}>
-                  {isLidOpen ? '👆 点骰盅盖回' : (myDice.length > 0 ? '👆 点骰盅查看' : '摇骰后可点骰盅查看')}
-                </span>
-              )}
-            </div>
-
-            {isLidOpen && myDice.length > 0 && (
-              <div style={styles.diceStats}>
-                {(() => {
-                  const hasStraight = isStraight(myDice);
-                  const counts = Array(7).fill(0);
-                  for (const d of myDice) counts[d]++;
-                  const ones = counts[1];
-                  const maxCount = Math.max(...counts);
-                  const maxVal = counts.indexOf(maxCount);
-                  let label = '';
-                  if (hasStraight) label = '🌈 顺子 (0)';
-                  else if (maxCount === 5) label = `🔥 纯豹 (7个${maxVal})`;
-                  else if (!oneSealed && ones > 0 && counts.slice(2).filter(c => c > 0).length === 1) {
-                    const val = counts.indexOf(Math.max(...counts.slice(2)));
-                    if (val > 0) label = `💫 豹子 (6个${val})`;
-                  }
-                  if (!label) label = `${myDice.length}颗骰子`;
-                  return <span style={{ color: '#fbbf24', fontSize: '14px' }}>{label}</span>;
-                })()}
-              </div>
-            )}
-          </div>
 
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
@@ -1674,20 +1657,20 @@ export default function GamePage() {
               {currentPlayer === playerName ? (
                 <>
                   <div style={styles.bidPanel}>
-                    {lastBidDisplay && (
-                      <div style={styles.quickAddRow}>
+                    <div style={styles.quickAddRow}>
+                      {lastBidDisplay && (
                         <span style={{ color: '#aaa', fontSize: '13px', marginRight: '6px' }}>上家: {lastBidDisplay.count}个{lastBidDisplay.value}</span>
-                        {quickAdds.map(add => (
-                          <button
-                            key={add}
-                            onClick={() => handleQuickBid(add)}
-                            style={styles.quickAddBtn}
-                          >
-                            +{add}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                      )}
+                      {quickAdds.map(add => (
+                        <button
+                          key={add}
+                          onClick={() => handleQuickBid(add)}
+                          style={styles.quickAddBtn}
+                        >
+                          +{add}
+                        </button>
+                      ))}
+                    </div>
                     <div style={styles.bidValueRow}>
                       {values.map(v => (
                         <button
@@ -1733,43 +1716,17 @@ export default function GamePage() {
                     )}
                   </div>
                   <div style={styles.actionDivider}>— 或者 —</div>
-                  <div style={styles.targetSelector}>
-                    <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>开谁（可多选）：</span>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
-                      {players.filter(p => p.name !== playerName && p.status !== "watching").map(p => {
-                        const on = selectedTargets.includes(p.name);
-                        return (
-                          <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
-                            padding: '4px 10px', borderRadius: '14px', fontSize: '12px', cursor: 'pointer',
-                            background: on ? 'rgba(236,72,153,0.85)' : 'rgba(255,255,255,0.08)',
-                            border: on ? '1px solid #ec4899' : '1px solid rgba(255,255,255,0.15)',
-                            color: on ? '#fff' : '#ccc',
-                          }}>{p.name}</button>
-                        );
-                      })}
-                    </div>
-                    <button onClick={() => openDice(selectedTargets, false)} style={styles.btnOpen}>🔓 开骰</button>
+                  <div style={{ display: 'flex', gap: '10px', width: '100%' }}>
+                    <button onClick={() => openDice([], false)} style={{ flex: 1, padding: '10px', borderRadius: '10px', border: 'none', background: 'linear-gradient(90deg,#8b5cf6,#a855f7)', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>🔓 开骰</button>
+                    <button onClick={() => { setMyTargets([]); setShowGrabModal(true); }} style={{ ...styles.btnOpen, flex: 1 }}>⚡ 抢开</button>
                   </div>
                 </>
               ) : (
                 <div style={styles.waitBox}>
                   <span style={styles.waitText}>⏳ 等待 {currentPlayer} 操作</span>
-                  <div style={styles.targetSelector}>
-                    <span style={{ color: '#ccc', marginRight: '4px', fontSize: '13px' }}>抢开谁（可多选）：</span>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: '1 1 auto' }}>
-                      {players.filter(p => p.name !== playerName && p.status !== "watching").map(p => {
-                        const on = selectedTargets.includes(p.name);
-                        return (
-                          <button key={p.name} onClick={() => toggleTarget(p.name)} style={{
-                            padding: '4px 10px', borderRadius: '14px', fontSize: '12px', cursor: 'pointer',
-                            background: on ? 'rgba(236,72,153,0.85)' : 'rgba(255,255,255,0.08)',
-                            border: on ? '1px solid #ec4899' : '1px solid rgba(255,255,255,0.15)',
-                            color: on ? '#fff' : '#ccc',
-                          }}>{p.name}</button>
-                        );
-                      })}
-                    </div>
-                    <button onClick={() => openDice(selectedTargets, true)} style={styles.btnOpenSmall}>⚡ 抢开</button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={() => openDice([], false)} style={{ padding: '5px 14px', borderRadius: '14px', border: 'none', background: 'linear-gradient(90deg,#8b5cf6,#a855f7)', color: '#fff', fontSize: '12px', cursor: 'pointer' }}>🔓 开骰</button>
+                    <button onClick={() => { setMyTargets([]); setShowGrabModal(true); }} style={styles.btnOpenSmall}>⚡ 抢开</button>
                   </div>
                 </div>
               )}
@@ -1803,6 +1760,32 @@ export default function GamePage() {
               <div style={{ flex:1, textAlign:'center', color:'#22d3ee', fontSize:'16px', fontWeight:'bold' }}>🎲 · 数数够不够</div>
               <button onClick={() => { setShowReveal(false); revealDismissedRef.current = true; }} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
             </div>
+            <div style={{ textAlign:'center', fontSize:'13px', color:'#cbd5e1', marginBottom:'8px' }}>
+              {rvIsSnapOpen ? (
+                <span>⚡ <strong style={{ color:'#ec4899' }}>{rvOpenerName === playerName ? '你' : rvOpenerName}</strong> 抢开了 {selectedTargets.map(n => n === playerName ? '你' : n).join('、')}</span>
+              ) : (
+                <span>🔓 <strong style={{ color:'#22d3ee' }}>{rvOpenerName === playerName ? '你' : rvOpenerName}</strong> 开骰（顺开）</span>
+              )}
+            </div>
+            {revealSettle && revealSettle.verdicts.length > 0 && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'4px', marginBottom:'10px', padding:'8px 10px', background:'rgba(255,255,255,0.05)', borderRadius:'12px', border:'1px solid rgba(255,255,255,0.1)' }}>
+                {revealSettle.verdicts.map((v, vi) => (
+                  <div key={vi} style={{ fontSize:'13px', color:'#ddd', display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center' }}>
+                    <span>
+                      <strong style={{ color:'#ec4899' }}>{v.name === playerName ? '你' : v.name}</strong> 喊 {v.count}个{v.value}
+                      <span style={{ color:'rgba(255,255,255,0.5)' }}>（实际 {v.actual}）</span>
+                      {v.enough ? <span style={{ color:'#22d3ee' }}> 够✅</span> : <span style={{ color:'#f87171' }}> 不够❌</span>}
+                    </span>
+                    <span style={{ color: v.drinker === playerName ? '#f87171' : (v.drinker === v.name ? '#fbbf24' : '#22d3ee'), fontWeight:'600', whiteSpace:'nowrap' }}>
+                      {v.drinker === playerName ? '你' : v.drinker} ×{v.cups}杯
+                    </span>
+                  </div>
+                ))}
+                <div style={{ fontSize:'14px', color:'#fff', fontWeight:'bold', borderTop:'1px solid rgba(255,255,255,0.12)', paddingTop:'6px', marginTop:'2px' }}>
+                  🍺 {Object.entries(revealSettle.tally).map(([n,c]) => `${n===playerName?'你':n}喝${c}杯`).join("，") || "无人喝"}（{rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）
+                </div>
+              </div>
+            )}
             <div style={{ overflowY:'auto', flex:'1 1 auto', display:'flex', flexDirection:'column', gap:'8px', paddingRight:'2px' }}>
               {players.filter(p => p.dice && p.dice.length > 0).map((p, i) => {
                 const opened = selectedTargets.includes(p.name);
@@ -1811,7 +1794,6 @@ export default function GamePage() {
                   <span style={{ minWidth:'52px', textAlign:'right', fontSize:'13px', color: p.name === playerName ? '#22d3ee' : '#ddd', fontWeight: p.name === playerName ? 'bold' : 'normal' }}>
                     {p.name === playerName ? '你' : p.name}
                     {opened ? ' 🔍被开' : ''}
-                    {isStraight(p.dice) ? ' 🎯顺子归零' : ''}
                   </span>
                   <div style={{ display:'flex', gap:'4px' }}>
                     {p.dice.map((d: number, di: number) => {
@@ -1829,14 +1811,48 @@ export default function GamePage() {
 
             </div>
             <div style={{ textAlign:'center', marginTop:'12px', fontSize:'14px', color:'#fff', borderTop:'1px solid rgba(255,255,255,0.1)', paddingTop:'10px' }}>
-              全场共 <strong style={{ color:'#fbbf24', fontSize:'18px' }}>{rvTotal}</strong> 个 {rvBidVal}
-              {!rvAnyStraight ? (
-                <span>　|　{lastBid.player} 叫 {rvBidCnt ?? 0} 个 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong></span>
-              ) : drinkerName ? (
-                <span>　|　按规则 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong>（{rvIsSnapOpen ? '抢开' : '顺开'}）</span>
+              {revealSettle && revealSettle.verdicts.length > 0 ? (
+                <span style={{ fontSize:'12px', color:'rgba(255,255,255,0.65)' }}>
+                  {revealSettle.verdicts.map((v, vi) => (
+                    <span key={vi} style={{ margin:'0 6px' }}>全场 <strong style={{ color:'#fbbf24' }}>{v.actual}</strong> 个{v.value}（{v.name === playerName ? '你' : v.name}喊{v.count}）</span>
+                  ))}
+                </span>
               ) : (
-                <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'12px' }}>　（有人是顺子，按规则判 · {rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）</span>
+                <span>
+                  全场共 <strong style={{ color:'#fbbf24', fontSize:'18px' }}>{rvTotal}</strong> 个 {rvBidVal}
+                  {!rvAnyStraight ? (
+                    <span>　|　{lastBid?.player} 叫 {rvBidCnt ?? 0} 个 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong></span>
+                  ) : drinkerName ? (
+                    <span>　|　按规则 → <strong style={{ color: iAmDrinker ? '#f87171' : '#22d3ee' }}>{iAmDrinker ? `❌ 自己喝酒 ×${rvCups}杯` : `✅ ${drinkerName} 喝酒 ×${rvCups}杯`}</strong>（{rvIsSnapOpen ? '抢开' : '顺开'}）</span>
+                  ) : (
+                    <span style={{ color:'rgba(255,255,255,0.5)', fontSize:'12px' }}>　（有人是顺子，按规则判 · {rvIsSnapOpen ? '抢开×2杯' : '顺开×1杯'}）</span>
+                  )}
+                </span>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 抢开 / 开骰 多选浮层 */}
+      {showGrabModal && (
+        <div onClick={() => setShowGrabModal(false)} style={{ position:'fixed', inset:0, zIndex:1100, background:'rgba(0,0,0,0.72)', backdropFilter:'blur(4px)', WebkitBackdropFilter:'blur(4px)', display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width:'100%', maxWidth:'420px', maxHeight:'82vh', background:'linear-gradient(160deg,#1c1430,#120c20)', border:'1px solid rgba(236,72,153,0.5)', borderRadius:'20px', padding:'18px 16px', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)', animation:'fadeIn 0.3s ease' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+              <div style={{ flex:1, textAlign:'center', color:'#ec4899', fontSize:'16px', fontWeight:'bold' }}>⚡ 抢开谁（可多选）</div>
+              <button onClick={() => setShowGrabModal(false)} style={{ background:'transparent', border:'none', color:'#aaa', fontSize:'22px', cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
+            </div>
+            <div style={{ overflowY:'auto', flex:'1 1 auto', display:'flex', flexWrap:'wrap', gap:'8px', justifyContent:'center', padding:'8px 2px' }}>
+              {players.filter(p => p.name !== playerName && p.status !== "watching").map(p => {
+                const on = myTargets.includes(p.name);
+                return (
+                  <button key={p.name} onClick={() => toggleTarget(p.name)} style={{ padding:'8px 14px', borderRadius:'16px', fontSize:'13px', cursor:'pointer', background: on ? 'rgba(236,72,153,0.85)' : 'rgba(255,255,255,0.08)', border: on ? '1px solid #ec4899' : '1px solid rgba(255,255,255,0.15)', color: on ? '#fff' : '#ccc' }}>{p.name}</button>
+                );
+              })}
+            </div>
+            <div style={{ display:'flex', gap:'10px', marginTop:'12px' }}>
+              <button disabled={myTargets.length === 0} onClick={() => { setShowGrabModal(false); openDice(myTargets, false); }} style={{ flex:1, padding:'12px', borderRadius:'12px', border:'none', background: myTargets.length === 0 ? 'rgba(255,255,255,0.12)' : 'linear-gradient(90deg,#8b5cf6,#ec4899)', color: myTargets.length === 0 ? '#888' : '#fff', fontSize:'14px', fontWeight:'600', cursor: myTargets.length === 0 ? 'not-allowed' : 'pointer' }}>🔓 开骰</button>
+              <button disabled={myTargets.length === 0} onClick={() => { setShowGrabModal(false); openDice(myTargets, true); }} style={{ flex:1, padding:'12px', borderRadius:'12px', border:'none', background: myTargets.length === 0 ? 'rgba(255,255,255,0.12)' : '#ef4444', color: myTargets.length === 0 ? '#888' : '#fff', fontSize:'14px', fontWeight:'600', cursor: myTargets.length === 0 ? 'not-allowed' : 'pointer' }}>⚡ 抢开</button>
             </div>
           </div>
         </div>
@@ -2017,11 +2033,14 @@ const styles: any = {
     width: "100%",
     flex: 1,
     minHeight: 0,
+    display: "flex",
+    flexDirection: "column" as const,
     background: "linear-gradient(180deg, #2a1840 0%, #160d2b 100%)",
     borderRadius: "18px",
     border: "2px solid rgba(34,211,238,0.45)",
     boxShadow: "inset 0 0 40px rgba(0,0,0,0.4), 0 0 26px rgba(34,211,238,0.18)",
     marginBottom: "8px",
+    padding: "50px 8px 10px",
     overflow: "hidden",
   },
   roomInfo: {
@@ -2429,23 +2448,41 @@ if (typeof document !== 'undefined') {
       0%, 100% { border-color: rgba(251,191,36,0.5); box-shadow: 0 0 10px rgba(251,191,36,0.2); }
       50% { border-color: #fbbf24; box-shadow: 0 0 22px rgba(251,191,36,0.55); }
     }
+    @keyframes pulse-q { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
     @keyframes cupShake {
-      0%, 100% { transform: translate(-50%, -50%) rotate(0deg); }
-      12% { transform: translate(-54%, -55%) rotate(-13deg); }
-      24% { transform: translate(-46%, -45%) rotate(13deg); }
-      36% { transform: translate(-53%, -54%) rotate(-10deg); }
-      48% { transform: translate(-47%, -46%) rotate(10deg); }
-      60% { transform: translate(-52%, -53%) rotate(-7deg); }
-      72% { transform: translate(-48%, -47%) rotate(7deg); }
-      84% { transform: translate(-50%, -51%) rotate(-3deg); }
+      0%   { transform: translate(0px,0px) rotate(180deg); }
+      12%  { transform: translate(14px,-7px) rotate(186deg); }
+      25%  { transform: translate(0px,-13px) rotate(180deg); }
+      37%  { transform: translate(-14px,-7px) rotate(174deg); }
+      50%  { transform: translate(0px,0px) rotate(180deg); }
+      68%  { transform: translate(-20px,0px) rotate(186deg); }
+      86%  { transform: translate(20px,0px) rotate(174deg); }
+      100% { transform: translate(0px,0px) rotate(180deg); }
     }
+    .real-cup.shaking { animation: cupShake 1s ease-in-out infinite; }
+    .cup-dice-inside.shaking { opacity: 0.95; filter:blur(0); transform:translate(-50%,-50%) scale(1); }
+    .seat-top-row { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; padding:4px 4px 8px; }
+    .seat-mid-row { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:0 4px; }
+    .seat-side { display:flex; flex-direction:column; gap:8px; }
+    .seat-card { width:62px; min-height:74px; border-radius:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 2px; background:rgba(255,255,255,0.05); }
+    .seat-placeholder { width:62px; height:74px; border-radius:12px; border:1px dashed rgba(255,255,255,0.15); }
+    .cup-zone { display:flex; flex-direction:column; align-items:center; gap:8px; flex:0 0 auto; }
+    .real-cup { position:relative; width:100px; height:140px; transform:rotate(180deg); transition:transform 0.5s ease; cursor:pointer; }
+    .cup-body-real { position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:90px; height:130px; background:linear-gradient(90deg,#120a22 0%,#1d1136 30%,#281a45 50%,#1d1136 70%,#120a22 100%); border-radius:8px 8px 45px 45px; border:2px solid rgba(124,77,255,0.35); box-shadow:0 0 40px rgba(124,77,255,0.18), inset 0 6px 24px rgba(0,0,0,0.55); }
+    .cup-rim { position:absolute; top:0; left:50%; transform:translateX(-50%); width:94px; height:15px; background:linear-gradient(180deg,#ffd700,#b8860b); border-radius:50%; border:2px solid rgba(255,215,0,0.6); box-shadow:0 2px 10px rgba(255,215,0,0.3); z-index:10; }
+    .cup-opening { position:absolute; top:3px; left:50%; transform:translateX(-50%); width:80px; height:12px; background:#1a0a2e; border-radius:50%; display:flex; align-items:center; justify-content:center; z-index:11; }
+    .cup-opening .question { font-size:20px; color:rgba(139,92,246,0.8); text-shadow:0 0 15px rgba(139,92,246,0.5); animation:pulse-q 2s ease-in-out infinite; transform:rotate(180deg); }
+    .cup-dice-inside { position:absolute; top:52%; left:50%; transform:translate(-50%,-50%) scale(0.85); display:flex; flex-wrap:wrap; width:78px; justify-content:center; gap:3px; opacity:0; z-index:5; filter:blur(7px); transition:opacity 0.6s ease 0.15s, filter 0.6s ease 0.15s, transform 0.6s ease 0.15s; }
+    .cup-zone.show-own .cup-dice-inside { opacity:1; filter:blur(0); transform:translate(-50%,-50%) scale(1); }
+    .cup-zone.show-own .cup-opening .question { opacity:0; }
+    .cup-zone.show-own .real-cup { transform:rotate(180deg) translateY(-18px); }
     .dice-roll-anim { animation: diceRoll 0.55s linear infinite; }
     @keyframes diceSettle {
       0% { transform: scale(0.5) rotate(-14deg); opacity: 0; }
       60% { transform: scale(1.12) rotate(5deg); opacity: 1; }
       100% { transform: scale(1) rotate(0deg); }
     }
-    .dice-settle { animation: diceSettle 0.42s cubic-bezier(0.34, 1.56, 0.64, 1); }
+    .dice-settle { }
     .fade-in { animation: fadeIn 0.35s ease; }
     .turn-highlight { animation: turnPulse 1.2s ease-in-out infinite; }
     .cup-glass { cursor: pointer; }
