@@ -1795,14 +1795,31 @@ export default function ZhaJinHuaPage() {
     const isReady = baseReady.includes(playerName);
     const newReady = isReady ? baseReady.filter(p => p !== playerName) : [...baseReady, playerName];
 
-    if (needStatusChange) {
-      setPlayers(updatedPlayers);
-      playersRef.current = updatedPlayers;
+    // 🔧 修复 1/12：点准备时必须确保自己在 players 里。
+    // joinRoom 可能因网络/RLS/覆盖导致新人没写进 players，但 readyplayers 能写进。
+    // 点准备这一下把"我"补进 players，让人数和发牌名单都正确。
+    let mergedPlayers = needStatusChange ? updatedPlayers : players;
+    if (!mergedPlayers.some((p: any) => p.name === playerName)) {
+      const occupiedSeats = mergedPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+      let seatId = 0;
+      for (let i = 0; i < 12; i++) { if (!occupiedSeats.includes(i)) { seatId = i; break; } }
+      mergedPlayers = [...mergedPlayers, {
+        name: playerName,
+        cards: [],
+        cardCount: 0,
+        seatId,
+        isDealer: false,
+        status: 'playing',
+        bet: 0,
+      }];
     }
+
+    setPlayers(mergedPlayers);
+    playersRef.current = mergedPlayers;
     setReadyPlayers(newReady);
 
     await broadcastAndSyncDB({
-      players: needStatusChange ? updatedPlayers : players,
+      players: mergedPlayers,
       phase,
       dealerId,
       currentPlayerIndex,
@@ -2061,7 +2078,20 @@ export default function ZhaJinHuaPage() {
     const workingPlayers = authoritative ? authoritative.players : players;
     const workingReady = authoritative ? authoritative.ready : readyPlayers;
 
-    const playingPlayers = workingPlayers.filter(p => p.status === 'playing');
+    let playingPlayers = workingPlayers.filter(p => p.status === 'playing');
+    // 🔧 修复 1/12 兜底：players 数组可能因 joinRoom 没写进新人而只有房主，但 readyplayers 是准的。
+    // 若 playing 不够 2 人，而 ready 名单里有 ≥2 人，则以 readyplayers 重建 playing 名单，确保能开局。
+    if (playingPlayers.length < 2 && workingReady.length >= 2) {
+      const occupiedSeats = workingPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+      playingPlayers = workingReady.map((name: string, idx: number) => {
+        const existing = workingPlayers.find((p: any) => p.name === name);
+        if (existing) return existing;
+        let seatId = 0;
+        for (let i = 0; i < 12; i++) { if (!occupiedSeats.includes(i)) { seatId = i; break; } }
+        occupiedSeats.push(seatId);
+        return { name, cards: [], cardCount: 0, seatId, isDealer: false, status: 'playing', bet: 0 };
+      });
+    }
     if (playingPlayers.length < 2) { setErrorMsg("至少2人才能开始"); return; }
     const allReadyHere = playingPlayers.length >= 2 && playingPlayers.every(p => workingReady.includes(p.name));
     if (!allReadyHere) { setErrorMsg("还有玩家未准备"); return; }
@@ -3854,7 +3884,7 @@ export default function ZhaJinHuaPage() {
 
           <div style={styles.roomInfo}>
             <span style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <span>👥 {players.filter(p => p.status === 'playing' || p.status === 'watching').length}/{12}</span>
+              <span>👥 {Math.max(players.filter(p => p.status === 'playing' || p.status === 'watching').length, phase === 'waiting' ? readyPlayers.length : 0)}/{12}</span>
               {phase === "betting" && currentPlayer && !isDealer && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
               {phase === "betting" && currentPlayer && isDealer && currentPlayer.name === playerName && <span style={{ color: '#fbbf24', fontSize: '12px' }}>⏳ 等待压酒</span>}
               {phase === "betting" && currentPlayer && isDealer && currentPlayer.name !== playerName && <span style={{ color: '#fbbf24', fontSize: '12px' }}>🎯 {currentPlayer.name}</span>}
