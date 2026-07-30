@@ -576,8 +576,19 @@ export default function ZhaJinHuaPage() {
     }
 
     try {
+      // 🔧 修复 1/12：写库前以 DB 权威名单做并集,绝不因本地过期名单把别人顶掉
+      // （本地名单缺的人从 DB 补回,其他字段以本地 state.players 为准）。根治"一直 1/12"。
+      let writePlayers = state.players;
+      try {
+        const { data: dbRoom } = await supabase.from("rooms").select("players").eq("id", roomId).single();
+        if (dbRoom?.players) {
+          const localNames = new Set((state.players || []).map((p: any) => p.name));
+          const missing = (dbRoom.players as any[]).filter((p: any) => !localNames.has(p.name));
+          if (missing.length > 0) writePlayers = [...(state.players || []), ...missing];
+        }
+      } catch (_) { /* 读库失败则不并集,沿用本地名单 */ }
       await supabase.from("rooms").update({
-        players: state.players,
+        players: writePlayers,
         phase: state.phase,
         dealerid: state.dealerId,
         gameover: state.gameOver,
@@ -771,6 +782,14 @@ export default function ZhaJinHuaPage() {
                 status: p.status || 'playing',
               };
             });
+          }
+          // 🔧 修复 1/12：收到别人旧名单(不含自己)时,不把自己覆盖掉,改为并集收敛
+          // （保留本地所有人,只补远程名单里本地没有的新人）。否则自己被从屏幕删掉→显示 1/12。
+          if (localMe && !remoteMe) {
+            const localNames = new Set(prev.map((p: any) => p.name));
+            const merged = [...prev];
+            parsedPlayers.forEach((p: any) => { if (!localNames.has(p.name)) merged.push(p); });
+            return merged;
           }
           return parsedPlayers;
         });
@@ -1234,6 +1253,27 @@ export default function ZhaJinHuaPage() {
       }
       // 版本冲突（被别人抢先写入）→ 重试，重新读取最新名单再合并
     }
+    // 🔧 修复 1/12 边角：乐观锁 5 次全失败兜底,避免 finalPlayers 停在进房前旧快照→新人拿不到自己→1/12
+    if (!joinSuccess) {
+      console.warn('⚠️ 乐观锁5次全失败，兜底硬写玩家列表');
+      try {
+        const { data: latestRoom2 } = await supabase.from("rooms").select("players, version, readyplayers").eq("id", roomData.id).single();
+        if (latestRoom2) {
+          const dbPlayers = parsePlayers((latestRoom2 as any).players);
+          if (!dbPlayers.some((p: any) => p.name === playerName.trim())) {
+            const occupiedSeats = dbPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+            let seatId = 0;
+            for (let i = 0; i < 12; i++) { if (!occupiedSeats.includes(i)) { seatId = i; break; } }
+            const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, seatId, isDealer: false, status: isGameActive ? 'watching' : 'playing', bet: 0 };
+            const { data: upd } = await supabase.from("rooms").update({ players: [...dbPlayers, newPlayer], version: Date.now(), readyplayers: (latestRoom2 as any)?.readyplayers || [] }).eq("id", roomData.id).select();
+            if (upd && (upd as any[]).length > 0) { finalPlayers = [...dbPlayers, newPlayer]; joinSuccess = true; }
+          } else {
+            finalPlayers = dbPlayers;
+            joinSuccess = true;
+          }
+        }
+      } catch (_) {}
+    }
     const updatedPlayers = finalPlayers;
 
     setRoomId(roomData.id);
@@ -1411,6 +1451,8 @@ export default function ZhaJinHuaPage() {
         setRoomId("");
         if (channelRef.current) supabase.removeChannel(channelRef.current);
         try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); } catch (_) {}
+        // 🔧 Bug4 修复：最后一人离开时清理 DB 房间行,避免残留旧名单导致后来同密码加入粘到空/旧房间
+        try { await supabase.from("rooms").delete().eq("id", roomId); } catch (_) {}
       }
       return;
     }
@@ -2179,7 +2221,14 @@ export default function ZhaJinHuaPage() {
     setTimeout(() => {
       // 🔧 L4修复：600ms重发用当前最新名单(playersRef.current，已含这期间下的注)，
       // 避免用发牌时的旧快照(bet:0)把刚下的注冲掉。
-      broadcastAndSyncDB({ ...bettingPayload, players: playersRef.current });
+      // 🔧 Bug5修复：同时带当前最新的 result/resultDetails/readyPlayers，避免重发用发牌时旧 meta 把别人刚下的注文案覆盖。
+      broadcastAndSyncDB({
+        ...bettingPayload,
+        players: playersRef.current,
+        result: result,
+        resultDetails: resultDetails,
+        readyPlayers: readyPlayers,
+      });
     }, 600);
 
     if (newPlayers[firstIndex >= 0 ? firstIndex : 0]?.name === playerName) {
@@ -2212,18 +2261,18 @@ export default function ZhaJinHuaPage() {
     }
     // Bug9 修复：不再依赖可能过期的 currentPlayerIndex 判定轮到谁，
     // 改用"谁还没压酒"反推真正的当前下注人（与轮转推进同一套逻辑，但来源是已同步的 bet 状态，不会过期）
-    const firstIdx = players.findIndex(p => p.status === 'playing' && p.name !== dealerId);
-    const totalP = players.length;
+    const firstIdx = playersRef.current.findIndex(p => p.status === 'playing' && p.name !== dealerId);
+    const totalP = playersRef.current.length;
     let expectedIdx = -1;
     for (let s = 0; s < totalP; s++) {
       const idx = (firstIdx + s) % totalP;
-      const cand = players[idx];
+      const cand = playersRef.current[idx];
       if (cand && cand.status === 'playing' && cand.name !== dealerId && (cand.bet || 0) === 0) {
         expectedIdx = idx;
         break;
       }
     }
-    const expectedName = expectedIdx >= 0 ? players[expectedIdx].name : null;
+    const expectedName = expectedIdx >= 0 ? playersRef.current[expectedIdx].name : null;
     if (expectedName !== playerName) {
       setErrorMsg(`当前不是你的回合(${expectedName || currentPlayer?.name || '无人'} 的回合)`);
       return;
@@ -2655,7 +2704,7 @@ export default function ZhaJinHuaPage() {
       dealerId,
       currentPlayerIndex,
       gameOver: false,
-      result: result,
+      result: `⚔️ 已开 ${allResults.length} 位玩家`,
       resultDetails: resultDetailsRef.current,
       readyPlayers,
       settlementStep: 0,
