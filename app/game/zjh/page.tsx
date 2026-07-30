@@ -1206,15 +1206,18 @@ export default function ZhaJinHuaPage() {
     // 在 waiting 阶段则直接成为 playing
     const isGameActive = roomData.phase !== "waiting" && roomData.phase !== "settlement";
 
-    // 🔧 C1修复：乐观锁 + 重试，避免多人同时进房时裸 read-modify-write 互相覆盖（人凭空消失被永久踢出）
+    // 🔧 修复 1/12 根因 + C1 并发安全：进房写库改为「读 DB 最新名单 → 合并自己 → 直接写」。
+    // 去掉原会误判失败的 .eq("version") 守卫（RLS 下 .select() 返回空→永远失败→finalPlayers 停在旧快照→1/12）。
+    // 成功判定改用写入 error；每次重读最新库再合并，最后写赢；极端并发丢人由 8 秒轮询兜底自愈。
     let finalPlayers: any[] = currentPlayers;
     let joinSuccess = false;
     for (let attempt = 0; attempt < 5 && !joinSuccess; attempt++) {
-      const { data: latestRoom } = await supabase
+      const { data: latestRoom, error: readErr } = await supabase
         .from("rooms")
         .select("players, version, readyplayers")
         .eq("id", roomData.id)
         .single();
+      if (readErr) continue; // 读库失败 → 重试
       const latestPlayers = latestRoom ? parsePlayers((latestRoom as any).players) : currentPlayers;
       const myName = playerName.trim();
       if (latestPlayers.some((p: any) => p.name === myName)) {
@@ -1239,34 +1242,30 @@ export default function ZhaJinHuaPage() {
         bet: 0,
       };
       const merged = [...latestPlayers, newPlayer];
-      const oldVersion = (latestRoom as any)?.version || 0;
-      const newVersion = Math.max(oldVersion, Date.now()) + 1; // 严格递增，避免同毫秒版本碰撞
-      const { data: upd } = await supabase
+      const { error: writeErr } = await supabase
         .from("rooms")
-        .update({ players: merged, version: newVersion, readyplayers: (latestRoom as any)?.readyplayers || [] })
-        .eq("id", roomData.id)
-        .eq("version", oldVersion)
-        .select();
-      if (upd && (upd as any[]).length > 0) {
+        .update({ players: merged, version: Date.now(), readyplayers: (latestRoom as any)?.readyplayers || [] })
+        .eq("id", roomData.id);
+      if (!writeErr) {
         finalPlayers = merged;
         joinSuccess = true;
       }
-      // 版本冲突（被别人抢先写入）→ 重试，重新读取最新名单再合并
+      // 写入失败（网络等）→ 重试，重新读取最新名单再合并
     }
-    // 🔧 修复 1/12 边角：乐观锁 5 次全失败兜底,避免 finalPlayers 停在进房前旧快照→新人拿不到自己→1/12
+    // 🔧 修复 1/12 根因兜底：万一 5 次重试仍失败（如持续断网），最后以 DB 为准强制补上自己。
+    // 同样去掉脆弱的 .select() 行数判定，改用写入 error 判成功。
     if (!joinSuccess) {
-      console.warn('⚠️ 乐观锁5次全失败，兜底硬写玩家列表');
       try {
-        const { data: latestRoom2 } = await supabase.from("rooms").select("players, version, readyplayers").eq("id", roomData.id).single();
-        if (latestRoom2) {
+        const { data: latestRoom2, error: readErr2 } = await supabase.from("rooms").select("players, readyplayers").eq("id", roomData.id).single();
+        if (latestRoom2 && !readErr2) {
           const dbPlayers = parsePlayers((latestRoom2 as any).players);
           if (!dbPlayers.some((p: any) => p.name === playerName.trim())) {
             const occupiedSeats = dbPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
             let seatId = 0;
             for (let i = 0; i < 12; i++) { if (!occupiedSeats.includes(i)) { seatId = i; break; } }
             const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, seatId, isDealer: false, status: isGameActive ? 'watching' : 'playing', bet: 0 };
-            const { data: upd } = await supabase.from("rooms").update({ players: [...dbPlayers, newPlayer], version: Date.now(), readyplayers: (latestRoom2 as any)?.readyplayers || [] }).eq("id", roomData.id).select();
-            if (upd && (upd as any[]).length > 0) { finalPlayers = [...dbPlayers, newPlayer]; joinSuccess = true; }
+            const { error: writeErr2 } = await supabase.from("rooms").update({ players: [...dbPlayers, newPlayer], version: Date.now(), readyplayers: (latestRoom2 as any)?.readyplayers || [] }).eq("id", roomData.id);
+            if (!writeErr2) { finalPlayers = [...dbPlayers, newPlayer]; joinSuccess = true; }
           } else {
             finalPlayers = dbPlayers;
             joinSuccess = true;
