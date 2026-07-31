@@ -582,8 +582,10 @@ export default function ZhaJinHuaPage() {
       try {
         const { data: dbRoom } = await supabase.from("rooms").select("players").eq("id", roomId).single();
         if (dbRoom?.players) {
+          // 🔧 修复：DB players 列可能是 JSON 字符串，必须 parsePlayers 解析后才能 .filter（否则并集保护静默失效）
+          const dbParsed = parsePlayers(dbRoom.players);
           const localNames = new Set((state.players || []).map((p: any) => p.name));
-          const missing = (dbRoom.players as any[]).filter((p: any) => !localNames.has(p.name));
+          const missing = dbParsed.filter((p: any) => !localNames.has(p.name));
           if (missing.length > 0) writePlayers = [...(state.players || []), ...missing];
         }
       } catch (_) { /* 读库失败则不并集,沿用本地名单 */ }
@@ -1564,11 +1566,13 @@ export default function ZhaJinHuaPage() {
     let finalPlayers = updatedPlayers;
     try {
       const { data: fresh } = await supabase.from("rooms").select("players").eq("id", roomId).single();
-      if (fresh?.players) {
+      // 🔧 修复：DB players 列可能是 JSON 字符串，必须 parsePlayers（否则 .filter 崩溃→离开房间失败）
+      const freshParsed = fresh?.players ? parsePlayers(fresh.players) : [];
+      if (freshParsed.length > 0) {
         const otherChanges = new Map(
           updatedPlayers.filter(p => p.name !== leaver).map(p => [p.name, p])
         );
-        finalPlayers = fresh.players
+        finalPlayers = freshParsed
           .filter((p: any) => p.name !== leaver)
           .map((p: any) => otherChanges.get(p.name) || p);
       }
@@ -1685,7 +1689,11 @@ export default function ZhaJinHuaPage() {
         let basePlayers = players;
         try {
           const { data: fresh } = await supabase.from("rooms").select("players").eq("id", roomId).single();
-          if (fresh?.players) basePlayers = fresh.players;
+          // 🔧 修复：DB players 列可能是 JSON 字符串，必须 parsePlayers（否则 .map 崩溃→本局不玩失败）
+          if (fresh?.players) {
+            const parsed = parsePlayers(fresh.players);
+            if (parsed.length > 0) basePlayers = parsed;
+          }
         } catch (_) {}
         const updatedPlayers = basePlayers.map(p => {
           if (p.name === playerName) {
@@ -1882,9 +1890,10 @@ export default function ZhaJinHuaPage() {
     let cancelled = false;
     (async () => {
       try {
+        // 🔧 修复：DB 列名为小写 communitycard（原驼峰 communityCard 导致整条查询报错→补牌兜底从未生效）
         const { data } = await supabase
           .from("rooms")
-          .select("players, communityCard")
+          .select("players, communitycard")
           .eq("id", roomId)
           .single();
         if (!data || cancelled) return;
@@ -1898,8 +1907,8 @@ export default function ZhaJinHuaPage() {
           ));
         }
         // 公牌也补上（漏收发牌广播时公牌可能也没拿到）
-        if (data.communityCard && !communityCard) {
-          let cc: any = data.communityCard;
+        if (data.communitycard && !communityCard) {
+          let cc: any = data.communitycard;
           if (typeof cc === 'string') { try { cc = JSON.parse(cc); } catch (_) {} }
           if (cc) setCommunityCard(cc);
         }
@@ -1959,9 +1968,11 @@ export default function ZhaJinHuaPage() {
   const pollRoomStateFromDB = async () => {
     if (!roomId) return;
     try {
+      // 🔧 修复：DB 列名全小写（dealerid/gameover/...），此前用驼峰列名+不存在的列(wheelSpinning等)
+      // 导致整条查询报错→轮询兜底从未生效过。改为只查真实存在的小写列。
       const { data, error } = await supabase
         .from("rooms")
-        .select("players, readyplayers, phase, currentPlayerIndex, dealerId, seed, deckOffset, communityCard, wheelVisible, wheelSelected, wheelSegments, wheelSpinning, wheelRotation, revealTargets, allCompareData, result, resultDetails, pendingReturnDealer, gameOver")
+        .select("players, readyplayers, phase, currentplayerindex, dealerid, seed, deckoffset, communitycard, wheelvisible, wheelselected, wheelsegments, revealtargets, result, resultdetails, gameover")
         .eq("id", roomId)
         .single();
       if (error || !data) return;
@@ -1993,8 +2004,8 @@ export default function ZhaJinHuaPage() {
       setPhase(eff);
       phaseRef.current = eff;
 
-      // 关键字段同步（数据库是服务器真相，无条件应用）
-      setDealerId(data.dealerId || null);
+      // 关键字段同步（数据库是服务器真相，无条件应用）——列名与 DB 实际小写列对齐
+      setDealerId(data.dealerid || null);
       if (data.seed !== undefined) setSeed(data.seed);
       // 🔧 D1修复：轮询兜底也重建牌堆——否则重洗时若广播全丢，本地牌堆停在旧副导致错牌（数据库为权威，data.seed 即真相）
       if (data.seed !== undefined && data.seed !== deckSeedRef.current) {
@@ -2003,41 +2014,33 @@ export default function ZhaJinHuaPage() {
         localDeckRef.current = pd;
         deckSeedRef.current = data.seed;
       }
-      if (data.deckOffset !== undefined) setDeckOffset(data.deckOffset);
-      if (data.communityCard !== undefined) {
-        let cc: any = data.communityCard;
+      if (data.deckoffset !== undefined && data.deckoffset !== null) setDeckOffset(data.deckoffset);
+      if (data.communitycard !== undefined) {
+        let cc: any = data.communitycard;
         if (typeof cc === "string") { try { cc = JSON.parse(cc); } catch (_) {} }
         if (cc) setCommunityCard(cc);
       }
-      setCurrentPlayerIndex(data.currentPlayerIndex || 0);
+      setCurrentPlayerIndex(data.currentplayerindex || 0);
       setResult(data.result || "");
-      if (data.resultDetails) {
-        let rd: any = data.resultDetails;
+      if (data.resultdetails) {
+        let rd: any = data.resultdetails;
         if (typeof rd === "string") { try { rd = JSON.parse(rd); } catch (_) {} }
         if (rd) { setResultDetails(rd); resultDetailsRef.current = rd; }
       }
       setReadyPlayers(data.readyplayers || []);
-      setWheelVisible(data.wheelVisible || false);
-      setWheelSelected(data.wheelSelected || null);
-      setWheelSpinning(data.wheelSpinning || false);
-      setWheelRotation(data.wheelRotation || 0);
-      if (data.wheelSegments) {
-        let ws: any = data.wheelSegments;
+      setWheelVisible(data.wheelvisible || false);
+      setWheelSelected(data.wheelselected || null);
+      if (data.wheelsegments) {
+        let ws: any = data.wheelsegments;
         if (typeof ws === "string") { try { ws = JSON.parse(ws); } catch (_) {} }
         if (ws) setWheelSegments(ws);
       }
-      if (data.revealTargets) {
-        let rt: any = data.revealTargets;
+      if (data.revealtargets) {
+        let rt: any = data.revealtargets;
         if (typeof rt === "string") { try { rt = JSON.parse(rt); } catch (_) {} }
         if (rt) setRevealTargets(rt);
       }
-      if (data.allCompareData) {
-        let ac: any = data.allCompareData;
-        if (typeof ac === "string") { try { ac = JSON.parse(ac); } catch (_) {} }
-        if (ac) setAllCompareData(ac);
-      }
-      if (data.pendingReturnDealer !== undefined) setPendingReturnDealer(data.pendingReturnDealer);
-      setGameOver(data.gameOver || false);
+      setGameOver(data.gameover || false);
 
       // 本人手牌/下注本地优先保护（避免轮询把已下注/已发牌覆盖回旧值）
       setPlayers(prev => prev.map(p => {
@@ -2056,9 +2059,9 @@ export default function ZhaJinHuaPage() {
 
       // 修复C1 同源：轮询纠正了轮转后，若"当前该下注的变成我且未下注"，补一次超时（防挂机卡死）
       if (eff === "betting" && !bettingCompleteRef.current && !timeoutRef.current) {
-        const cpNow = parsedPlayers[data.currentPlayerIndex || 0];
+        const cpNow = parsedPlayers[data.currentplayerindex || 0];
         if (cpNow && cpNow.name === playerName && !(cpNow.bet > 0)) {
-          startBettingTimeoutRef.current?.(data.currentPlayerIndex || 0);
+          startBettingTimeoutRef.current?.(data.currentplayerindex || 0);
         }
       }
     } catch (e) {
@@ -2104,7 +2107,13 @@ export default function ZhaJinHuaPage() {
     }
 
     const firstDealer = playingPlayers[0].name;
-    const resetPlayers = workingPlayers.map(p => ({
+    // 🔧 修复：发牌名单必须包含 readyplayers 兜底重建出来的新人（此前只用 workingPlayers，
+    // 重建的新人被丢掉→只剩房主一人有牌、全场卡死）。用并集：workingPlayers 为底 + 补上重建名单里缺的人。
+    const rosterForStart = [...workingPlayers];
+    playingPlayers.forEach((pp: any) => {
+      if (!rosterForStart.some((p: any) => p.name === pp.name)) rosterForStart.push(pp);
+    });
+    const resetPlayers = rosterForStart.map(p => ({
       ...p,
       cards: [],
       cardCount: 0,
@@ -2327,7 +2336,11 @@ export default function ZhaJinHuaPage() {
     let basePlayers = players;
     try {
       const { data: freshRoom } = await supabase.from('rooms').select('players').eq('id', roomId).single();
-      if (freshRoom?.players) basePlayers = freshRoom.players as any[];
+      // 🔧 修复：DB players 列可能是 JSON 字符串，必须 parsePlayers 解析（直接 as any[] 会让下面 .map 崩溃→压酒无反应）
+      if (freshRoom?.players) {
+        const parsed = parsePlayers(freshRoom.players);
+        if (parsed.length > 0) basePlayers = parsed;
+      }
     } catch (_) { /* 读库失败降级用本地 players */ }
     const updatedPlayers = basePlayers.map(p => {
       if (p.name === playerName) {
@@ -2982,9 +2995,13 @@ export default function ZhaJinHuaPage() {
     let basePlayers = players;
     let baseOffset = deckOffset;
     try {
-      const { data: fresh } = await supabase.from("rooms").select("players, deckOffset").eq("id", roomId).single();
-      if (fresh?.players) basePlayers = fresh.players;
-      if (typeof fresh?.deckOffset === 'number') baseOffset = fresh.deckOffset;
+      // 🔧 修复：DB 列名为小写 deckoffset（原驼峰导致整条查询报错→C6防覆盖保护从未生效）；players 需 parsePlayers 解析
+      const { data: fresh } = await supabase.from("rooms").select("players, deckoffset").eq("id", roomId).single();
+      if (fresh?.players) {
+        const parsed = parsePlayers(fresh.players);
+        if (parsed.length > 0) basePlayers = parsed;
+      }
+      if (typeof fresh?.deckoffset === 'number') baseOffset = fresh.deckoffset;
     } catch (_) {}
     if (baseOffset >= 52) {
       setErrorMsg("牌堆已用完,无法换公牌");
