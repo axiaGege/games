@@ -437,6 +437,10 @@ export default function ZhaJinHuaPage() {
   const [roomPassword, setRoomPassword] = useState("");
   const [joined, setJoined] = useState(false);
   const [roomId, setRoomId] = useState("");
+  // 🔧 修复"invalid input syntax for type uuid: \"\"": setRoomId 是异步的（下一次渲染才生效），
+  // 而 joinRoom 里 setRoomId(roomData.id) 之后立刻调用 broadcastAndSyncDB，此时闭包里的 roomId 仍是旧值（首次进房为空串），
+  // 导致 .eq("id", "") 被数据库拒绝（22P02）。用 ref 做"即时生效的房间号"，赋值当场可读。
+  const roomIdRef = useRef<string>("");
 
   const [players, setPlayers] = useState<any[]>([]);
   const [phase, setPhase] = useState<"waiting" | "dealing" | "betting" | "reveal" | "settlement" | "wheel">("waiting");
@@ -448,6 +452,9 @@ export default function ZhaJinHuaPage() {
   const [result, setResult] = useState<string>("");
   const [resultDetails, setResultDetails] = useState<any[]>([]);
   const resultDetailsRef = useRef<any[]>([]);
+  // 🔧 2026-08-02：本轮统计（从抽庄到牌堆用完这一整轮，每个玩家累计喝多少杯）。跨把不清空，转盘抽庄后清零。
+  const [roundDrinkTotals, setRoundDrinkTotals] = useState<Record<string, number>>({});
+  const roundDrinkTotalsRef = useRef<Record<string, number>>({});
   const [seed, setSeed] = useState<number | null>(null);
   const [localDeck, setLocalDeck] = useState<any[]>([]);
   const localDeckRef = useRef<any[]>([]);
@@ -466,6 +473,12 @@ export default function ZhaJinHuaPage() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startBettingTimeoutRef = useRef<any>(null);
   const [errorMsg, setErrorMsg] = useState("");
+  // 🔧 小修复：提示文字设了之后 4 秒自动消失，避免"当前不是压酒阶段"等红字一直钉在屏幕上
+  useEffect(() => {
+    if (!errorMsg) return;
+    const t = setTimeout(() => setErrorMsg(""), 4000);
+    return () => clearTimeout(t);
+  }, [errorMsg]);
   const [disconnected, setDisconnected] = useState(false);
   const [isDealer, setIsDealer] = useState(false);
   const [readyPlayers, setReadyPlayers] = useState<string[]>([]);
@@ -543,6 +556,9 @@ export default function ZhaJinHuaPage() {
   }, [joined]);
 
   const broadcastAndSyncDB = async (state: any) => {
+    // 🔧 房间号一律走"即时便签"(ref) 优先：setRoomId 要等下一次渲染才生效，
+    // joinRoom 里 setRoomId 后立刻调用本函数时，闭包里的 roomId 还是旧值（首次进房是空串）→ 写库 22P02。
+    const rid = roomIdRef.current || roomId;
     // 按副本修法：用时间戳替代自增计数器，避免两客户端版本号碰撞导致广播被静默丢弃
     const newVersion = Date.now();
     versionRef.current = newVersion;
@@ -561,7 +577,7 @@ export default function ZhaJinHuaPage() {
       wheelRotation: wheelRotationRef.current,
     };
     try {
-      const channel = channelRef.current || supabase.channel(`zhajinhua:${roomId}`, { config: { broadcast: { ack: true } } });
+      const channel = channelRef.current || supabase.channel(`zhajinhua:${rid}`, { config: { broadcast: { ack: true } } });
       await channel.send({
         type: 'broadcast',
         event: 'gameState',
@@ -575,12 +591,18 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
+    // 🔧 防御：房间号为空时直接跳过写库，避免 .eq("id","") 触发 22P02（invalid uuid）红字刷屏
+    if (!rid) {
+      console.warn('⚠️ 房间号为空，跳过本次数据库同步（广播已发出）');
+      return;
+    }
+
     try {
       // 🔧 修复 1/12：写库前以 DB 权威名单做并集,绝不因本地过期名单把别人顶掉
       // （本地名单缺的人从 DB 补回,其他字段以本地 state.players 为准）。根治"一直 1/12"。
       let writePlayers = state.players;
       try {
-        const { data: dbRoom } = await supabase.from("rooms").select("players").eq("id", roomId).single();
+        const { data: dbRoom } = await supabase.from("rooms").select("players").eq("id", rid).single();
         if (dbRoom?.players) {
           // 🔧 修复：DB players 列可能是 JSON 字符串，必须 parsePlayers 解析后才能 .filter（否则并集保护静默失效）
           const dbParsed = parsePlayers(dbRoom.players);
@@ -589,7 +611,7 @@ export default function ZhaJinHuaPage() {
           if (missing.length > 0) writePlayers = [...(state.players || []), ...missing];
         }
       } catch (_) { /* 读库失败则不并集,沿用本地名单 */ }
-      await supabase.from("rooms").update({
+      const { error: syncErr } = await supabase.from("rooms").update({
         players: writePlayers,
         phase: state.phase,
         dealerid: state.dealerId,
@@ -610,12 +632,27 @@ export default function ZhaJinHuaPage() {
         communitycard: state.communityCard || null,
         bettingcomplete: state.bettingComplete !== undefined ? state.bettingComplete : false,
         revealtargets: state.revealTargets || [],
-        version: newVersion,
-      }).eq("id", roomId);
-      console.log('💾 数据库同步成功');
+        // 🔴 2026-08-02 根治：rooms 表【没有 version 列】，写它会让整条 update 被 PGRST204 整体拒绝
+        //（players/phase/dealerid 全部一起写不进去）→ 长期 1/12、三人都当庄、轮询把人拉回准备的总根源。
+        // version 仅作为广播消息的新旧标记（payload 里保留），绝不写库。对齐 067 的做法。
+      }).eq("id", rid);
+      // 🔴 关键：Supabase 写库失败不会抛异常，只在返回值里带 error。
+      // 原代码没接返回值 → 写失败也照打"同步成功"，catch 永远不触发，问题被彻底掩盖。
+      if (syncErr) {
+        console.error(
+          '🔴🔴🔴 数据库写入失败！把这段红字发给我：',
+          '\n  message =', (syncErr as any).message,
+          '\n  code    =', (syncErr as any).code,
+          '\n  details =', (syncErr as any).details,
+          '\n  hint    =', (syncErr as any).hint,
+          '\n  raw     =', syncErr
+        );
+      } else {
+        console.log('💾 数据库同步成功 phase=', state.phase);
+      }
       setDisconnected(false);
     } catch (error) {
-      console.error('⚠️ 数据库同步失败(不影响游戏实时同步):', error);
+      console.error('⚠️ 数据库同步抛异常(不影响游戏实时同步):', error);
     }
   };
 
@@ -733,6 +770,11 @@ export default function ZhaJinHuaPage() {
           versionRef.current = state.version;
           setVersion(state.version);
         }
+        // 🔧 2026-08-02：接收端同步本轮统计（庄家累加后随广播下发，其他玩家直接采用）
+        if (state.roundDrinkTotals && Object.keys(state.roundDrinkTotals).length > 0) {
+          roundDrinkTotalsRef.current = state.roundDrinkTotals;
+          setRoundDrinkTotals(state.roundDrinkTotals);
+        }
         const parsedPlayers = parsePlayers(state.players);
         // 🔧 任何广播都让内部名单(playersRef)立刻跟上最新，避免发起方(finishReveal/dealCards)
         // 用滞后快照算错下注顺序/归还判定。
@@ -752,38 +794,16 @@ export default function ZhaJinHuaPage() {
           if (isSettlingRef.current && state.phase !== "settlement" && state.phase !== "wheel" && !state.structuralSync) return prev;
           const localMe = prev.find(p => p.name === playerName);
           const remoteMe = parsedPlayers.find(p => p.name === playerName);
-          if (localMe && remoteMe) {
-            const isDealing = state.phase === "dealing";
-            if (isDealing) return parsedPlayers;
-            const hasLocalCards = localMe.cards && localMe.cards.length > 0;
-            const isNewBettingRound = state.phase === "betting" && remoteMe.bet === 0;
-            const shouldUseRemoteCards = isNewBettingRound && remoteMe.cards && remoteMe.cards.length > 0;
-            // 🔧 漏收发牌广播时不再自己算牌（曾因退出重进导致座位顺序偏移，算到别人/庄家的牌）。
-            // 改为保持 playing+空牌，由下方 useEffect 异步从数据库拉权威牌补上。
-            return parsedPlayers.map(p => {
-              if (p.name === playerName) {
-                return {
-                  ...p,
-                  cards: shouldUseRemoteCards ? (p.cards || []) : (hasLocalCards ? localMe.cards : (p.cards || [])),
-                  cardCount: shouldUseRemoteCards ? (p.cardCount || p.cards?.length || 0) : (hasLocalCards ? localMe.cardCount : (p.cardCount || 0)),
-                  bet: isNewBettingRound ? 0 : (hasLocalCards ? (localMe.bet || 0) : (p.bet || 0)),
-                  status: isNewBettingRound ? 'playing' : (hasLocalCards ? (localMe.status || 'playing') : (p.status || 'playing')),
-                };
-              }
-              const prevPlayer = prev.find(pp => pp.name === p.name);
-              // 🔧 结构性同步（加入/离开）时，已存在的玩家保留自己的牌/下注/身份，
-              // 绝不用加入广播里的空牌去覆盖（防止迟到加入广播冲掉刚发好的牌）
-              if (state.structuralSync && prevPlayer) {
-                return prevPlayer;
-              }
-              return {
-                ...p,
-                cards: p.cards || [],
-                cardCount: p.cards?.length || p.cardCount || 0,
-                bet: p.bet || 0,
-                status: p.status || 'playing',
-              };
-            });
+          // 🔥 修复（2026-08-02）：正常游戏广播中 players 里的 cards 是庄家算好的权威牌，
+          // 必须无条件下用远程牌覆盖本地，否则"显示用的牌(myCards)"与"计算/对比用的牌(playersRef)"
+          // 会分叉——典型症状：自己私牌显示正确，但开牌对比/庄家牌却用的是上一把的旧牌。
+          // 旧 hasLocalCards 分支在下注广播(bet>0)时把本地旧牌写回，正是乱源，已删除。
+          // 仅两种例外保留本地：①结构性同步(加入/离开)不冲掉正在玩的人的牌；②远程名单不含自己(旧名单)时并集防 1/12。
+          if (state.structuralSync) {
+            const localNames = new Set(prev.map((p: any) => p.name));
+            const merged = [...prev];
+            parsedPlayers.forEach((p: any) => { if (!localNames.has(p.name)) merged.push(p); });
+            return merged;
           }
           // 🔧 修复 1/12：收到别人旧名单(不含自己)时,不把自己覆盖掉,改为并集收敛
           // （保留本地所有人,只补远程名单里本地没有的新人）。否则自己被从屏幕删掉→显示 1/12。
@@ -793,6 +813,7 @@ export default function ZhaJinHuaPage() {
             parsedPlayers.forEach((p: any) => { if (!localNames.has(p.name)) merged.push(p); });
             return merged;
           }
+          // 正常游戏广播：远程 players(含权威 cards)直接采用，杜绝本地旧牌污染
           return parsedPlayers;
         });
 
@@ -856,7 +877,7 @@ export default function ZhaJinHuaPage() {
         setReadyPlayers(state.readyPlayers || []);
         // 修复8：接收端牌堆保护——只在广播显式携带时才更新，避免漏带字段把本地进度误清零（与修复2写库保护对称）
         if (state.seed !== undefined) setSeed(state.seed);
-        if (state.deckOffset !== undefined) setDeckOffset(state.deckOffset);
+        if (state.deckOffset !== undefined) { setDeckOffset(state.deckOffset); deckOffsetRef.current = state.deckOffset; }
         setWheelVisible(state.wheelVisible || false);
         setWheelSelected(state.wheelSelected || null);
         setWheelSegments(state.wheelSegments || []);
@@ -1032,6 +1053,7 @@ export default function ZhaJinHuaPage() {
     }
 
     setRoomId(data.id);
+    roomIdRef.current = data.id; // 🔧 同步即时房间号，供本次调用内的写库/广播使用
     const parsedPlayers = parsePlayers(data.players);
     setPlayers(parsedPlayers);
     playersRef.current = parsedPlayers;
@@ -1082,11 +1104,9 @@ export default function ZhaJinHuaPage() {
       return;
     }
 
-    // 🔧 重进/加入时先把本地版本号对表到房间数据库的最新版本，
-    // 否则发出的广播版本号过旧，会被其他玩家当成旧消息丢弃，导致人数/准备/牌堆不同步
-    const dbVersion = (roomData as any).version || 0;
-    versionRef.current = Math.max(versionRef.current, dbVersion);
-    setVersion(versionRef.current);
+    // 🔴 2026-08-02：原先在这里"从数据库对表版本号"，但 rooms 表根本没有 version 列，
+    // 读出来永远 undefined → 这段是死代码。现在 version 一律用 Date.now() 时间戳（广播专用），
+    // 天然单调递增、跨客户端可比，无需与数据库对表。
 
     const currentPlayers = parsePlayers(roomData.players);
     if (currentPlayers.length >= 12) {
@@ -1097,6 +1117,7 @@ export default function ZhaJinHuaPage() {
     // 修复8：恢复会话分支也要触发广播，保证人数同步
     if (currentPlayers.some((p: any) => p.name === playerName.trim())) {
       setRoomId(roomData.id);
+      roomIdRef.current = roomData.id; // 🔧 同步即时房间号
       setJoined(true);
       setPlayers(currentPlayers);
       playersRef.current = currentPlayers;
@@ -1216,7 +1237,7 @@ export default function ZhaJinHuaPage() {
     for (let attempt = 0; attempt < 5 && !joinSuccess; attempt++) {
       const { data: latestRoom, error: readErr } = await supabase
         .from("rooms")
-        .select("players, version, readyplayers")
+        .select("players, readyplayers")
         .eq("id", roomData.id)
         .single();
       if (readErr) continue; // 读库失败 → 重试
@@ -1246,7 +1267,7 @@ export default function ZhaJinHuaPage() {
       const merged = [...latestPlayers, newPlayer];
       const { error: writeErr } = await supabase
         .from("rooms")
-        .update({ players: merged, version: Date.now(), readyplayers: (latestRoom as any)?.readyplayers || [] })
+        .update({ players: merged, readyplayers: (latestRoom as any)?.readyplayers || [] })
         .eq("id", roomData.id);
       if (!writeErr) {
         finalPlayers = merged;
@@ -1266,7 +1287,7 @@ export default function ZhaJinHuaPage() {
             let seatId = 0;
             for (let i = 0; i < 12; i++) { if (!occupiedSeats.includes(i)) { seatId = i; break; } }
             const newPlayer = { name: playerName.trim(), cards: [], cardCount: 0, seatId, isDealer: false, status: isGameActive ? 'watching' : 'playing', bet: 0 };
-            const { error: writeErr2 } = await supabase.from("rooms").update({ players: [...dbPlayers, newPlayer], version: Date.now(), readyplayers: (latestRoom2 as any)?.readyplayers || [] }).eq("id", roomData.id);
+            const { error: writeErr2 } = await supabase.from("rooms").update({ players: [...dbPlayers, newPlayer], readyplayers: (latestRoom2 as any)?.readyplayers || [] }).eq("id", roomData.id);
             if (!writeErr2) { finalPlayers = [...dbPlayers, newPlayer]; joinSuccess = true; }
           } else {
             finalPlayers = dbPlayers;
@@ -1278,6 +1299,7 @@ export default function ZhaJinHuaPage() {
     const updatedPlayers = finalPlayers;
 
     setRoomId(roomData.id);
+    roomIdRef.current = roomData.id; // 🔧 同步即时房间号：紧接着的 broadcastAndSyncDB 就靠它，否则写库拿到空串报 22P02
     setJoined(true);
     setPlayers(updatedPlayers);
     playersRef.current = updatedPlayers;
@@ -1384,6 +1406,7 @@ export default function ZhaJinHuaPage() {
       setPlayerName(savedName);
       setRoomPassword(savedPass);
       setRoomId(savedRoom);
+      roomIdRef.current = savedRoom; // 🔧 同步即时房间号
       setTimeout(() => { joinRoomRef.current(); }, 500);
     }
   }, []);
@@ -1450,6 +1473,7 @@ export default function ZhaJinHuaPage() {
       if (!targetName) {
         setJoined(false);
         setRoomId("");
+        roomIdRef.current = ""; // 🔧 人走了要清空，否则还会往旧房间写
         if (channelRef.current) supabase.removeChannel(channelRef.current);
         try { localStorage.removeItem('zjh_name'); localStorage.removeItem('zjh_pass'); localStorage.removeItem('zjh_room'); } catch (_) {}
         // 🔧 Bug4 修复：最后一人离开时清理 DB 房间行,避免残留旧名单导致后来同密码加入粘到空/旧房间
@@ -1621,6 +1645,7 @@ export default function ZhaJinHuaPage() {
     if (!targetName) {
       setJoined(false);
       setRoomId("");
+      roomIdRef.current = ""; // 🔧 人走了要清空，否则还会往旧房间写
       setPlayers([]);
       playersRef.current = [];
       setPhase("waiting");
@@ -1965,7 +1990,13 @@ export default function ZhaJinHuaPage() {
   // 复用 broadcast 接收端同样的"安全收敛"策略：名单只增删人不覆盖牌/下注/身份、
   // phase 防回退护栏、本人手牌/下注本地优先保护。每 POLL_MS 一次，免费档读取量可忽略。
   const POLL_MS = 8000;
+  // ⛔ 2026-08-02 临时停用轮询兜底：此前列名写错→轮询自上线从未生效；修好后才发现
+  // 数据库里的 phase 长期停在 waiting（疑似写库一直失败），轮询一生效就每 8 秒把
+  // 全场从压酒硬拉回准备界面（死循环）。先停掉 = 回到之前能正常玩的状态。
+  // 待「写库为什么失败」查清并修复后，把下面这个开关改回 true 即可恢复兜底。
+  const POLL_ENABLED: boolean = false;
   const pollRoomStateFromDB = async () => {
+    if (!POLL_ENABLED) return;
     if (!roomId) return;
     try {
       // 🔧 修复：DB 列名全小写（dealerid/gameover/...），此前用驼峰列名+不存在的列(wheelSpinning等)
@@ -2070,6 +2101,8 @@ export default function ZhaJinHuaPage() {
   };
 
   const startingRef = useRef(false);
+  const finishingRef = useRef(false);
+  const deckOffsetRef = useRef(0);
   const startGame = async () => {
     if (startingRef.current) return; // 🔧 C3修复：防连点双发牌（异步 setPhase 守卫在极快连点下失效）
     startingRef.current = true;
@@ -2201,6 +2234,7 @@ export default function ZhaJinHuaPage() {
     });
 
     setDeckOffset(offset);
+    deckOffsetRef.current = offset;
     setRemainingCards(52 - offset);
     setPlayers(newPlayers);
     playersRef.current = newPlayers;
@@ -2574,6 +2608,12 @@ export default function ZhaJinHuaPage() {
     const nextResultDetails = [...resultDetailsRef.current, newDetail];
     setResultDetails(nextResultDetails);
     resultDetailsRef.current = nextResultDetails;
+    // 🔧 2026-08-02：累加本轮统计（谁喝多少杯）
+    if (who && who !== 'none' && penalty > 0) {
+      const name = who === 'dealer' ? '庄家' : who;
+      roundDrinkTotalsRef.current = { ...roundDrinkTotalsRef.current, [name]: (roundDrinkTotalsRef.current[name] || 0) + penalty };
+      setRoundDrinkTotals(roundDrinkTotalsRef.current);
+    }
     setResult(announceMsg);
 
     setCompareData({
@@ -2609,6 +2649,7 @@ export default function ZhaJinHuaPage() {
       gameOver: false,
       result: announceMsg,
       resultDetails: resultDetailsRef.current,
+      roundDrinkTotals: roundDrinkTotalsRef.current,
       readyPlayers,
       settlementStep: 0,
       seed,
@@ -2733,6 +2774,14 @@ export default function ZhaJinHuaPage() {
     const nextResultDetails = [...resultDetailsRef.current, ...newDetails];
     setResultDetails(nextResultDetails);
     resultDetailsRef.current = nextResultDetails;
+    // 🔧 2026-08-02：累加本轮统计（每把开牌的输赢）
+    for (const d of newDetails) {
+      if (d.who && d.who !== 'none' && d.penalty > 0) {
+        const name = d.who === 'dealer' ? '庄家' : d.who;
+        roundDrinkTotalsRef.current = { ...roundDrinkTotalsRef.current, [name]: (roundDrinkTotalsRef.current[name] || 0) + d.penalty };
+      }
+    }
+    setRoundDrinkTotals(roundDrinkTotalsRef.current);
 
     const last = allResults[allResults.length - 1];
     if (last) {
@@ -2748,6 +2797,7 @@ export default function ZhaJinHuaPage() {
       gameOver: false,
       result: `⚔️ 已开 ${allResults.length} 位玩家`,
       resultDetails: resultDetailsRef.current,
+      roundDrinkTotals: roundDrinkTotalsRef.current,
       readyPlayers,
       settlementStep: 0,
       seed,
@@ -2791,11 +2841,22 @@ export default function ZhaJinHuaPage() {
       }
     }
 
+    if (finishingRef.current) return; // 🔥 修复（2026-08-02）：防连点/并发重复发牌
+    finishingRef.current = true;
+    try {
     const deck = localDeckRef.current;
-    let offset = deckOffset;
-    // 🔥 修复6：本轮要给"所有在玩且非庄家"的玩家发新牌（含未被开牌者），故总数=在玩非庄家数+庄家1张
-    const playingNonDealerCount = playersRef.current.filter(p => p.status === 'playing' && !p.isDealer).length;
-    const totalNeeded = playingNonDealerCount + 1;
+    let offset = deckOffsetRef.current;
+    // 🔥 规则修正（2026-08-02）：诈金花核心规则 = "开了谁，谁跟庄家重发；没被开的人手牌原样留到下一把"。
+    // 旧"修复6"错把这条规则当成 bug（注释写"避免部分人用旧牌"），改成了全场重发 → 后果有两个：
+    // ① 未被开的玩家手牌被无故换掉（违反规则）② 每把吃牌数翻倍，52 张几把就见底，出现"有的没牌开"。
+    // 现恢复：只有【被开过的玩家】+【本把新上桌的观战者】+【庄家】需要新牌。
+    const revealedCount = playersRef.current.filter(
+      p => p.status === 'playing' && !p.isDealer && revealTargets.includes(p.name)
+    ).length;
+    // 🔥 观战者即时上桌：中途加入的观战者本把转正、手上没牌必须发，牌数要一起算进去，
+    // 否则会算出"牌够"但实际发牌时人多一张，导致最后一人拿到 undefined 牌。
+    const watchingCount = playersRef.current.filter(p => p.status === 'watching').length;
+    const totalNeeded = revealedCount + watchingCount + 1;
 
     // 🔥 牌堆不够 → 进入结算，显示抽庄按钮
     if (offset + totalNeeded > 52) {
@@ -2836,17 +2897,31 @@ export default function ZhaJinHuaPage() {
     }
 
     // 牌堆够 → 正常发牌
+    // 🔥 记录"本把新上桌的观战者"：他们手上没牌，必须发新牌（与"被开过的人"合并成发牌名单）
+    const promotedNames: string[] = [];
     let updatedPlayers = playersRef.current.map(p => {
       // 🔥 同步 isDealer 标记（若发生退返，effectiveDealerId 已是原庄家）
       const isDealer = p.name === effectiveDealerId;
+      // 🔥 观战者即时上桌：中途加入的新人在每一把开始时就转为正式玩家，不必再等一整副牌打完。
+      // 走到这里说明牌堆够（上面已按"含观战者"的人数校验过），下面的发牌循环会给他们发牌。
+      if (p.status === 'watching') {
+        promotedNames.push(p.name);
+        return { ...p, isDealer, status: 'playing', bet: 0, cards: [], cardCount: 0 };
+      }
       if (p.status === 'playing') {
+        // 注清零、下一把重新压（用户确认规则②）；这里刻意不动 cards ——
+        // 没被开的玩家手牌必须原样带进下一把。
         return { ...p, isDealer, bet: 0 };
       }
       return { ...p, isDealer };
     });
 
-    // 🔥 修复6：对所有"在玩且非庄家"的玩家发新牌（不再只发被开牌的人），避免部分人用旧牌
-    const dealtNames = updatedPlayers.filter(p => p.status === 'playing' && !p.isDealer).map(p => p.name);
+    // 🔥 规则修正（2026-08-02）：只给【被开过的玩家】和【本把新上桌的观战者】发新牌。
+    // 没被开的玩家手牌原样带进下一把；庄家全开时 revealTargets 即全员非庄家，自动等于全场重发，与规则自洽。
+    const needDealNames = new Set([...revealTargets, ...promotedNames]);
+    const dealtNames = updatedPlayers
+      .filter(p => p.status === 'playing' && !p.isDealer && needDealNames.has(p.name))
+      .map(p => p.name);
     for (const name of dealtNames) {
       const card = deck[offset++];
       updatedPlayers = updatedPlayers.map(p => {
@@ -2869,6 +2944,7 @@ export default function ZhaJinHuaPage() {
     }
 
     setDeckOffset(offset);
+    deckOffsetRef.current = offset;
     setRemainingCards(52 - offset);
     setPlayers(updatedPlayers);
     playersRef.current = updatedPlayers;
@@ -2898,6 +2974,7 @@ export default function ZhaJinHuaPage() {
     setCurrentPlayerIndex(firstIdx >= 0 ? firstIdx : 0);
     setPhase("betting");
     phaseRef.current = "betting";
+    setGameOver(false); // 🔧 2026-08-02：开新局本地同步清空 gameOver，不依赖广播延迟，避免 betting 阶段还挂着上一局 settlement 的旧摘要
     setMyBet(0);
     setBettingComplete(false);
     bettingCompleteRef.current = false;
@@ -2935,6 +3012,9 @@ export default function ZhaJinHuaPage() {
 
     if (updatedPlayers[firstIdx >= 0 ? firstIdx : 0]?.name === playerName) {
       startBettingTimeout();
+    }
+    } finally {
+      finishingRef.current = false;
     }
   };
 
@@ -3149,6 +3229,13 @@ export default function ZhaJinHuaPage() {
       setWheelSelected(winner);
       setWheelSpinning(false);
       wheelSpinningRef.current = false; // 修复4：同步 ref，避免最终广播仍带 wheelSpinning:true
+      // 🔧 2026-08-02：转盘结束即结算完毕，本地把旧 resultDetails 清掉，且广播不再携带旧摘要，
+      // 避免某些窗口在下一局 betting 阶段还挂着上一局"XX 庄家赢，喝X杯"的结算记录
+      setResultDetails([]);
+      resultDetailsRef.current = [];
+      // 🔧 2026-08-02：本轮统计清零，新的一轮重新累计
+      setRoundDrinkTotals({});
+      roundDrinkTotalsRef.current = {};
       // 广播最终状态
       await broadcastAndSyncDB({
         players,
@@ -3157,7 +3244,7 @@ export default function ZhaJinHuaPage() {
         currentPlayerIndex,
         gameOver: true,
         result: `👑 ${winner} 成为新庄家!`,
-        resultDetails,
+        resultDetails: [],
         readyPlayers,
         settlementStep: 0,
         seed,
@@ -3881,10 +3968,6 @@ export default function ZhaJinHuaPage() {
             }}>
               {phase === "waiting" && `⏳ 等待开始 (${readyPlayers.length}/${players.filter(p => p.status !== 'watching').length} 已准备)`}
               {phase === "dealing" && "🃏 发牌中..."}
-              {phase === "betting" && isDealer && currentPlayer?.name === playerName && `⏳ 等待其他玩家压酒`}
-              {phase === "betting" && isDealer && currentPlayer?.name !== playerName && `💰 ${currentPlayer?.name} 压酒中 (庄家不用压)`}
-              {phase === "betting" && !isDealer && currentPlayer?.name === playerName && `💰 你的回合 — 选择压酒`}
-              {phase === "betting" && !isDealer && currentPlayer?.name !== playerName && `💰 ${currentPlayer?.name} 压酒中...`}
               {phase === "reveal" && (
                 isDealer
                   ? '👑 点击座位开牌'
@@ -3959,7 +4042,7 @@ export default function ZhaJinHuaPage() {
             fontSize: '13px',
             fontWeight: 600,
           }}>
-            👀 你正在观战，本局结束后下一局自动加入
+            👀 你正在观战，这一把打完就自动上桌
           </div>
         )}
 
@@ -3976,7 +4059,7 @@ export default function ZhaJinHuaPage() {
             </span>
           )}
           {gameOver && phase !== "wheel" && phase !== "settlement" && <span style={styles.resultText}>{result || '游戏结束'}</span>}
-          {phase === "settlement" && <span style={styles.resultText}>{result || '结算完成'}</span>}
+          {phase === "settlement" && <span style={styles.resultText}>📊 本轮结束，请庄家抽庄</span>}
         </div>
 
         <div key={`action-${phase}`} style={styles.actionBar}>
@@ -3997,24 +4080,13 @@ export default function ZhaJinHuaPage() {
             </>
           )}
 
-          {phase === "betting" && isMyBetTurn && (
+          {phase === "betting" && isMyBetTurn && (myBet ?? 0) === 0 && (
             <>
               <button onClick={() => handleBet(0.5)} style={{ ...styles.btnBid, borderColor: '#dc2626', color: '#dc2626' }}>🍺 半杯</button>
               <button onClick={() => handleBet(1)} style={{ ...styles.btnBid, borderColor: '#f59e0b', color: '#f59e0b' }}>🍺 1杯</button>
               <button onClick={() => handleBet(2)} style={{ ...styles.btnBid, borderColor: '#fbbf24', color: '#fbbf24' }}>🍺 2杯</button>
             </>
           )}
-          {phase === "betting" && !isMyBetTurn && !isDealer && !gameOver && (
-            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>
-              ⏳ 等待 {currentPlayer?.name} 压酒...
-            </span>
-          )}
-          {phase === "betting" && isDealer && !gameOver && (
-            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>
-              👑 庄家等待玩家压酒...
-            </span>
-          )}
-
           {phase === "reveal" && isDealer && (
             <>
               {showRevealAll && (
@@ -4074,7 +4146,7 @@ export default function ZhaJinHuaPage() {
           </div>
         )}
 
-        {resultDetails.length > 0 && (phase === "settlement" || (phase === "reveal" && isDealer)) && (
+        {Object.keys(roundDrinkTotals).length > 0 && phase === "settlement" && (
           <div style={{
             marginTop: '10px',
             padding: '10px',
@@ -4099,130 +4171,25 @@ export default function ZhaJinHuaPage() {
                 marginBottom: '10px',
                 textShadow: '0 0 20px rgba(251,191,36,0.3)',
               }}>
-                📊 本局结算
+                📊 本轮统计
               </div>
             )}
-            {resultDetails.map((d, idx) => {
-              const isDealerWin = d.result === '庄家赢';
-              const isDealerLose = d.result === '庄家输';
-              const isDraw = d.result === '平局';
-              return (
+            {Object.entries(roundDrinkTotals)
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, total], idx, arr) => (
                 <div key={idx} style={{
                   display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
-                  gap: '8px',
-                  padding: phase === "settlement" ? '8px 12px' : '4px 8px',
-                  marginBottom: phase === "settlement" ? '6px' : '2px',
-                  borderRadius: '10px',
-                  background: phase === "settlement"
-                    ? (isDealerWin ? 'rgba(34,211,238,0.08)' : isDealerLose ? 'rgba(248,113,113,0.08)' : 'rgba(136,136,136,0.06)')
-                    : 'transparent',
-                  border: phase === "settlement"
-                    ? (isDealerWin ? '1px solid rgba(34,211,238,0.15)' : isDealerLose ? '1px solid rgba(248,113,113,0.15)' : '1px solid rgba(255,255,255,0.04)')
-                    : 'none',
+                  padding: '6px 0',
+                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
                 }}>
-                  <span style={{
-                    fontSize: phase === "settlement" ? '14px' : '11px',
-                    fontWeight: phase === "settlement" ? 600 : 400,
-                    color: '#ddd',
-                    minWidth: '40px',
-                  }}>{d.player}</span>
-
-                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                    <span style={{
-                      fontSize: phase === "settlement" ? '11px' : '9px',
-                      padding: phase === "settlement" ? '2px 6px' : '1px 4px',
-                      borderRadius: '6px',
-                      background: 'rgba(251,191,36,0.15)',
-                      color: '#fbbf24',
-                    }}>庄:{d.dealerHandName}</span>
-                    <span style={{ fontSize: phase === "settlement" ? '10px' : '8px', color: 'rgba(255,255,255,0.3)' }}>vs</span>
-                    <span style={{
-                      fontSize: phase === "settlement" ? '11px' : '9px',
-                      padding: phase === "settlement" ? '2px 6px' : '1px 4px',
-                      borderRadius: '6px',
-                      background: 'rgba(255,255,255,0.08)',
-                      color: '#aaa',
-                    }}>{d.targetHandName}</span>
-                  </div>
-
-                  <span style={{
-                    fontSize: phase === "settlement" ? '13px' : '10px',
-                    fontWeight: phase === "settlement" ? 700 : 400,
-                    padding: phase === "settlement" ? '3px 10px' : '1px 6px',
-                    borderRadius: '8px',
-                    background: isDealerWin ? 'rgba(34,211,238,0.2)' : isDealerLose ? 'rgba(248,113,113,0.2)' : 'rgba(136,136,136,0.15)',
-                    color: isDealerWin ? '#22d3ee' : isDealerLose ? '#f87171' : '#888',
-                    textShadow: isDealerWin ? '0 0 8px rgba(34,211,238,0.3)' : isDealerLose ? '0 0 8px rgba(248,113,113,0.3)' : 'none',
-                  }}>
-                    {isDealerWin ? '🏆赢' : isDealerLose ? '😅输' : '🤝平'}
+                  <span style={{ fontSize: '14px', color: '#ddd', fontWeight: 500 }}>{name}</span>
+                  <span style={{ fontSize: '15px', fontWeight: 700, color: '#fbbf24' }}>
+                    🍺 {formatBet(total)}
                   </span>
-
-                  {d.penalty > 0 ? (
-                    <span style={{
-                      fontSize: phase === "settlement" ? '13px' : '10px',
-                      fontWeight: phase === "settlement" ? 700 : 400,
-                      color: '#fbbf24',
-                      padding: phase === "settlement" ? '3px 8px' : '0',
-                      borderRadius: '6px',
-                      background: phase === "settlement" ? 'rgba(251,191,36,0.12)' : 'transparent',
-                    }}>
-                      🍺 {d.who === 'dealer' ? `庄家喝 ${formatBet(d.penalty)}` :
-                           d.who === 'none' ? '不喝' :
-                           `${d.player} 喝 ${formatBet(d.penalty)}`}
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: '10px', color: '#888' }}>不喝</span>
-                  )}
                 </div>
-              );
-            })}
-
-            {phase === "settlement" && (() => {
-              const drinkMap: Record<string, number> = {};
-              for (const d of resultDetails) {
-                // 修复：who==='dealer'→庄家输→庄家喝（记'庄家'）；who=target→庄家赢→闲家喝（记d.player）
-                if (d.who === 'dealer') {
-                  drinkMap['庄家'] = (drinkMap['庄家'] || 0) + (d.penalty || d.bet || 0.5);
-                } else if (d.who !== 'none' && d.who) {
-                  drinkMap[d.player] = (drinkMap[d.player] || 0) + (d.penalty || d.bet || 0.5);
-                }
-              }
-              for (const p of players) {
-                if (p.drinkCount && p.drinkCount > 0) {
-                  drinkMap[p.name] = (drinkMap[p.name] || 0) + p.drinkCount;
-                }
-              }
-              const entries = Object.entries(drinkMap).filter(([_, v]) => v > 0);
-              if (entries.length === 0) return null;
-              return (
-                <div style={{
-                  marginTop: '12px',
-                  padding: '10px',
-                  background: 'rgba(220,38,38,0.06)',
-                  borderRadius: '10px',
-                  border: '1px solid rgba(220,38,38,0.15)',
-                }}>
-                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#f87171', marginBottom: '6px' }}>
-                    🍻 喝酒总计
-                  </div>
-                  {entries.map(([name, total], idx) => (
-                    <div key={idx} style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      padding: '4px 0',
-                      borderBottom: idx < entries.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
-                    }}>
-                      <span style={{ fontSize: '13px', color: '#ddd', fontWeight: 500 }}>{name}</span>
-                      <span style={{ fontSize: '14px', fontWeight: 700, color: '#fbbf24' }}>
-                        🍺 {formatBet(total)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+              ))}
           </div>
         )}
       </div>
