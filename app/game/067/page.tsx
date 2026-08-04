@@ -468,6 +468,13 @@ export default function GamePage() {
         const savedPeek = (() => { try { return data.resultdetails ? JSON.parse(data.resultdetails) : null; } catch { return null; } })();
         const healAllowed = (savedPeek?.version ?? 0) <= gVersionRef.current;
         const localForHeal = playersRef.current;
+        // 加入并发自愈：本地知道自己在房、但服务器名单没有我（被并发加入覆盖）→ 基于刚读到的服务器最新名单补回完整自己，不会丢别人
+        const healMe = localForHeal.find((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName));
+        const serverHasMe = playersArr.some((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName));
+        if (healMe && !serverHasMe) {
+          playersArr = [...playersArr, healMe];
+          changed = true;
+        }
         if (healAllowed && localForHeal.length > 0) {
           playersArr = playersArr.map((p: any) => {
             if (p.dice && p.dice.length > 0) return p;
@@ -818,12 +825,21 @@ export default function GamePage() {
     }
 
     const newPlayer = { cid: myCid, lastSeen: Date.now(), name, dice: [], ready: false, seatId, status: midRound ? "watching" : "playing" };
-    const updatedPlayers = [...currentPlayers, newPlayer];
-    console.log('📤 准备更新的 players:', updatedPlayers);
+    // 并发加固：写入前再读一次服务器最新名单，只在“自己不在”时 append，避免两人同时加入互相覆盖
+    const { data: freshRoom, error: refetchErr } = await supabase
+      .from("rooms")
+      .select("players")
+      .eq("id", data.id)
+      .maybeSingle();
+    let finalPlayers: any[] = refetchErr ? [...currentPlayers, newPlayer] : parsePlayers(freshRoom?.players);
+    if (!finalPlayers.find((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name))) {
+      finalPlayers = [...finalPlayers, newPlayer];
+    }
+    console.log('📤 准备更新的 players:', finalPlayers);
 
     const { error: updateError } = await supabase
       .from("rooms")
-      .update({ players: updatedPlayers })
+      .update({ players: finalPlayers })
       .eq("id", data.id);
 
     if (updateError) {
@@ -835,14 +851,14 @@ export default function GamePage() {
     console.log('✅ 更新成功，准备广播');
     setRoomId(data.id);
     setJoined(true);
-    setPlayers(updatedPlayers);
+    setPlayers(finalPlayers);
     try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
     // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
     // 绝不再写死 phase:"waiting"（否则会把正在进行的对局打回准备阶段）。
     const saved = savedState;
     gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
     await broadcastState(data.id, {
-      players: updatedPlayers,
+      players: finalPlayers,
       currentPlayer: saved?.currentPlayer || "",
       gameStarted: saved?.gameStarted || false,
       gameOver: saved?.gameOver || false,
@@ -890,7 +906,14 @@ export default function GamePage() {
     const newReady = !me.ready;
     console.log('🔄 准备状态切换:', me.ready, '->', newReady);
 
-    const updatedPlayers = players.map(p =>
+    // 并发加固：写库前读服务器最新名单，只改自己 ready 再写回，避免两人同时点准备互相覆盖
+    const { data: freshRoom, error: refetchErr } = await supabase
+      .from("rooms")
+      .select("players")
+      .eq("id", roomId)
+      .maybeSingle();
+    const baseList: any[] = refetchErr ? players : parsePlayers(freshRoom?.players);
+    const updatedPlayers = baseList.map(p =>
       p.name === playerName ? { ...p, ready: newReady } : p
     );
 
@@ -933,7 +956,14 @@ export default function GamePage() {
       return;
     }
 
-    const resetPlayers = players.map(p => ({
+    // 并发加固：读服务器最新名单做重置，避免开局时把刚加入的人覆盖掉
+    const { data: freshRoom, error: refetchErr } = await supabase
+      .from("rooms")
+      .select("players")
+      .eq("id", roomId)
+      .maybeSingle();
+    const baseList: any[] = refetchErr ? players : parsePlayers(freshRoom?.players);
+    const resetPlayers = baseList.map(p => ({
       ...p,
       dice: [],
       ready: p.seatId === 0 ? true : false,
