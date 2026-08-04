@@ -1758,8 +1758,8 @@ export default function GamePage() {
                       <button onClick={() => setBidPage(Math.max(0, bidPage-1))} style={styles.bidNavBtn}>◀</button>
                       <span style={{ color: '#aaa', fontSize: '13px' }}>{bidPage+1}/3</span>
                       <button onClick={() => setBidPage(Math.min(2, bidPage+1))} style={styles.bidNavBtn}>▶</button>
-                      <button onClick={handleCallBid} style={styles.bidCallBtn}>叫牌</button>
                     </div>
+                    <button onClick={handleCallBid} style={styles.bidCallBtn}>🔊 喊骰</button>
                     {selectedCount !== null && selectedValue !== null && (
                       <div style={styles.bidPreview}>
                         当前选择: <strong>{selectedCount}个{selectedValue}</strong>
@@ -1767,18 +1767,44 @@ export default function GamePage() {
                     )}
                   </div>
                   <div style={styles.actionDivider}>— 或者 —</div>
-                  <div style={{ display: 'flex', gap: '10px', width: '100%' }}>
-                    <button onClick={() => openDice([], false)} style={{ flex: 1, padding: '10px', borderRadius: '10px', border: 'none', background: 'linear-gradient(90deg,#8b5cf6,#a855f7)', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>🔓 开骰</button>
-                    <button onClick={() => { setMyTargets([]); setShowGrabModal(true); }} style={{ ...styles.btnOpen, flex: 1 }}>⚡ 抢开</button>
-                  </div>
+                  {(() => {
+                    const w = players.find((p:any) => p.name === playerName)?.status === "watching";
+                    return (
+                      <div style={{ display: 'flex', gap: '10px', width: '100%' }}>
+                        <button
+                          disabled={w}
+                          onClick={() => openDice([], false)}
+                          style={w ? { flex: 1, padding: '10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.06)', color: '#888', fontSize: '14px', fontWeight: '600', cursor: 'not-allowed' } : { flex: 1, padding: '10px', borderRadius: '10px', border: '1.5px solid rgba(139,92,246,0.6)', background: 'rgba(139,92,246,0.08)', color: '#c4b5fd', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}
+                        >{w ? '👁 观战中' : '🔓 开骰'}</button>
+                        <button
+                          disabled={w}
+                          onClick={() => { setMyTargets([]); setShowGrabModal(true); }}
+                          style={w ? { ...styles.btnOpen, flex: 1, background: 'rgba(255,255,255,0.12)', color: '#888', cursor: 'not-allowed' } : { ...styles.btnOpen, flex: 1 }}
+                        >{w ? '👁 观战中' : '⚡ 抢开'}</button>
+                      </div>
+                    );
+                  })()}
                 </>
               ) : (
                 <div style={styles.waitBox}>
                   <span style={styles.waitText}>⏳ 等待 {currentPlayer} 操作</span>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => openDice([], false)} style={{ padding: '5px 14px', borderRadius: '14px', border: 'none', background: 'linear-gradient(90deg,#8b5cf6,#a855f7)', color: '#fff', fontSize: '12px', cursor: 'pointer' }}>🔓 开骰</button>
-                    <button onClick={() => { setMyTargets([]); setShowGrabModal(true); }} style={styles.btnOpenSmall}>⚡ 抢开</button>
-                  </div>
+                  {(() => {
+                    const w = players.find((p:any) => p.name === playerName)?.status === "watching";
+                    return (
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          disabled={w}
+                          onClick={() => openDice([], false)}
+                          style={w ? { padding: '5px 14px', borderRadius: '14px', border: 'none', background: 'rgba(255,255,255,0.12)', color: '#888', fontSize: '12px', cursor: 'not-allowed' } : { padding: '5px 14px', borderRadius: '14px', border: 'none', background: 'linear-gradient(90deg,#8b5cf6,#a855f7)', color: '#fff', fontSize: '12px', cursor: 'pointer' }}
+                        >{w ? '👁 观战中' : '🔓 开骰'}</button>
+                        <button
+                          disabled={w}
+                          onClick={() => { setMyTargets([]); setShowGrabModal(true); }}
+                          style={w ? { ...styles.btnOpenSmall, background: 'rgba(255,255,255,0.12)', color: '#888', cursor: 'not-allowed' } : { ...styles.btnOpenSmall }}
+                        >{w ? '👁 观战中' : '⚡ 抢开'}</button>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </>
@@ -2362,15 +2388,17 @@ const styles: any = {
     cursor: 'pointer',
   },
   bidCallBtn: {
-    padding: '4px 16px',
-    borderRadius: '16px',
+    padding: '12px',
+    borderRadius: '14px',
     border: 'none',
     background: 'linear-gradient(135deg, #22d3ee, #0ea5e9)',
     color: '#0f0f1a',
-    fontSize: '14px',
+    fontSize: '16px',
     fontWeight: '700',
     cursor: 'pointer',
-    boxShadow: '0 4px 16px rgba(34,211,238,0.5)',
+    boxShadow: '0 4px 18px rgba(34,211,238,0.5)',
+    width: '100%',
+    marginTop: '4px',
   },
   bidPreview: {
     color: '#fbbf24',
