@@ -637,6 +637,9 @@ export default function GamePage() {
     setHasRolled(false);
     setMyDice([]);
     setDiceShaking(false);
+    // ② 离开房间时清掉骰子翻滚定时器：避免摇骰动画途中离开后定时器在后台空转刷已不属于自己的界面
+    if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
+    if (rollTimeoutRef.current) { clearTimeout(rollTimeoutRef.current); rollTimeoutRef.current = null; }
     setIsLidOpen(false);
     setCupOpened(false);
     setOneSealed(false);
@@ -1062,6 +1065,8 @@ export default function GamePage() {
 
     const newBid = { player: playerName, count, value };
     setLastBid(newBid);
+    // ① 即时刷新顶部"上家"提示：叫牌成功当场更新，不等广播绕一圈回来（避免网络慢时快捷加注用旧基数）
+    setLastBidDisplay({ count, value });
     const newHistory = [...bidHistory, `${playerName} 叫了 ${count}个${value}`];
     setBidHistory(newHistory);
 
