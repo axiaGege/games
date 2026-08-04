@@ -452,7 +452,7 @@ export default function BlackjackPage() {
                   cards: p.cards || [],
                   cardCount: p.cards?.length || p.cardCount || 0,
                   isFiveCard: p.isFiveCard || (p.cards?.length === 5 && calculateHand(p.cards) <= 21),
-                  status: prevPlayer ? prevPlayer.status : (p.status || 'playing'),
+                  status: p.status || prevPlayer?.status || 'playing',
                 };
               }),
             ];
@@ -922,23 +922,53 @@ export default function BlackjackPage() {
       readyplayers: readyPlayers.filter(p => p !== playerName),
     }).eq("id", roomId);
     try { await supabase.from("rooms").update({ spectators: updatedSpectators }).eq("id", roomId); } catch (_) {}
-    await broadcastAndSyncDB({
-      players: updatedPlayers,
-      spectators: updatedSpectators,
-      phase: "waiting",
-      dealerId: null,
-      currentPlayerIndex: 0,
-      gameOver: false,
-      result: "",
-      resultDetails: [],
-      readyPlayers: readyPlayers.filter(p => p !== playerName),
-      settlementStep: 0,
-      seed: null,
-      deckOffset: 0,
-      wheelVisible: false,
-      wheelSelected: null,
-      wheelSegments: [],
-    });
+    const isGameplayPhase = (p: string) => p === "dealing" || p === "player_turn" || p === "dealer_turn";
+    if (isGameplayPhase(phase) && updatedPlayers.length > 0) {
+      // 对局进行中离座：只移除自己，保留牌局核心状态（phase/seed/dealerId/deckOffset 等），
+      // 避免其他正在玩的人牌堆被清空、全员崩。
+      let adjustedCPI = currentPlayerIndex;
+      const cpiPlayer = updatedPlayers[adjustedCPI];
+      const cpiInvalid = !cpiPlayer || cpiPlayer.status !== 'playing' || cpiPlayer.isStanding || cpiPlayer.isBust || cpiPlayer.cardCount >= 5;
+      if (cpiInvalid) {
+        let n = (adjustedCPI + 1) % updatedPlayers.length;
+        let c = 0;
+        while (c < updatedPlayers.length) {
+          const p = updatedPlayers[n];
+          if (p && p.status === 'playing' && !p.isStanding && !p.isBust && p.cardCount < 5) break;
+          n = (n + 1) % updatedPlayers.length;
+          c++;
+        }
+        adjustedCPI = n;
+      }
+      await broadcastAndSyncDB({
+        players: updatedPlayers,
+        spectators: updatedSpectators,
+        phase, dealerId, currentPlayerIndex: adjustedCPI, gameOver, result, resultDetails,
+        readyPlayers: readyPlayers.filter(p => p !== playerName),
+        settlementStep: 0,
+        seed, deckOffset,
+        wheelVisible, wheelSelected, wheelSegments,
+      });
+    } else {
+      // 非对局中（等待/抽庄/已无人在场）离座：整体重置为干净 waiting
+      await broadcastAndSyncDB({
+        players: updatedPlayers,
+        spectators: updatedSpectators,
+        phase: "waiting",
+        dealerId: null,
+        currentPlayerIndex: 0,
+        gameOver: false,
+        result: "",
+        resultDetails: [],
+        readyPlayers: readyPlayers.filter(p => p !== playerName),
+        settlementStep: 0,
+        seed: null,
+        deckOffset: 0,
+        wheelVisible: false,
+        wheelSelected: null,
+        wheelSegments: [],
+      });
+    }
     setJoined(false);
     setRoomId("");
     setPlayers([]);
@@ -1434,17 +1464,23 @@ export default function BlackjackPage() {
 
   // ==================== 退出本局 ====================
   const exitCurrentRound = async () => {
-    setConfirmDialog({ show: true, message: '确定退出本局吗？退出后可在准备阶段重新加入。', callback: async () => {
+    setConfirmDialog({ show: true, message: '确定退出本局吗？退出后转观战，下一局自动归队，也可点"重新加入本局"回来。', callback: async () => {
       if (!roomId) return;
       const myCid = getOrCreateCid();
-      const updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
-      const updatedSpectators = [...(spectators || []), playerName];
+      // 不把人移出玩家名单，只把状态标成"在看"（与中途加入观战走同一条已验证的路）
+      // 开新一局时 startNextRound 会自动把"在看"翻回"在玩"，实现自动归队，且不丢失 cid
+      const updatedPlayers = players.map(p =>
+        ((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName))
+          ? { ...p, status: 'watching' }
+          : p
+      );
+      const updatedSpectators = spectators || []; // 不再塞进观众席
       await supabase.from('rooms').update({ players: updatedPlayers, spectators: updatedSpectators }).eq('id', roomId);
       setPlayers(updatedPlayers);
       setSpectators(updatedSpectators);
       await broadcastAndSyncDB({ players: updatedPlayers, spectators: updatedSpectators, phase, dealerId, currentPlayerIndex, gameOver, result, resultDetails, readyPlayers, settlementStep: 0, seed, deckOffset, wheelVisible, wheelSelected, wheelSegments });
       setConfirmDialog({ show: false, message: '', callback: null });
-      setErrorMsg('你已退出本局，进入观战模式。下一局可重新加入。');
+      setErrorMsg('你已退出本局，转观战模式。下一局自动归队，也可点"重新加入本局"回来。');
     } });
   };
 
@@ -1460,17 +1496,31 @@ export default function BlackjackPage() {
     if (!roomData) return;
     const myCid = getOrCreateCid();
     const currentPlayers = parsePlayers(roomData.players);
-    if (currentPlayers.length >= 12) {
-      setErrorMsg('房间已满，无法加入'); return;
+    const isMe = (p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName.trim());
+    const existing = currentPlayers.find(isMe);
+    let updatedPlayers: any[];
+    if (existing) {
+      // 已在玩家名单里（如"退出本局"转观战）：只把状态翻回"在玩"，避免重复添加
+      updatedPlayers = currentPlayers.map(p => isMe(p) ? { ...p, status: 'playing' } : p);
+    } else {
+      if (currentPlayers.length >= 12) {
+        setErrorMsg('房间已满，无法加入'); return;
+      }
+      // 分配空座位（与 joinRoom 同款逻辑，避免用 length 直接当 seatId 造成冲突）
+      const occupiedSeats = currentPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+      let seatId = 0;
+      for (let i = 0; i < 12; i++) {
+        if (!occupiedSeats.includes(i)) { seatId = i; break; }
+      }
+      const newPlayer = {
+        cid: myCid, lastSeen: Date.now(),
+        name: playerName.trim(), cards: [], cardCount: 0,
+        isStanding: false, isBust: false, isBlackjack: false,
+        isFiveCard: false, seatId,
+        isDealer: false, bustType: 'none', status: 'playing',
+      };
+      updatedPlayers = [...currentPlayers, newPlayer];
     }
-    const newPlayer = {
-      cid: myCid, lastSeen: Date.now(),
-      name: playerName.trim(), cards: [], cardCount: 0,
-      isStanding: false, isBust: false, isBlackjack: false,
-      isFiveCard: false, seatId: currentPlayers.length,
-      isDealer: false, bustType: 'none', status: 'playing',
-    };
-    const updatedPlayers = [...currentPlayers, newPlayer];
     await supabase.from('rooms').update({
       players: updatedPlayers,
       spectators: updatedSpectators,
@@ -2058,9 +2108,8 @@ for (const r of results) {
       return;
     }
 
-    // 平局：只给平局者重抽，保持 reveal 状态，重置倒计时
+    // 平局：只给平局者重抽（淘汰者直接出局，不参与后续比较），保持 reveal 状态，重置倒计时
     if (tied.length > 1) {
-      const losers = drawCards.filter(d => drawRankValue(d.card.rank) !== targetVal);
       const tiedNames = tied.map(p => p.name);
 
       const newSeed = Math.floor(Math.random() * 1000000);
@@ -2070,7 +2119,7 @@ for (const r of results) {
         card: deck[idx % deck.length]
       }));
 
-      const newCards = [...newTiedCards, ...losers];
+      const newCards = [...newTiedCards];
       setDrawCards(newCards);
       setDrawRevealed(new Set<string>());
       setDrawWinner(null);
