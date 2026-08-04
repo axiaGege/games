@@ -263,6 +263,7 @@ export default function GamePage() {
   const seatOrderIndex = (s: number) => { const i = CLOCKWISE_SEAT_ORDER.indexOf(s); return i < 0 ? 99 : i; };
 
   const [errorMsg, setErrorMsg] = useState("");
+  const [autoRollFlag, setAutoRollFlag] = useState(false); // 再来一局时各端自动摇骰的触发标记
   const audioCtxRef = useRef<AudioContext | null>(null);
   const channelRef = useRef<any>(null);
 
@@ -344,6 +345,18 @@ export default function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ============ 再来一局：各端收到 autoRoll 标记后自动摇自己那份骰子 ============
+  useEffect(() => {
+    if (!autoRollFlag) return;
+    setAutoRollFlag(false); // 一次性触发，避免重复
+    // 轻量预判：观战者不摇、已摇过不重复摇、阶段不对不摇；最终守卫由 handleRollDice 收口
+    const me = players.find((p: any) => p.name === playerName);
+    if (me?.status === "watching") return;
+    if (me?.dice && me.dice.length > 0) return;
+    if (phase !== "rolling") return;
+    handleRollDice();
+  }, [autoRollFlag]);
+
   // ============ 远端状态应用（广播接收 + 定时对账共用，逻辑只写一处） ============
   const applyRemoteState = (state: any) => {
     // 双抢开"先到先得"：本局已接受一份结算后，再收到"同样是结算、但开牌人不同"的第二份 → 整条丢弃，
@@ -408,6 +421,7 @@ export default function GamePage() {
     setNextStarter(state.nextStarter || null);
     setLoserName(state.loserName || "");
     setDiceShaking(state.diceShaking || false);
+    if (state.autoRoll) setAutoRollFlag(true); // 其他端收到"再来一局"信号后各自自动摇
     if (state.lastBid) {
       setLastBidDisplay({ count: state.lastBid.count, value: state.lastBid.value });
     } else {
@@ -1278,6 +1292,7 @@ export default function GamePage() {
     setSelectedCount(null);
     setSelectedValue(null);
     setDiceShaking(true);
+    setAutoRollFlag(true); // 发起者本地自动摇（自己收不到自己广播）
     setLastBidDisplay(null);
     setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
 
@@ -1299,6 +1314,7 @@ export default function GamePage() {
       selectedTargets: [],
       nextStarter: nextStarter,
       diceShaking: true,
+      autoRoll: true,
     });
   };
 
@@ -2031,8 +2047,8 @@ const styles: any = {
   table: {
     position: "relative",
     width: "100%",
-    flex: 1,
-    minHeight: 0,
+    flex: "0 0 auto",
+    minHeight: "320px",
     display: "flex",
     flexDirection: "column" as const,
     background: "linear-gradient(180deg, #2a1840 0%, #160d2b 100%)",
@@ -2041,7 +2057,7 @@ const styles: any = {
     boxShadow: "inset 0 0 40px rgba(0,0,0,0.4), 0 0 26px rgba(34,211,238,0.18)",
     marginBottom: "8px",
     padding: "50px 8px 10px",
-    overflow: "hidden",
+    overflow: "visible" as const,
   },
   roomInfo: {
     position: "absolute",
