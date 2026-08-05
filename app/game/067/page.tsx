@@ -384,8 +384,14 @@ export default function GamePage() {
     // 整组替换(setPlayers)会抹掉乙刚摇的骰子 → 乙查看自己空、被开时提示"没有骰子"。
     // 规则：非"全员清空(新一局发牌)"时，广播有骰子用广播；广播空但本地有 → 保留本地那份。
     const allEmpty = parsedPlayers.every((p: any) => !p.dice || p.dice.length === 0);
+    // 跨局边界：远端已在新一局摇骰阶段、而本地还停在上一局（漏收了"再来一局"重置广播）→
+    // 此时本地记着的全是上一把的骰子，做并集会把旧骰回填给新一局的空骰者：
+    // 自己屏幕全是上一把的骰子、还被 468 行判成"已摇过"→ 摇骰按钮点不了，整局卡死。
+    // 这一瞬直接以服务器为准（新局=空骰），本地骰子随之清空，按钮自动恢复。
+    // ⚠️只在"跨局那一瞬"停手；摇骰阶段内部(两端都是 rolling)的并集原样保留，不动"摇完骰全员卡死"的老修复。
+    const crossRound = state.phase === "rolling" && phaseRef.current !== "rolling";
     let mergedPlayers = parsedPlayers;
-    if (!allEmpty) {
+    if (!allEmpty && !crossRound) {
       const localPlayers = playersRef.current;
       mergedPlayers = parsedPlayers.map((inc: any) => {
         const loc = localPlayers.find((p: any) => (p.cid && inc.cid && p.cid === inc.cid) || p.name === inc.name);
@@ -412,7 +418,8 @@ export default function GamePage() {
         const localMe = playersRef.current.find((p: any) => p.name === playerName);
         // 这条广播是"全员清空骰子"(新一局)时，补回的自己也得清空：
         // 否则把上一局的旧骰子带进新一局 → 自己界面显示已摇骰、摇不了，哨兵也当我摇好了直接跳过
-        const isFreshDeal = allEmpty && parsedPlayers.length > 0;
+        // crossRound 同理：跨局那一瞬补回的自己也必须清骰，否则旧骰子换个门又溜进新一局，上面的 ③ 白改
+        const isFreshDeal = (allEmpty && parsedPlayers.length > 0) || crossRound;
         if (localMe) mergedPlayers = [...mergedPlayers, isFreshDeal ? { ...localMe, dice: [] } : { ...localMe }];
       }
     }
@@ -501,14 +508,18 @@ export default function GamePage() {
         const healMe = localForHeal.find((p: any) => (p.cid && p.cid === myCid) || p.name === playerName);
         // 名字兜底：换手机同名接管后账本那条已是新设备编号，只比编号会误判"账本里没我"→ 补出两个同名
         const serverHasMe = playersArr.some((p: any) => (p.cid && p.cid === myCid) || p.name === playerName);
+        // 账本"全员都没骰子" = 只可能是新一局刚清完（正常摇骰过程中至少写入者自己有骰，账本不可能全空）
+        const boardAllEmpty = playersArr.length > 0 && playersArr.every((p: any) => !p.dice || p.dice.length === 0);
         // joinedRef 守卫：点"离开房间"到定时器被清掉之间有零点几秒空档，没这层会把刚走的自己又补回账本变幽灵
         if (joinedRef.current && healMe && !serverHasMe) {
           // 同上：账本处于"全员没骰子"(新一局)时补回的自己也清空骰子，别把上一局旧骰子带进新一局
-          const boardAllEmpty = playersArr.length > 0 && playersArr.every((p: any) => !p.dice || p.dice.length === 0);
           playersArr = [...playersArr, boardAllEmpty ? { ...healMe, dice: [] } : healMe];
           changed = true;
         }
-        if (healAllowed && localForHeal.length > 0) {
+        // ⚠️ boardAllEmpty 时一律不回填：某端漏收重置广播、本地还留着上一把的骰子，
+        // 若在此把"本地有、账本无"的旧骰整场写回账本 → 新一局账本被上一把骰子覆盖 →
+        // 全场同步后都读到旧骰、都被判"已摇过" → 由"个别人卡死"恶化成"全员卡死"。
+        if (healAllowed && !boardAllEmpty && localForHeal.length > 0) {
           playersArr = playersArr.map((p: any) => {
             if (p.dice && p.dice.length > 0) return p;
             const loc = localForHeal.find((lp: any) => (lp.cid && p.cid && lp.cid === p.cid) || lp.name === p.name);
@@ -1377,7 +1388,9 @@ export default function GamePage() {
     setDiceShaking(false);
     setLastBidDisplay(null);
 
-    await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
+    // ① 不再单独先写一次 players：紧随的 broadcastState 内部本就把同一份名单 + 新版本号一起落库(608行)。
+    // 单独先写会制造"账本骰子已清空、版本号还是上一局"的中间态，别端 3 秒对账在这零点几秒内命中
+    // 老的"账本治愈"逻辑 → 误判账本丢数据 → 把上一把骰子整场写回，盖掉刚清干净的新一局。
     
     await broadcastState(roomId, {
       players: resetPlayers,
@@ -1438,7 +1451,8 @@ export default function GamePage() {
     setLastBidDisplay(null);
     setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
 
-    await supabase.from("rooms").update({ players: resetPlayers }).eq("id", roomId);
+    // ① 同 resetGame：删除冗余单独写库，消灭"账本骰子已清空、版本号还是上一局"的中间态。
+    // 下面 broadcastState 会把 resetPlayers + 新版本号一并落库，重置一样写得进去。
 
     await broadcastState(roomId, {
       players: resetPlayers,
