@@ -247,6 +247,7 @@ export default function GamePage() {
   const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
   const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
   const phaseRef = useRef<"waiting" | "rolling" | "bidding" | "ended">(phase); // 实时镜像本地阶段，供 3 秒对账判断本地是否落后于服务器（useEffect 闭包拿不到最新 phase）
+  const joinedRef = useRef(false); // 实时镜像"我已在房里"：applyRemoteState/3秒对账 的"保自己"需要即时值；离开房间时第一时间置 false，防人走了又被补回变幽灵
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advanceFiredRef = useRef(false); // 进叫牌哨兵防重复触发锁：本轮 rolling 只广播一次推进，离开 rolling 自动复位
 
@@ -335,6 +336,9 @@ export default function GamePage() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+  useEffect(() => {
+    joinedRef.current = joined;
+  }, [joined]);
 
   // ============ 自动重连：刷新页面后自动回到原房间，无需重新输密码 ============
   useEffect(() => {
@@ -397,6 +401,20 @@ export default function GamePage() {
           mergedPlayers.push({ ...lp });
         }
       });
+    }
+    // 保自己：两人同时进房时，双方广播的版本号会撞车（接收端规则是"同号放行"），后到的那条整组替换名单，
+    // 本地连自己都被抹掉 → 3秒对账那条"服务器没我就补回自己"因为本地也找不到自己而空转 → 永久掉队，只能刷新重进。
+    // 规则：本地确认在房(joinedRef) 且合并结果里没有我 → 把本地记着的自己补回去。只补自己，绝不删任何人。
+    // 判断"在不在"按【名字】而不是设备编号：换手机同名接管后，账本那条已经是新设备编号，
+    // 若按编号判，旧手机会以为"名单里没我"再补一条 → 房里出现两个同名的人。
+    if (joinedRef.current && playerName) {
+      if (!mergedPlayers.some((p: any) => p.name === playerName)) {
+        const localMe = playersRef.current.find((p: any) => p.name === playerName);
+        // 这条广播是"全员清空骰子"(新一局)时，补回的自己也得清空：
+        // 否则把上一局的旧骰子带进新一局 → 自己界面显示已摇骰、摇不了，哨兵也当我摇好了直接跳过
+        const isFreshDeal = allEmpty && parsedPlayers.length > 0;
+        if (localMe) mergedPlayers = [...mergedPlayers, isFreshDeal ? { ...localMe, dice: [] } : { ...localMe }];
+      }
     }
     setPlayers(mergedPlayers);
     setGameStarted(state.gameStarted || false);
@@ -480,10 +498,14 @@ export default function GamePage() {
         const healAllowed = (savedPeek?.version ?? 0) <= gVersionRef.current;
         const localForHeal = playersRef.current;
         // 加入并发自愈：本地知道自己在房、但服务器名单没有我（被并发加入覆盖）→ 基于刚读到的服务器最新名单补回完整自己，不会丢别人
-        const healMe = localForHeal.find((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName));
-        const serverHasMe = playersArr.some((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === playerName));
-        if (healMe && !serverHasMe) {
-          playersArr = [...playersArr, healMe];
+        const healMe = localForHeal.find((p: any) => (p.cid && p.cid === myCid) || p.name === playerName);
+        // 名字兜底：换手机同名接管后账本那条已是新设备编号，只比编号会误判"账本里没我"→ 补出两个同名
+        const serverHasMe = playersArr.some((p: any) => (p.cid && p.cid === myCid) || p.name === playerName);
+        // joinedRef 守卫：点"离开房间"到定时器被清掉之间有零点几秒空档，没这层会把刚走的自己又补回账本变幽灵
+        if (joinedRef.current && healMe && !serverHasMe) {
+          // 同上：账本处于"全员没骰子"(新一局)时补回的自己也清空骰子，别把上一局旧骰子带进新一局
+          const boardAllEmpty = playersArr.length > 0 && playersArr.every((p: any) => !p.dice || p.dice.length === 0);
+          playersArr = [...playersArr, boardAllEmpty ? { ...healMe, dice: [] } : healMe];
           changed = true;
         }
         if (healAllowed && localForHeal.length > 0) {
@@ -608,6 +630,9 @@ export default function GamePage() {
 
   const leaveRoom = async () => {
     if (!roomId) return;
+    // 保险：第一时间摘掉"我在房里"标记（ref 赋值即刻生效，不像 setState 要等下一帧）。
+    // 否则下面写库+广播这零点几秒里，applyRemoteState 的"保自己"和 3 秒对账的"补自己"会把刚走的我又塞回名单 → 人走了名字还挂着。
+    joinedRef.current = false;
     const myCid = getOrCreateCid();
     // 并发加固：离开前先读服务器最新名单再把自己过滤掉写回，避免用本地过期名单覆盖（否则已离开者可能又被别人加回）
     const { data: leaveFresh, error: leaveErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
@@ -721,6 +746,7 @@ export default function GamePage() {
     const parsedPlayers = parsePlayers(data.players);
     setPlayers(parsedPlayers);
     setJoined(true);
+    joinedRef.current = true; // 即刻生效：setState 要等下一帧，进房瞬间收到的第一条广播才不会漏掉"保自己"
     try { localStorage.setItem('067_name', playerName.trim()); localStorage.setItem('067_pass', roomPassword.trim()); } catch (_) {}
     await broadcastState(data.id, {
       players: parsedPlayers,
@@ -806,6 +832,7 @@ export default function GamePage() {
       setRoomId(data.id);
       setPlayers(currentPlayers);
       setJoined(true);
+      joinedRef.current = true; // 同上：ref 即刻生效，重连瞬间的广播不漏"保自己"
       // 双通道恢复：从数据库读出进行中的对局状态，断网/刷新后接回原局（与订阅回调恢复逻辑一致）
       try {
         const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
@@ -839,22 +866,23 @@ export default function GamePage() {
       return;
     }
 
-    const occupiedSeats = currentPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
-    let seatId = 0;
-    for (let i = 0; i < 12; i++) {
-      if (!occupiedSeats.includes(i)) { seatId = i; break; }
-    }
-
-    const newPlayer = { cid: myCid, lastSeen: Date.now(), name, dice: [], ready: false, seatId, status: midRound ? "watching" : "playing" };
     // 并发加固：写入前再读一次服务器最新名单，只在“自己不在”时 append，避免两人同时加入互相覆盖
     const { data: freshRoom, error: refetchErr } = await supabase
       .from("rooms")
       .select("players")
       .eq("id", data.id)
       .maybeSingle();
-    let finalPlayers: any[] = refetchErr ? [...currentPlayers, newPlayer] : parsePlayers(freshRoom?.players);
+    let finalPlayers: any[] = refetchErr ? [...currentPlayers] : parsePlayers(freshRoom?.players);
     if (!finalPlayers.find((p: any) => (p.cid && p.cid === myCid) || (!p.cid && p.name === name))) {
-      finalPlayers = [...finalPlayers, newPlayer];
+      // 座位号必须基于【刚读到的最新名单】现算。原来是在二次读之前用旧名单算好的：
+      // 两人同时进房会双双挑中同一个空位 → 座位格按 seatId 取人只认一个，后写的人桌上完全不显示；
+      // 空房并发更会双双拿到 0 号 = 两个房主（都戴👑、都免准备、都出"开始游戏"）。
+      const occupiedSeats = finalPlayers.map((p: any) => p.seatId).filter((id: number) => id !== undefined);
+      let seatId = 0;
+      for (let i = 0; i < 12; i++) {
+        if (!occupiedSeats.includes(i)) { seatId = i; break; }
+      }
+      finalPlayers = [...finalPlayers, { cid: myCid, lastSeen: Date.now(), name, dice: [], ready: false, seatId, status: midRound ? "watching" : "playing" }];
     }
     console.log('📤 准备更新的 players:', finalPlayers);
 
@@ -872,6 +900,7 @@ export default function GamePage() {
     console.log('✅ 更新成功，准备广播');
     setRoomId(data.id);
     setJoined(true);
+    joinedRef.current = true; // 同上：ref 即刻生效，进房瞬间的广播不漏"保自己"
     setPlayers(finalPlayers);
     try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
     // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
