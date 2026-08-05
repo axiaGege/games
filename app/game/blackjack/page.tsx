@@ -3058,11 +3058,17 @@ for (const r of results) {
           )}
         </div>
 
-        {spectators.length > 0 && (
-          <div style={{ textAlign: 'center', color: '#888', fontSize: '11px', marginBottom: '4px', padding: '2px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
-            👀 观战：{spectators.join('、')}
-          </div>
-        )}
+        {(() => {
+          const watchingNames = Array.from(new Set([
+            ...(spectators || []),
+            ...players.filter((p: any) => p.status === 'watching').map((p: any) => p.name),
+          ]));
+          return watchingNames.length > 0 && (
+            <div style={{ textAlign: 'center', color: '#888', fontSize: '11px', marginBottom: '4px', padding: '2px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
+              👀 观战：{watchingNames.join('、')}
+            </div>
+          );
+        })()}
 
         <div style={styles.actionBar}>
           {phase === "waiting" && (
