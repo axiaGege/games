@@ -371,20 +371,27 @@ export default function GamePage() {
       settledOpenerRef.current = "";
     }
     const parsedPlayers = parsePlayers(state.players);
-    // 按名字合并骰子：拒绝被陈旧广播把"已摇好的骰子"冲空。
+    // 按名字合并骰子（并集最全）：拒绝被陈旧广播把"已摇好的骰子"冲空。
     // 并发摇骰时，甲在收到乙骰子前就广播，会把乙记为空；若两人本地版号撞车、版本闸拦不住，
     // 整组替换(setPlayers)会抹掉乙刚摇的骰子 → 乙查看自己空、被开时提示"没有骰子"。
-    // 规则：非"全员清空(新一局发牌)"时，若本地该玩家已有非空骰子而广播里为空，则保留本地那份。
+    // 规则：非"全员清空(新一局发牌)"时，广播有骰子用广播；广播空但本地有 → 保留本地那份。
     const allEmpty = parsedPlayers.every((p: any) => !p.dice || p.dice.length === 0);
     let mergedPlayers = parsedPlayers;
     if (!allEmpty) {
       const localPlayers = playersRef.current;
       mergedPlayers = parsedPlayers.map((inc: any) => {
         const loc = localPlayers.find((p: any) => (p.cid && inc.cid && p.cid === inc.cid) || p.name === inc.name);
-        if (loc && loc.dice && loc.dice.length > 0 && (!inc.dice || inc.dice.length === 0)) {
-          return { ...inc, dice: loc.dice };
-        }
+        if (inc.dice && inc.dice.length > 0) return inc;
+        if (loc && loc.dice && loc.dice.length > 0) return { ...inc, dice: loc.dice };
         return inc;
+      });
+      // 补缺：本地有骰子、但广播名单里漏掉的人（含自己），补入合并结果，
+      // 避免极端竞态下本地比广播多出"已摇骰的人"被漏 → 进叫牌哨兵误判"还有人没摇"卡死。
+      const incNames = new Set(parsedPlayers.map((p: any) => p.name));
+      localPlayers.forEach((lp: any) => {
+        if (lp.dice && lp.dice.length > 0 && !incNames.has(lp.name)) {
+          mergedPlayers.push({ ...lp });
+        }
       });
     }
     setPlayers(mergedPlayers);
@@ -1045,10 +1052,25 @@ export default function GamePage() {
     // 不再用全局 cupOpened 锁人（那会让一个人查看就误锁全桌）。
 
     const myDice = rollDice();
-    const updatedPlayers = players.map(p =>
-      p.name === playerName ? { ...p, dice: myDice } : p
-    );
-    setPlayers(updatedPlayers);
+    // 治本：摇骰时先读服务器最新名单，只把我的骰子塞进去再广播，
+    // 避免基于本地旧名单整张覆盖、把别人刚摇的骰子冲成空（导致全员卡在摇骰阶段）。
+    let rollPlayers: any[];
+    try {
+      const { data: latestSnap } = await supabase.from("rooms").select("players").eq("id", roomId).single();
+      const latestPlayers = parsePlayers(latestSnap?.players);
+      if (latestPlayers.length > 0) {
+        rollPlayers = latestPlayers.map((p: any) => p.name === playerName ? { ...p, dice: myDice } : p);
+        if (!latestPlayers.find((p: any) => p.name === playerName)) {
+          // 极端竞态：服务器名单里还没有我，补上自己（带骰子）
+          rollPlayers.push({ ...meRoll, dice: myDice });
+        }
+      } else {
+        rollPlayers = players.map((p: any) => p.name === playerName ? { ...p, dice: myDice } : p);
+      }
+    } catch (e) {
+      rollPlayers = players.map((p: any) => p.name === playerName ? { ...p, dice: myDice } : p);
+    }
+    setPlayers(rollPlayers);
     setMyDice(myDice);
     setHasRolledLocal(true);
     playShakeSound();
@@ -1066,7 +1088,7 @@ export default function GamePage() {
 
     // 广播时保留 gameStarted = true (此时游戏已开始)
     await broadcastState(roomId, {
-      players: updatedPlayers,
+      players: rollPlayers,
       currentPlayer: "",
       gameStarted: true,          // 修改: 改为 true
       gameOver: false,
