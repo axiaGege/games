@@ -598,7 +598,10 @@ export default function GamePage() {
   const leaveRoom = async () => {
     if (!roomId) return;
     const myCid = getOrCreateCid();
-    const updatedPlayers = players.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
+    // 并发加固：离开前先读服务器最新名单再把自己过滤掉写回，避免用本地过期名单覆盖（否则已离开者可能又被别人加回）
+    const { data: leaveFresh, error: leaveErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
+    const basePlayers = leaveErr ? players : parsePlayers(leaveFresh?.players);
+    const updatedPlayers = basePlayers.filter(p => !((p.cid && p.cid === myCid) || (!p.cid && p.name === playerName)));
     // 关键修复：离开房间时，读取房间【真实进行中的对局状态】，仅把离开者从名单移除，
     // 绝不再把整局重置为 waiting（否则正在进行的对局会被打回准备阶段）。
     let saved = null;
@@ -1301,7 +1304,10 @@ export default function GamePage() {
   };
 
   const resetGame = async () => {
-    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
+    // 并发加固：重开基于服务器最新名单，已离开的人不进下一局
+    const { data: rgFresh, error: rgErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
+    const rgBase = rgErr ? players : parsePlayers(rgFresh?.players);
+    const resetPlayers = rgBase.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(false);
     setGameOver(false);
@@ -1361,7 +1367,10 @@ export default function GamePage() {
     gameOverRef.current = false; // 新一局：清结算标记与先到先得记录
     settledOpenerRef.current = "";
     setLoserName(""); // 清掉上一局的输家记录
-    const resetPlayers = players.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
+    // 并发加固：新一局基于服务器最新名单生成，已离开的人不进下一局（不被本地含离场者的旧名单加回）
+    const { data: paFresh, error: paErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
+    const paBase = paErr ? players : parsePlayers(paFresh?.players);
+    const resetPlayers = paBase.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(true);
     setGameOver(false);
