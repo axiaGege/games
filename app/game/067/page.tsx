@@ -246,6 +246,7 @@ export default function GamePage() {
   const rollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
   const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
+  const phaseRef = useRef<"waiting" | "rolling" | "bidding" | "ended">(phase); // 实时镜像本地阶段，供 3 秒对账判断本地是否落后于服务器（useEffect 闭包拿不到最新 phase）
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advanceFiredRef = useRef(false); // 进叫牌哨兵防重复触发锁：本轮 rolling 只广播一次推进，离开 rolling 自动复位
 
@@ -331,6 +332,9 @@ export default function GamePage() {
   useEffect(() => {
     playersRef.current = players;
   }, [players]);
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   // ============ 自动重连：刷新页面后自动回到原房间，无需重新输密码 ============
   useEffect(() => {
@@ -495,8 +499,15 @@ export default function GamePage() {
         }
         const saved = data.resultdetails ? JSON.parse(data.resultdetails) : null;
         const remoteVersion = saved?.version ?? 0;
+        // 阶段顺序：waiting(0) < rolling(1) < bidding(2) < ended(3)
+        const PHASE_RANK: Record<string, number> = { waiting: 0, rolling: 1, bidding: 2, ended: 3 };
+        const remoteRank = saved?.phase ? (PHASE_RANK[saved.phase] ?? 0) : 0;
+        const localRank = phaseRef.current ? (PHASE_RANK[phaseRef.current] ?? 0) : 0;
+        // 兜底自愈：本地阶段落后于服务器（如服务器已进叫牌/结算、本地还卡在摇骰）-> 无视版本号，
+        // 以服务器为准强制对齐。applyRemoteState 内部仅挡 rolling/bidding->waiting 回退，往更靠前放行，不会把进行中的局拉回。
+        const forceAlign = remoteRank > localRank;
         // 账本版本不旧于本地才应用，避免用更旧的数据把本地进度覆盖回去
-        if (remoteVersion < gVersionRef.current) return;
+        if (remoteVersion < gVersionRef.current && !forceAlign) return;
         if (remoteVersion > gVersionRef.current) gVersionRef.current = remoteVersion;
         applyRemoteState({ ...saved, players: changed ? playersArr : data.players });
       } catch (_) {}
