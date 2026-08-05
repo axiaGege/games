@@ -856,6 +856,33 @@ export default function GamePage() {
     // 关键修复：新人进房时，从房间数据库读取【真实进行中的对局状态】，原样广播，
     // 绝不再写死 phase:"waiting"（否则会把正在进行的对局打回准备阶段）。
     const saved = savedState;
+    // 关键修复：对局进行中加入的新人，必须把服务器上【真实的对局状态】同步到自己本地。
+    // 否则本地停在默认 phase="waiting"/gameStarted=false → 界面误渲染“准备”按钮，
+    // 一旦点下去，toggleReady 的 gameStarted 守卫会被绕过，并把一份空白状态
+    // （currentPlayer=""、lastBid=null、bidHistory=[]）以合法版本号广播+落库，直接打废整局。
+    // 这段与上面【重连分支】(789-812) 是同一份逻辑；只在 midRound 时执行，
+    // 房间处于等待阶段时加入的行为完全不变（本地默认值本就正确）。
+    if (midRound && saved) {
+      setGameStarted(saved.gameStarted || false);
+      setGameOver(saved.gameOver || false);
+      if (saved.gameOver) { setShowReveal(true); setIsLidOpen(false); } else setShowReveal(false);
+      setRvOpenerName(saved.opener || "");
+      setRvIsSnapOpen(saved.isSnapOpen || false);
+      setResult(saved.result || "");
+      setCurrentPlayer(saved.currentPlayer || "");
+      setLastBid(saved.lastBid || null);
+      setPhase(saved.phase || "waiting");
+      setHasRolled(saved.hasRolled || false);
+      setOneSealed(saved.oneSealed || false);
+      setBidHistory(saved.bidHistory || []);
+      setWarning(saved.warning || "");
+      setCupOpened(saved.cupOpened || false);
+      setSelectedTargets(saved.selectedTargets || []);
+      setNextStarter(saved.nextStarter || null);
+      setDiceShaking(saved.diceShaking || false);
+      if (saved.lastBid) setLastBidDisplay({ count: saved.lastBid.count, value: saved.lastBid.value });
+      else setLastBidDisplay(null);
+    }
     gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
     await broadcastState(data.id, {
       players: finalPlayers,
@@ -896,6 +923,15 @@ export default function GamePage() {
     }
 
     console.log('找到玩家:', me);
+
+    // 兜底守卫：观战者一律不许点准备。
+    // 上面的 gameStarted 守卫依赖本地状态，万一某条路径本地还没同步到“对局进行中”（如中途加入的那一瞬间），
+    // 就会被绕过并广播出一份空白状态打废整局；而 players 里自己的 status 在加入时就已写库为 watching，更可靠。
+    if (me.status === "watching") {
+      setErrorMsg("你正在观战，下一局再加入");
+      console.warn('观战者不能准备');
+      return;
+    }
 
     if (me.seatId === 0) {
       setErrorMsg("房主无需准备");
