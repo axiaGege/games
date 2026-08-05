@@ -1518,10 +1518,9 @@ export default function GamePage() {
                 ) : isLidOpen && myDice.length > 0 ? (
                   <div style={{
                     display:'flex', flexWrap:'wrap', gap:'3px', justifyContent:'center', width:'78px',
-                    ...(isStraight(myDice) ? { border:'2px solid #fbbf24', borderRadius:'14px', padding:'4px 6px', boxShadow:'0 0 16px rgba(251,191,36,0.55)' } : {}),
                   }}>
                     {myDice.map((val, idx) => (
-                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={20} highlight={isStraight(myDice)} /></div>
+                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={20} /></div>
                     ))}
                   </div>
                 ) : null}
@@ -1969,7 +1968,7 @@ export default function GamePage() {
               {revealSettle && revealSettle.verdicts.length > 0 ? (
                 <span style={{ fontSize:'12px', color:'rgba(255,255,255,0.65)' }}>
                   {revealSettle.verdicts.map((v, vi) => (
-                    <span key={vi} style={{ margin:'0 6px' }}>全场 <strong style={{ color:'#fbbf24' }}>{v.actual}</strong> 个{v.value}（{v.name === playerName ? '你' : v.name}喊{v.count}）</span>
+                    <span key={vi} style={{ margin:'0 6px' }}>全场 <strong style={{ color:'#fbbf24' }}>{v.actual}</strong> 个{v.value}（{v.name === playerName ? '你' : v.name}喊{v.count}个）</span>
                   ))}
                 </span>
               ) : (
