@@ -1631,7 +1631,7 @@ export default function GamePage() {
             boxShadow: isActive ? '0 0 16px rgba(34,211,238,0.5)' : (isReady ? '0 0 8px rgba(34,211,238,0.25)' : 'none'),
           }}
         >
-          <span style={{ fontSize: '26px' }}>👤</span>
+          <span style={{ fontSize: '14px' }}>👤</span>
           <span style={{
             fontSize: '12px', color: isMe ? '#fbbf24' : '#ddd', marginTop: '2px',
             maxWidth: '64px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -1664,7 +1664,7 @@ export default function GamePage() {
                 {rolling ? (
                   <div style={{ display:'flex', flexWrap:'wrap', gap:'3px', justifyContent:'center', width:'78px' }}>
                     {rollingDice.map((val, idx) => (
-                      <div key={idx} className="dice-roll-anim"><DiceSVG value={val} size={20} /></div>
+                      <div key={idx} className="dice-roll-anim"><DiceSVG value={val} size={16} /></div>
                     ))}
                   </div>
                 ) : isLidOpen && myDice.length > 0 ? (
@@ -1672,7 +1672,7 @@ export default function GamePage() {
                     display:'flex', flexWrap:'wrap', gap:'3px', justifyContent:'center', width:'78px',
                   }}>
                     {myDice.map((val, idx) => (
-                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={20} /></div>
+                      <div key={idx} className="dice-settle"><DiceSVG value={val} size={16} /></div>
                     ))}
                   </div>
                 ) : null}
@@ -2080,7 +2080,7 @@ export default function GamePage() {
                     <span>
                       <strong style={{ color:'#ec4899' }}>{v.name === playerName ? '你' : v.name}</strong> 喊 {v.count}个{v.value}
                       <span style={{ color:'rgba(255,255,255,0.5)' }}>（实际 {v.actual}）</span>
-                      {v.enough ? <span style={{ color:'#22d3ee' }}> 够✅</span> : <span style={{ color:'#f87171' }}> 不够❌</span>}
+                      {v.straight && v.callerStraight ? (<span style={{ color:'#c084fc' }}> 双方顺子·开牌者喝</span>) : v.enough ? (<span style={{ color:'#22d3ee' }}> 够✅</span>) : (<span style={{ color:'#f87171' }}> 不够❌</span>)}
                     </span>
                     <span style={{ color: v.drinker === playerName ? '#f87171' : (v.drinker === v.name ? '#fbbf24' : '#22d3ee'), fontWeight:'600', whiteSpace:'nowrap' }}>
                       {v.drinker === playerName ? '你' : v.drinker} ×{v.cups}杯
@@ -2769,18 +2769,18 @@ if (typeof document !== 'undefined') {
     }
     .real-cup.shaking { animation: cupShake 1s ease-in-out infinite; }
     .cup-dice-inside.shaking { opacity: 0.95; filter:blur(0); transform:translate(-50%,-50%) scale(1); }
-    .seat-top-row { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; padding:4px 4px 8px; }
-    .seat-mid-row { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:0 4px; }
-    .seat-side { display:flex; flex-direction:column; gap:8px; }
-    .seat-card { width:62px; min-height:74px; border-radius:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 2px; background:rgba(255,255,255,0.05); }
-    .seat-placeholder { width:62px; height:74px; border-radius:12px; border:1px dashed rgba(255,255,255,0.15); }
+    .seat-top-row { display:flex; justify-content:center; gap:6px; flex-wrap:wrap; padding:4px 4px 8px; }
+    .seat-mid-row { display:flex; justify-content:space-between; align-items:center; gap:6px; padding:0 4px; }
+    .seat-side { display:flex; flex-direction:column; gap:6px; }
+    .seat-card { width:52px; min-height:60px; border-radius:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:6px 2px; background:rgba(255,255,255,0.05); }
+    .seat-placeholder { width:52px; height:60px; border-radius:12px; border:1px dashed rgba(255,255,255,0.15); }
     .cup-zone { display:flex; flex-direction:column; align-items:center; gap:8px; flex:0 0 auto; }
-    .real-cup { position:relative; width:100px; height:140px; transform:rotate(180deg); transition:transform 0.5s ease; cursor:pointer; }
-    .cup-body-real { position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:90px; height:130px; background:linear-gradient(90deg,#120a22 0%,#1d1136 30%,#281a45 50%,#1d1136 70%,#120a22 100%); border-radius:8px 8px 45px 45px; border:2px solid rgba(124,77,255,0.35); box-shadow:0 0 40px rgba(124,77,255,0.18), inset 0 6px 24px rgba(0,0,0,0.55); }
-    .cup-rim { position:absolute; top:0; left:50%; transform:translateX(-50%); width:94px; height:15px; background:linear-gradient(180deg,#ffd700,#b8860b); border-radius:50%; border:2px solid rgba(255,215,0,0.6); box-shadow:0 2px 10px rgba(255,215,0,0.3); z-index:10; }
-    .cup-opening { position:absolute; top:3px; left:50%; transform:translateX(-50%); width:80px; height:12px; background:#1a0a2e; border-radius:50%; display:flex; align-items:center; justify-content:center; z-index:11; }
+    .real-cup { position:relative; width:80px; height:115px; transform:rotate(180deg); transition:transform 0.5s ease; cursor:pointer; }
+    .cup-body-real { position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:72px; height:105px; background:linear-gradient(90deg,#120a22 0%,#1d1136 30%,#281a45 50%,#1d1136 70%,#120a22 100%); border-radius:8px 8px 45px 45px; border:2px solid rgba(124,77,255,0.35); box-shadow:0 0 40px rgba(124,77,255,0.18), inset 0 6px 24px rgba(0,0,0,0.55); }
+    .cup-rim { position:absolute; top:0; left:50%; transform:translateX(-50%); width:76px; height:13px; background:linear-gradient(180deg,#ffd700,#b8860b); border-radius:50%; border:2px solid rgba(255,215,0,0.6); box-shadow:0 2px 10px rgba(255,215,0,0.3); z-index:10; }
+    .cup-opening { position:absolute; top:3px; left:50%; transform:translateX(-50%); width:64px; height:10px; background:#1a0a2e; border-radius:50%; display:flex; align-items:center; justify-content:center; z-index:11; }
     .cup-opening .question { font-size:20px; color:rgba(139,92,246,0.8); text-shadow:0 0 15px rgba(139,92,246,0.5); animation:pulse-q 2s ease-in-out infinite; transform:rotate(180deg); }
-    .cup-dice-inside { position:absolute; top:52%; left:50%; transform:translate(-50%,-50%) scale(0.85); display:flex; flex-wrap:wrap; width:78px; justify-content:center; gap:3px; opacity:0; z-index:5; filter:blur(7px); transition:opacity 0.6s ease 0.15s, filter 0.6s ease 0.15s, transform 0.6s ease 0.15s; }
+    .cup-dice-inside { position:absolute; top:52%; left:50%; transform:translate(-50%,-50%) scale(0.85); display:flex; flex-wrap:wrap; width:64px; justify-content:center; gap:3px; opacity:0; z-index:5; filter:blur(7px); transition:opacity 0.6s ease 0.15s, filter 0.6s ease 0.15s, transform 0.6s ease 0.15s; }
     .cup-zone.show-own .cup-dice-inside { opacity:1; filter:blur(0); transform:translate(-50%,-50%) scale(1); }
     .cup-zone.show-own .cup-opening .question { opacity:0; }
     .cup-zone.show-own .real-cup { transform:rotate(180deg) translateY(-18px); }
