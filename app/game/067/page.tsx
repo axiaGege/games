@@ -6,6 +6,28 @@ import { supabase } from "@/lib/supabaseClient";
 // ==================== 工具函数 ====================
 const rollDice = () => Array.from({ length: 5 }, () => Math.floor(Math.random() * 6) + 1);
 
+// 🎯 确定性骰子：骰子点数不再"从别人手机传过来"，而是各端用 (局号 + 名字) 各自算出来。
+// 同一局号+同一名字 → 全场算出的 5 颗骰子必然完全相同，跟网络怎么传、谁先谁后、
+// 有没有旧数据覆盖统统无关。上一局的局号不同 → 算出的点数必然不同 →
+// "骰子还是上一把的"在物理上不可能发生，不依赖任何一处判断写得对不对。
+const diceOf = (round: number, name: string): number[] => {
+  // xmur3 字符串散列 + mulberry32 伪随机：纯函数、无副作用、跨端结果一致
+  const key = `${round}#${name}`;
+  let h = 1779033703 ^ key.length;
+  for (let i = 0; i < key.length; i++) {
+    h = Math.imul(h ^ key.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let s = (Math.imul(h ^ (h >>> 16), 2246822507) ^ Math.imul(h ^ (h >>> 13), 3266489909)) >>> 0;
+  const next = () => {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return Array.from({ length: 5 }, () => Math.floor(next() * 6) + 1);
+};
+
 // 骰子 SVG，41px，1和4红色，其余蓝色
 const DiceSVG = ({ value, size = 41, highlight = false }: { value: number; size?: number; highlight?: boolean }) => {
   const dotPositions: Record<number, [number, number][]> = {
@@ -213,7 +235,7 @@ export default function GamePage() {
   const [joined, setJoined] = useState(false);
   const [roomId, setRoomId] = useState("");
 
-  const [players, setPlayers] = useState<any[]>([]);
+  const [players, setPlayersRaw] = useState<any[]>([]);
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [showReveal, setShowReveal] = useState(false);
@@ -249,6 +271,19 @@ export default function GamePage() {
   // 接收端凭它识别"对面这份数据是不是本局的"——远端局号比我新 = 新一局开了，我本地记着的骰子全是上一把的，
   // 一律不许回填。这是不依赖"我有没有想全所有入口"的机制兜底：旧骰子自己带着过期的章，任何残余路径都拦得住。
   const roundRef = useRef(0);
+  // 🎯 唯一的骰子出口：不管名单从哪条路来的（广播/账本对账/合并/回填/重连/补回自己），
+  // 只要某人手上"有骰子"(length>0)，点数一律用 (本局局号 + 他的名字) 现算，直接丢弃传过来的值。
+  // 于是所有传输通道都变成"只能传【摇没摇过】这个标记，传不了点数"——旧骰子物理上进不来。
+  // 局号只增不减(applyRemoteState 用 max 采纳)，所以哪怕收到上一局的陈旧名单，算出来的也是本局点数。
+  const normalizeDice = (list: any[]): any[] => {
+    if (!Array.isArray(list)) return list;
+    const r = roundRef.current;
+    if (!r) return list; // 还没开过局（大厅/建房阶段），原样放行
+    return list.map((p: any) =>
+      p && p.dice && p.dice.length > 0 ? { ...p, dice: diceOf(r, p.name) } : p
+    );
+  };
+  const setPlayers = (list: any[]) => setPlayersRaw(normalizeDice(list));
   const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
   const phaseRef = useRef<"waiting" | "rolling" | "bidding" | "ended">(phase); // 实时镜像本地阶段，供 3 秒对账判断本地是否落后于服务器（useEffect 闭包拿不到最新 phase）
   const joinedRef = useRef(false); // 实时镜像"我已在房里"：applyRemoteState/3秒对账 的"保自己"需要即时值；离开房间时第一时间置 false，防人走了又被补回变幽灵
@@ -457,6 +492,10 @@ export default function GamePage() {
         if (localMe) mergedPlayers = [...mergedPlayers, isFreshDeal ? { ...localMe, dice: [] } : { ...localMe }];
       }
     }
+    // ⚠️ 顺序不可颠倒：先采纳远端局号，再 setPlayers。
+    // setPlayers 内部要用 roundRef 现算骰子点数，若局号还停在上一局，新一局的第一帧会算出上一把的点数。
+    // 只进不退：迟到的旧局消息 round 更小，不会把本地局号拽回去。
+    if (remoteRound > roundRef.current) roundRef.current = remoteRound;
     setPlayers(mergedPlayers);
     setGameStarted(state.gameStarted || false);
     setGameOver(state.gameOver || false);
@@ -504,13 +543,12 @@ export default function GamePage() {
     const myCid = (() => { try { return localStorage.getItem('067_cid') || ''; } catch { return ''; } })();
     const me = mergedPlayers.find((p: any) => (myCid && p.cid && p.cid === myCid) || p.name === playerName);
     if (me) {
-      setMyDice(me.dice || []);
+      const hasDice = !!(me.dice && me.dice.length > 0);
+      // 同 normalizeDice：自己这份骰子也一律现算，绝不采信传过来的点数（局号上面已先行对齐）
+      setMyDice(hasDice ? diceOf(roundRef.current, me.name) : []);
       setMySeatId(me.seatId !== undefined ? me.seatId : null);
-      setHasRolledLocal(me.dice && me.dice.length > 0);
+      setHasRolledLocal(hasDice);
     }
-    // 采纳远端局号（只进不退）：本端后续发出的广播会带上它，全场局号自然对齐；
-    // 迟到的旧局消息 round 更小，不会把本地局号拽回去。
-    if (remoteRound > roundRef.current) roundRef.current = remoteRound;
     setDisconnected(false);
   };
 
@@ -655,7 +693,11 @@ export default function GamePage() {
     // 任何人听见喊话时账本必定已是新的，"读到旧账本"在整个游戏里不可能再发生。
     // 双通道同步：落库到 rooms 表(players + resultdetails)，断网/刷新重连能从账本把对局读回来续上。
     try {
-      const { players, ...rest } = st;
+      // 🔴 autoRoll / diceShaking 是"一次性动作信号"，绝不能落库变成常驻状态：
+      // 落库后每 3 秒对账都会把它当成一条崭新的"再来一局"读出来 → 重新触发骰盅动画 →
+      // 动画 4 秒 > 对账 3 秒 → 动画永远转不完 → 进叫牌哨兵的"等动画"守卫永不放行 → 摇骰卡十几秒。
+      // 它们只走广播（一次性到达一次性消费），账本只存真正的持久状态。
+      const { players, autoRoll: _autoRoll, ...rest } = st;
       const { error: dbErr } = await supabase.from("rooms").update({
         players,
         resultdetails: JSON.stringify(rest),
@@ -870,6 +912,9 @@ export default function GamePage() {
     }
 
     const savedState = data.resultdetails ? JSON.parse(data.resultdetails) : null;
+    // ⚠️ 局号必须在任何 setPlayers 之前对齐：setPlayers 内部要用它现算骰子点数，
+    // 局号为 0 时会原样放行账本里的点数（可能是被污染的旧值）。这里一次性覆盖重连/新进房两条分支。
+    if ((savedState?.round ?? 0) > roundRef.current) roundRef.current = savedState.round;
     // 进行中的一局（摇骰/叫牌阶段）中途回来的人：先当“观战”，不拉进当前局，下一局再来一局再带上他
     const midRound = !!savedState && savedState.gameStarted && (savedState.phase === "rolling" || savedState.phase === "bidding");
 
@@ -926,7 +971,7 @@ export default function GamePage() {
           if (saved.phase === "waiting" || saved.phase === "ended") { setSelectedCount(null); setSelectedValue(null); }
         }
         gVersionRef.current = saved?.version || 0; // 重连后把本地版本号对齐到账本，避免后续消息误判过期
-        roundRef.current = saved?.round || 0; // 局号同样对齐：否则本端发出的广播会把账本局号擦成 0，让别人的"旧骰过期"保护失效
+        if ((saved?.round ?? 0) > roundRef.current) roundRef.current = saved.round; // 局号只进不退：直接赋值会把上面刚对齐的号擦成 0，让"旧骰过期"保护失效
       } catch (e) { console.error('❌ 恢复对局状态失败:', e); }
       try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
       // 把补上的编号/昵称/心跳落库，保证后续按编号认人稳定生效
@@ -1002,7 +1047,7 @@ export default function GamePage() {
       else setLastBidDisplay(null);
     }
     gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
-    roundRef.current = saved?.round || 0; // 局号同上：新进房者若带 0 号广播出去，会把账本局号擦掉，让在场者的"旧骰过期"保护失效
+    if ((saved?.round ?? 0) > roundRef.current) roundRef.current = saved.round; // 局号只进不退，同上
     await broadcastState(data.id, {
       players: finalPlayers,
       currentPlayer: saved?.currentPlayer || "",
@@ -1164,7 +1209,8 @@ export default function GamePage() {
     // 注：公平性已由两道关卡保证——①摇过的人 dice 有值(L737)不能再摇；②叫牌后 phase 切到 bidding 全员不能摇。
     // 不再用全局 cupOpened 锁人（那会让一个人查看就误锁全桌）。
 
-    const myDice = rollDice();
+    // 同 playAgain：用 (本局局号 + 我的名字) 确定性算出，别人收到后各自算得到一模一样的点数
+    const myDice = diceOf(roundRef.current, playerName);
     // 治本：摇骰时先读服务器最新名单，只把我的骰子塞进去再广播，
     // 避免基于本地旧名单整张覆盖、把别人刚摇的骰子冲成空（导致全员卡在摇骰阶段）。
     let rollPlayers: any[];
@@ -1478,7 +1524,9 @@ export default function GamePage() {
     // 以前是各端收到 autoRoll 后各自 handleRollDice → 各自 select 读库 → 各自整份写回，
     // 三端并发读改写、且读的那一刻发起者的写库还没落地 → 读到上一局账本 → 旧骰子被原样复制回来。
     // 现在其他端不读库、不写库，只播动画；玩家零感知（本来就是自动摇），观战者在此统一转正 playing 故一并发骰。
-    const resetPlayers = paBase.map(p => ({ ...p, dice: rollDice(), ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
+    // 骰子用 (新局号 + 名字) 确定性算出：即使这份名单在传输途中被任何旧数据覆盖，
+    // 各端也会用同一局号各自算出完全相同的点数，传的只是"摇没摇过"这个标记。
+    const resetPlayers = paBase.map(p => ({ ...p, dice: diceOf(roundRef.current, p.name), ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     const myNewDice = resetPlayers.find((p: any) => p.name === playerName)?.dice || [];
 
     // ⚠️ 顺序要点（本轮自查补的坑）：先把新一局落库+广播发出去，再更新本地状态。
