@@ -245,11 +245,17 @@ export default function GamePage() {
   const [rollingDice, setRollingDice] = useState<number[]>([]);
   const rollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gVersionRef = useRef(0); // 同步版本号单调闸：每条操作消息编号递增，接收端丢弃过期旧消息
+  // 局号章：每开一局盖一个新号(startGame/playAgain/resetGame 处更新)，由 broadcastState 自动随每条广播带出。
+  // 接收端凭它识别"对面这份数据是不是本局的"——远端局号比我新 = 新一局开了，我本地记着的骰子全是上一把的，
+  // 一律不许回填。这是不依赖"我有没有想全所有入口"的机制兜底：旧骰子自己带着过期的章，任何残余路径都拦得住。
+  const roundRef = useRef(0);
   const playersRef = useRef<any[]>([]); // 实时镜像本地 players，供 applyRemoteState 合并时读取最新名单（避免闭包拿到旧值）
   const phaseRef = useRef<"waiting" | "rolling" | "bidding" | "ended">(phase); // 实时镜像本地阶段，供 3 秒对账判断本地是否落后于服务器（useEffect 闭包拿不到最新 phase）
   const joinedRef = useRef(false); // 实时镜像"我已在房里"：applyRemoteState/3秒对账 的"保自己"需要即时值；离开房间时第一时间置 false，防人走了又被补回变幽灵
   const rollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advanceFiredRef = useRef(false); // 进叫牌哨兵防重复触发锁：本轮 rolling 只广播一次推进，离开 rolling 自动复位
+  const rollingSinceRef = useRef(0); // 本地骰盅动画开始时刻：哨兵据此判断"动画还在转"，并做 5 秒超时兜底防卡死
+  const [advanceRetry, setAdvanceRetry] = useState(0); // 哨兵因等动画而暂缓时的重评估信号（动画播完/超时后再判一次）
 
   // 叫牌面板
   const [bidPage, setBidPage] = useState(0);
@@ -353,15 +359,37 @@ export default function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ============ 再来一局：各端收到 autoRoll 标记后自动摇自己那份骰子 ============
+  // ============ 本地骰盅翻滚动画（手动摇骰 / 新一局共用，纯本地表现：不读库、不写库、不广播） ============
+  const playRollAnimation = () => {
+    playShakeSound();
+    if (navigator.vibrate) navigator.vibrate(100);
+    if (rollTimerRef.current) clearInterval(rollTimerRef.current);
+    if (rollTimeoutRef.current) clearTimeout(rollTimeoutRef.current);
+    rollingSinceRef.current = Date.now(); // 记录动画起点，供进叫牌哨兵判断"还在转"及 5 秒超时兜底
+    setRolling(true);
+    setRollingDice(rollDice());
+    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 110);
+    rollTimeoutRef.current = setTimeout(() => {
+      if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
+      setRolling(false);
+    }, 4000);
+  };
+
+  // ============ 再来一局：各端收到 autoRoll 标记后只播本地动画（骰子已由发起者一次性发好） ============
+  // 🔴 结构性根治：这里以前是各端各自 handleRollDice → 各自 select 读库 → 各自整份写回。
+  // 发起者广播先于写库到达，各端读到的必然是上一局账本(带全员旧骰) → 抄下旧名单只改自己再写回
+  // → 别人的骰子被上一把的值原样复制回去 = "再来一局骰子还是上一把的"真因。
+  // 现在骰子由发起者一次性摇好随广播下发(475行已 setMyDice/setHasRolledLocal)，本端只播动画，
+  // "读旧账本"这个动作在其他端彻底不存在了——不是降低概率，是动作没了。
   useEffect(() => {
     if (!autoRollFlag) return;
     setAutoRollFlag(false); // 一次性触发，避免重复
-    // 轻量预判：观战者不摇、已摇过不重复摇、阶段不对不摇；最终守卫由 handleRollDice 收口
-    const me = players.find((p: any) => p.name === playerName);
+    // ref 取最新值：refs 同步的 useEffect 声明在本 effect 之前，同批 setState 后先跑，拿到的必是新名单
+    const me = playersRef.current.find((p: any) => p.name === playerName);
     if (me?.status === "watching") return;
-    if (me?.dice && me.dice.length > 0) return;
-    if (phase !== "rolling") return;
+    if (phaseRef.current !== "rolling") return;
+    if (me?.dice && me.dice.length > 0) { playRollAnimation(); return; }
+    // 兜底：万一名单里没有我的骰子（旧版本客户端发来的广播/极端漏发），退回老路自己摇一次
     handleRollDice();
   }, [autoRollFlag]);
 
@@ -390,8 +418,14 @@ export default function GamePage() {
     // 这一瞬直接以服务器为准（新局=空骰），本地骰子随之清空，按钮自动恢复。
     // ⚠️只在"跨局那一瞬"停手；摇骰阶段内部(两端都是 rolling)的并集原样保留，不动"摇完骰全员卡死"的老修复。
     const crossRound = state.phase === "rolling" && phaseRef.current !== "rolling";
+    // 局号章兜底（机制保险，不依赖"入口有没有想全"）：远端局号比本地新 = 对面已经开了新一局，
+    // 我本地记着的骰子必然是上一把的，一律不许回填。
+    // ⚠️只在"远端确实更新"时收紧；同局(相等)、旧局迟到、旧版本客户端(无 round 字段) 一律保持原有并集行为不变，
+    // 只增加保护、不减少任何现有保护，绝不动"摇完骰全员卡死"那条老修复。
+    const remoteRound = state.round ?? 0;
+    const newerRound = remoteRound > 0 && roundRef.current > 0 && remoteRound > roundRef.current;
     let mergedPlayers = parsedPlayers;
-    if (!allEmpty && !crossRound) {
+    if (!allEmpty && !crossRound && !newerRound) {
       const localPlayers = playersRef.current;
       mergedPlayers = parsedPlayers.map((inc: any) => {
         const loc = localPlayers.find((p: any) => (p.cid && inc.cid && p.cid === inc.cid) || p.name === inc.name);
@@ -419,7 +453,7 @@ export default function GamePage() {
         // 这条广播是"全员清空骰子"(新一局)时，补回的自己也得清空：
         // 否则把上一局的旧骰子带进新一局 → 自己界面显示已摇骰、摇不了，哨兵也当我摇好了直接跳过
         // crossRound 同理：跨局那一瞬补回的自己也必须清骰，否则旧骰子换个门又溜进新一局，上面的 ③ 白改
-        const isFreshDeal = (allEmpty && parsedPlayers.length > 0) || crossRound;
+        const isFreshDeal = (allEmpty && parsedPlayers.length > 0) || crossRound || newerRound;
         if (localMe) mergedPlayers = [...mergedPlayers, isFreshDeal ? { ...localMe, dice: [] } : { ...localMe }];
       }
     }
@@ -474,6 +508,9 @@ export default function GamePage() {
       setMySeatId(me.seatId !== undefined ? me.seatId : null);
       setHasRolledLocal(me.dice && me.dice.length > 0);
     }
+    // 采纳远端局号（只进不退）：本端后续发出的广播会带上它，全场局号自然对齐；
+    // 迟到的旧局消息 round 更小，不会把本地局号拽回去。
+    if (remoteRound > roundRef.current) roundRef.current = remoteRound;
     setDisconnected(false);
   };
 
@@ -510,16 +547,19 @@ export default function GamePage() {
         const serverHasMe = playersArr.some((p: any) => (p.cid && p.cid === myCid) || p.name === playerName);
         // 账本"全员都没骰子" = 只可能是新一局刚清完（正常摇骰过程中至少写入者自己有骰，账本不可能全空）
         const boardAllEmpty = playersArr.length > 0 && playersArr.every((p: any) => !p.dice || p.dice.length === 0);
+        // 局号章：账本局号比本地新 = 账本已经是新一局，本地那份骰子是上一把的，一律不许回填
+        const savedRound = savedPeek?.round ?? 0;
+        const boardNewerRound = savedRound > 0 && roundRef.current > 0 && savedRound > roundRef.current;
         // joinedRef 守卫：点"离开房间"到定时器被清掉之间有零点几秒空档，没这层会把刚走的自己又补回账本变幽灵
         if (joinedRef.current && healMe && !serverHasMe) {
           // 同上：账本处于"全员没骰子"(新一局)时补回的自己也清空骰子，别把上一局旧骰子带进新一局
-          playersArr = [...playersArr, boardAllEmpty ? { ...healMe, dice: [] } : healMe];
+          playersArr = [...playersArr, (boardAllEmpty || boardNewerRound) ? { ...healMe, dice: [] } : healMe];
           changed = true;
         }
         // ⚠️ boardAllEmpty 时一律不回填：某端漏收重置广播、本地还留着上一把的骰子，
         // 若在此把"本地有、账本无"的旧骰整场写回账本 → 新一局账本被上一把骰子覆盖 →
         // 全场同步后都读到旧骰、都被判"已摇过" → 由"个别人卡死"恶化成"全员卡死"。
-        if (healAllowed && !boardAllEmpty && localForHeal.length > 0) {
+        if (healAllowed && !boardAllEmpty && !boardNewerRound && localForHeal.length > 0) {
           playersArr = playersArr.map((p: any) => {
             if (p.dice && p.dice.length > 0) return p;
             const loc = localForHeal.find((lp: any) => (lp.cid && p.cid && lp.cid === p.cid) || lp.name === p.name);
@@ -562,6 +602,15 @@ export default function GamePage() {
     // 唯一权威：只让座位序最小的活跃玩家广播推进，防止多人同时喊"进叫牌"互相覆盖
     const sortedActive = [...activePlayers].sort((a: any, b: any) => seatOrderIndex(a.seatId) - seatOrderIndex(b.seatId));
     if (sortedActive[0].name !== playerName) return;
+    // 🆕 等本地骰盅动画播完再推进。
+    // 「再来一局」改成发起者一次性摇好全场骰子后，广播一到全员名单瞬间满骰 → 哨兵会在骰盅刚开始转时
+    // 就跳进叫牌（骰子还在哗啦转、叫牌界面已冒出来）。这里让权威端等自己动画播完(4s)再推进，
+    // 等价于恢复原来"各人陆续摇好"产生的天然间隔。
+    // 5 秒超时兜底：万一 rolling 状态异常卡住，强制放行，绝不因这道守卫把全场卡死在摇骰阶段。
+    if (rolling && Date.now() - rollingSinceRef.current < 5000) {
+      const retryTimer = setTimeout(() => setAdvanceRetry((n) => n + 1), 300);
+      return () => clearTimeout(retryTimer);
+    }
     // 首叫玩家：上局输家优先，但必须还是活跃玩家（不在场/观战则回落到座位序最小者）
     const starterValid = nextStarter && activePlayers.some((p: any) => p.name === nextStarter);
     const firstPlayer = starterValid ? (nextStarter as string) : sortedActive[0].name;
@@ -590,16 +639,34 @@ export default function GamePage() {
       nextStarter: null,
       diceShaking: false,
     });
-  }, [roomId, phase, players, nextStarter, playerName]);
+  }, [roomId, phase, players, nextStarter, playerName, rolling, advanceRetry]);
 
   // ============ 修改1: broadcastState 接收 roomId 参数 ============
   const broadcastState = async (roomId: string, state: any) => {
     // 版本号单调闸：每次操作编号+1，接收端凭此丢弃迟到/乱序的旧消息，避免进度被旧数据覆盖
     const v = gVersionRef.current + 1;
     gVersionRef.current = v;
-    const st = { ...state, version: v };
+    const st = { ...state, version: v, round: roundRef.current };
+    // 🔴🔴 顺序不可颠倒：先落库、再广播。原来是反的（先 send 后 update），这是"再来一局骰子还是上一把"的真根。
+    // 全场所有"收到广播后立刻 select rooms"的逻辑——handleRollDice / joinRoom / toggleReady /
+    // startGame / playAgain / resetGame——都在广播到达的同一瞬间去读账本。若先广播后写库，
+    // 它们读到的必然是上一次的旧账本 → 抄下旧名单只改自己那格再整份写回 → 别人的数据被上一局的值盖回去。
+    // 这是一场稳输的赛跑：喊话零延迟到达，记账要一两百毫秒。倒过来之后，
+    // 任何人听见喊话时账本必定已是新的，"读到旧账本"在整个游戏里不可能再发生。
+    // 双通道同步：落库到 rooms 表(players + resultdetails)，断网/刷新重连能从账本把对局读回来续上。
     try {
-      console.log('📤 发送广播 v=', v);
+      const { players, ...rest } = st;
+      const { error: dbErr } = await supabase.from("rooms").update({
+        players,
+        resultdetails: JSON.stringify(rest),
+      }).eq("id", roomId);
+      // 铁律：supabase 写库失败不抛异常，只在返回值 error 里；不判就会一直打假的"同步成功"
+      if (dbErr) console.error('❌ 数据库同步失败:', dbErr);
+    } catch (e) {
+      console.error('❌ 数据库同步异常:', e);
+    }
+    try {
+      console.log('📤 发送广播 v=', v, 'round=', roundRef.current);
       const result = await supabase.channel(`room:${roomId}`).send({
         type: 'broadcast',
         event: 'gameState',
@@ -611,17 +678,6 @@ export default function GamePage() {
       console.error('❌ 广播失败:', error);
       setDisconnected(true);
       setErrorMsg('⚠️ 连接断开，请检查网络后重试');
-    }
-    // 双通道同步：实时广播之外，同时把整局状态落库到 rooms 表的 resultdetails 字段。
-    // 这样断网/刷新重连后能从数据库把进行中的对局读回来续上（沿用 chosen/blackjack 的做法）。
-    try {
-      const { players, ...rest } = st;
-      await supabase.from("rooms").update({
-        players,
-        resultdetails: JSON.stringify(rest),
-      }).eq("id", roomId);
-    } catch (e) {
-      console.error('❌ 数据库同步失败:', e);
     }
   };
 
@@ -870,6 +926,7 @@ export default function GamePage() {
           if (saved.phase === "waiting" || saved.phase === "ended") { setSelectedCount(null); setSelectedValue(null); }
         }
         gVersionRef.current = saved?.version || 0; // 重连后把本地版本号对齐到账本，避免后续消息误判过期
+        roundRef.current = saved?.round || 0; // 局号同样对齐：否则本端发出的广播会把账本局号擦成 0，让别人的"旧骰过期"保护失效
       } catch (e) { console.error('❌ 恢复对局状态失败:', e); }
       try { localStorage.setItem('067_name', name); localStorage.setItem('067_pass', pass); } catch (_) {}
       // 把补上的编号/昵称/心跳落库，保证后续按编号认人稳定生效
@@ -945,6 +1002,7 @@ export default function GamePage() {
       else setLastBidDisplay(null);
     }
     gVersionRef.current = saved?.version || 0; // 进房分支也对齐版本号：重进玩家本地计数器从0起步，发出低版本会被在场者当过期丢弃；先对齐到账本再+1发出，确保被接收
+    roundRef.current = saved?.round || 0; // 局号同上：新进房者若带 0 号广播出去，会把账本局号擦掉，让在场者的"旧骰过期"保护失效
     await broadcastState(data.id, {
       players: finalPlayers,
       currentPlayer: saved?.currentPlayer || "",
@@ -1060,6 +1118,7 @@ export default function GamePage() {
       .eq("id", roomId)
       .maybeSingle();
     const baseList: any[] = refetchErr ? players : parsePlayers(freshRoom?.players);
+    roundRef.current = Date.now(); // 新一局盖章：随后所有广播都带这个号，各端凭它识别"上一把的骰子"
     const resetPlayers = baseList.map(p => ({
       ...p,
       dice: [],
@@ -1127,18 +1186,8 @@ export default function GamePage() {
     setPlayers(rollPlayers);
     setMyDice(myDice);
     setHasRolledLocal(true);
-    playShakeSound();
-    if (navigator.vibrate) navigator.vibrate(100);
     // 自己骰子翻滚动画：明显翻滚约 4s 后定格为真实值（拉长更有真实摇骰感，配合骰盅声）
-    if (rollTimerRef.current) clearInterval(rollTimerRef.current);
-    if (rollTimeoutRef.current) clearTimeout(rollTimeoutRef.current);
-    setRolling(true);
-    setRollingDice(rollDice());
-    rollTimerRef.current = setInterval(() => setRollingDice(rollDice()), 110);
-    rollTimeoutRef.current = setTimeout(() => {
-      if (rollTimerRef.current) { clearInterval(rollTimerRef.current); rollTimerRef.current = null; }
-      setRolling(false);
-    }, 4000);
+    playRollAnimation();
 
     // 广播时保留 gameStarted = true (此时游戏已开始)
     await broadcastState(roomId, {
@@ -1358,6 +1407,7 @@ export default function GamePage() {
     // 并发加固：重开基于服务器最新名单，已离开的人不进下一局
     const { data: rgFresh, error: rgErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
     const rgBase = rgErr ? players : parsePlayers(rgFresh?.players);
+    roundRef.current = Date.now(); // 重开盖新章：上一把的骰子从此自证过期
     const resetPlayers = rgBase.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
     setPlayers(resetPlayers);
     setGameStarted(false);
@@ -1423,37 +1473,19 @@ export default function GamePage() {
     // 并发加固：新一局基于服务器最新名单生成，已离开的人不进下一局（不被本地含离场者的旧名单加回）
     const { data: paFresh, error: paErr } = await supabase.from("rooms").select("players").eq("id", roomId).maybeSingle();
     const paBase = paErr ? players : parsePlayers(paFresh?.players);
-    const resetPlayers = paBase.map(p => ({ ...p, dice: [], ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
-    setPlayers(resetPlayers);
-    setGameStarted(true);
-    setGameOver(false);
-    setShowReveal(false);
-    setRvOpenerName("");
-    setRvIsSnapOpen(false);
-    setResult("");
-    setLastBid(null);
-    setCurrentPlayer("");
-    setPhase("rolling");
-    setHasRolled(false);
-    setOneSealed(false);
-    setBidHistory([]);
-    setWarning("");
-    setSelectedTargets([]);
-    setMyTargets([]);
-    setIsLidOpen(false);
-    setCupOpened(false);
-    setHasRolledLocal(false);
-    setMyDice([]);
-    setSelectedCount(null);
-    setSelectedValue(null);
-    setDiceShaking(true);
-    setAutoRollFlag(true); // 发起者本地自动摇（自己收不到自己广播）
-    setLastBidDisplay(null);
-    setErrorMsg("🎲 请所有玩家点击「摇骰」按钮！");
+    roundRef.current = Date.now(); // 新一局盖章：上一把的骰子从此自证过期，任何残余路径都回填不进来
+    // 🔴 结构性根治：新一局的骰子由发起者在这里一次性给全场摇好，一次写库、一次广播。
+    // 以前是各端收到 autoRoll 后各自 handleRollDice → 各自 select 读库 → 各自整份写回，
+    // 三端并发读改写、且读的那一刻发起者的写库还没落地 → 读到上一局账本 → 旧骰子被原样复制回来。
+    // 现在其他端不读库、不写库，只播动画；玩家零感知（本来就是自动摇），观战者在此统一转正 playing 故一并发骰。
+    const resetPlayers = paBase.map(p => ({ ...p, dice: rollDice(), ready: (p.seatId === 0 || p.name === nextStarter) ? true : false, status: "playing" }));
+    const myNewDice = resetPlayers.find((p: any) => p.name === playerName)?.dice || [];
 
-    // ① 同 resetGame：删除冗余单独写库，消灭"账本骰子已清空、版本号还是上一局"的中间态。
-    // 下面 broadcastState 会把 resetPlayers + 新版本号一并落库，重置一样写得进去。
-
+    // ⚠️ 顺序要点（本轮自查补的坑）：先把新一局落库+广播发出去，再更新本地状态。
+    // 因为骰子现在是一次性发好的，本地一旦 setPlayers(全员已有骰) + setPhase("rolling")，
+    // 进叫牌哨兵会在下一帧立刻判定"全员摇完"并抢先广播 bidding。若那条 bidding 早于本条 rolling 发出：
+    // ①本条版本号更小会被各端丢弃 → 别人收不到 autoRoll、没有骰盅动画；②两条 update 乱序落库，
+    // 账本可能被 rolling 覆盖回去。先发后设，彻底避开。代价仅是发起者画面晚一两百毫秒切换。
     await broadcastState(roomId, {
       players: resetPlayers,
       currentPlayer: "",
@@ -1472,6 +1504,35 @@ export default function GamePage() {
       diceShaking: true,
       autoRoll: true,
     });
+
+    setPlayers(resetPlayers);
+    setGameStarted(true);
+    setGameOver(false);
+    setShowReveal(false);
+    setRvOpenerName("");
+    setRvIsSnapOpen(false);
+    setResult("");
+    setLastBid(null);
+    setCurrentPlayer("");
+    setPhase("rolling");
+    setHasRolled(false);
+    setOneSealed(false);
+    setBidHistory([]);
+    setWarning("");
+    setSelectedTargets([]);
+    setMyTargets([]);
+    setIsLidOpen(false);
+    setCupOpened(false);
+    setSelectedCount(null);
+    setSelectedValue(null);
+    setDiceShaking(true);
+    // 骰子已在上面一次性摇好：发起者直接采纳自己那份 + 播本地动画（自己收不到自己的广播）。
+    // 不再 setAutoRollFlag → 不再触发 handleRollDice → 不再读库/写回，病根路径彻底不执行。
+    setHasRolledLocal(true);
+    setMyDice(myNewDice);
+    playRollAnimation();
+    setLastBidDisplay(null);
+    setErrorMsg("");
   };
 
   const handleLidOpen = async () => {
