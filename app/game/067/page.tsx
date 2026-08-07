@@ -1287,6 +1287,15 @@ export default function GamePage() {
     if (me?.status === "watching") { setErrorMsg("你正在观战，下一局再加入"); return; }
     // 已删除：if (oneSealed && value === 1) { ... }
     // 现在允许封印1后继续叫1
+    // 起喊下限：仅第一个人（lastBid 为空）受限。喊2~6需 >= 在玩人数+1；喊百搭1需 >= 在玩人数（不含观战/已离开）
+    if (!lastBid) {
+      const activeCount = playersRef.current.filter((p: any) => p.status !== "watching").length;
+      const floor = (value === 1) ? activeCount : activeCount + 1;
+      if (count < floor) {
+        setErrorMsg(`起喊至少 ${floor}个${value}（当前 ${activeCount} 人在玩，不含观战/已离开）`);
+        return;
+      }
+    }
     if (lastBid) {
       if (count < lastBid.count || (count === lastBid.count && value <= lastBid.value)) {
         setErrorMsg(`必须比 ${lastBid.count}个${lastBid.value} 更大`);
