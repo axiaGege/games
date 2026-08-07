@@ -4052,9 +4052,10 @@ export default function ZhaJinHuaPage() {
               {phase === "waiting" && `⏳ 等待开始 ${players.length >= 2 ? `(${readyPlayers.length}/${players.filter(p => p.status !== 'watching').length} 已准备)` : '(至少2人)'}`}
               {phase === "dealing" && "🃏 发牌中..."}
               {phase === "betting" && isDealer && currentPlayer?.name === playerName && `⏳ 等待其他玩家压酒`}
-              {phase === "betting" && isDealer && currentPlayer?.name !== playerName && `⏳ ${currentPlayer?.name} 压酒中`}
+              {phase === "betting" && isDealer && currentPlayer && currentPlayer.name !== playerName && `⏳ ${currentPlayer.name} 压酒中`}
               {phase === "betting" && !isDealer && currentPlayer?.name === playerName && `⏳ 下注下注`}
-              {phase === "betting" && !isDealer && currentPlayer?.name !== playerName && `⏳ ${currentPlayer?.name} 压酒中...`}
+              {phase === "betting" && !isDealer && currentPlayer && currentPlayer.name !== playerName && `⏳ ${currentPlayer.name} 压酒中...`}
+              {phase === "betting" && !currentPlayer && `⏳ 等待中...`}
               {phase === "wheel" && "🎡 抽庄中..."}
             </span>
           )}
