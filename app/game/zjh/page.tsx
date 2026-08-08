@@ -38,6 +38,21 @@ const createDeckWithSeed = (seed: number) => {
   return deck;
 };
 
+// 🔧 2026-08-08 方向A：从 deck[fromIdx] 起取第一张 id 不在 usedIds 里的牌。
+// 诈金花"一副牌打到底"靠 deckOffset 记进度，offset 偶尔错位（两人同时换公牌/广播漏收）会导致
+// 取到已发过的牌→出现"手牌=公牌"这类重复牌。此函数撞到已用牌就顺延取下一张，从根上掐死重复牌。
+const takeUniqueCard = (deck: any[], fromIdx: number, usedIds: Set<string>) => {
+  let i = fromIdx;
+  while (i < deck.length) {
+    const c = deck[i];
+    if (!usedIds.has(c.id)) return { card: c, nextIdx: i + 1 };
+    i++;
+  }
+  // 兜底：牌堆用尽也不发 undefined（正常 52 张远不会到这）
+  const fallbackIdx = Math.min(fromIdx, deck.length - 1);
+  return { card: deck[fallbackIdx], nextIdx: fallbackIdx + 1 };
+};
+
 const getRankValue = (rank: string): number => {
   const order = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   return order.indexOf(rank);
@@ -2228,14 +2243,21 @@ export default function ZhaJinHuaPage() {
     const deck = createDeckWithSeed(deckSeed);
     let offset = startOffset; // 修复6：从当前进度继续发牌，实现一副牌打到底
 
-    const community = deck[offset++];
+    // 🔧 2026-08-08 方向A：一副牌打到底，[0..startOffset) 已是发出去的牌；撞到就顺延，杜绝手牌=公牌
+    const usedIds = new Set<string>();
+    for (let k = 0; k < startOffset; k++) usedIds.add(deck[k].id);
+
+    const communityRes = takeUniqueCard(deck, offset, usedIds);
+    const community = communityRes.card;
+    offset = communityRes.nextIdx;
     setCommunityCard(community);
 
     const newPlayers = currentPlayers.map(p => {
-      const card = deck[offset++];
+      const r = takeUniqueCard(deck, offset, usedIds);
+      offset = r.nextIdx;
       return {
         ...p,
-        cards: [card],
+        cards: [r.card],
         cardCount: 1,
         bet: 0,
       };
@@ -2933,8 +2955,18 @@ export default function ZhaJinHuaPage() {
     const dealtNames = updatedPlayers
       .filter(p => p.status === 'playing' && !p.isDealer && needDealNames.has(p.name))
       .map(p => p.name);
+    // 🔧 2026-08-08 方向A：重发牌时，已用集 = 当前公牌 + 所有人现有牌（保留的/被开的旧牌），撞到就顺延
+    const usedIds = new Set<string>();
+    if (communityCard) usedIds.add(communityCard.id);
+    updatedPlayers.forEach(p => {
+      if (p.cards) p.cards.forEach((c: any) => usedIds.add(c.id));
+    });
+
     for (const name of dealtNames) {
-      const card = deck[offset++];
+      const r = takeUniqueCard(deck, offset, usedIds);
+      const card = r.card;
+      offset = r.nextIdx;
+      usedIds.add(card.id);
       updatedPlayers = updatedPlayers.map(p => {
         if (p.name === name) {
           return { ...p, cards: [card], cardCount: 1 };
@@ -2945,7 +2977,10 @@ export default function ZhaJinHuaPage() {
 
     const dealerName = effectiveDealerId;
     if (dealerName) {
-      const card = deck[offset++];
+      const r = takeUniqueCard(deck, offset, usedIds);
+      const card = r.card;
+      offset = r.nextIdx;
+      usedIds.add(card.id);
       updatedPlayers = updatedPlayers.map(p => {
         if (p.name === dealerName) {
           return { ...p, cards: [card], cardCount: 1 };
@@ -3099,8 +3134,15 @@ export default function ZhaJinHuaPage() {
       return;
     }
     const deck = localDeckRef.current;
-    const newCommunity = deck[baseOffset];
-    const newOffset = baseOffset + 1;
+    // 🔧 2026-08-08 方向A：新公牌不能撞当前公牌/任何人手牌，撞到就顺延取下一张
+    const usedIds = new Set<string>();
+    if (communityCard) usedIds.add(communityCard.id);
+    basePlayers.forEach(p => {
+      if (p.cards) p.cards.forEach((c: any) => usedIds.add(c.id));
+    });
+    const ccRes = takeUniqueCard(deck, baseOffset, usedIds);
+    const newCommunity = ccRes.card;
+    const newOffset = ccRes.nextIdx;
     setDeckOffset(newOffset);
     setRemainingCards(52 - newOffset);
     setCommunityCard(newCommunity);
