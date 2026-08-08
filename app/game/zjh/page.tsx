@@ -834,20 +834,23 @@ export default function ZhaJinHuaPage() {
 
         const prevPhase = phaseRef.current;
         const newPhase = state.phase || "waiting";
-        const forwardPhases = ["dealing", "betting", "reveal", "settlement", "wheel"];
-        const currentIdx = forwardPhases.indexOf(prevPhase);
-        const newIdx = forwardPhases.indexOf(newPhase);
+        // 🔧 2026-08-07 根治：对局进行中收到迟到的旧"等待"消息 → 被无条件拉回准备/牌堆刷新。
+        // 完整顺序含 waiting，用于正确判定"前进/倒退"。真重置(resetGame/庄家离开)带 forcePhase 照常生效。
+        const phaseOrder = ["waiting", "dealing", "betting", "reveal", "settlement", "wheel"];
+        const prevIdx = phaseOrder.indexOf(prevPhase);
+        const newIdx = phaseOrder.indexOf(newPhase);
 
         let effectivePhase;
         if (state.forcePhase) {
           effectivePhase = newPhase;
-        } else if (newPhase === "waiting" || newPhase === "dealing") {
-          effectivePhase = newPhase;
         } else if (newPhase === "betting" && prevPhase === "reveal") {
+          // 特例：开牌结算后重发牌回到压酒（合法倒退），仍接受
           effectivePhase = newPhase;
-        } else if (newIdx >= currentIdx && currentIdx >= 0) {
+        } else if (prevIdx >= 0 && newIdx >= 0 && newIdx >= prevIdx) {
+          // 正常前进或同阶段：接受（含 waiting→betting 推进，修复新玩家卡"半准备"）
           effectivePhase = newPhase;
         } else {
+          // 倒退（如进行中收到迟到的旧"等待"）→ 忽略，保持当前阶段，避免连锁重置全场
           effectivePhase = prevPhase;
         }
 
@@ -3412,6 +3415,7 @@ export default function ZhaJinHuaPage() {
 
     await broadcastAndSyncDB({
       players: resetPlayers,
+      forcePhase: true,
       phase: "waiting",
       dealerId: null,
       pendingReturnDealer: null,
