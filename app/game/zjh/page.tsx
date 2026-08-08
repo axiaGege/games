@@ -2305,8 +2305,11 @@ export default function ZhaJinHuaPage() {
       broadcastAndSyncDB({
         ...bettingPayload,
         players: playersRef.current,
-        result: result,
-        resultDetails: resultDetails,
+        // 🔧 2026-08-08：重发必须用 bettingPayload 里的新值("🃏 发牌完成,开始压酒!" + 空明细)，
+        // 不能用闭包里的 result/resultDetails —— startNextRound 已 setResult("") 但 React 异步未重渲染，
+        // 闭包仍是上轮结算旧值，会把旧总结又弹给全场
+        result: bettingPayload.result,
+        resultDetails: bettingPayload.resultDetails,
         readyPlayers: readyPlayers,
       });
     }, 600);
@@ -3241,6 +3244,7 @@ export default function ZhaJinHuaPage() {
       // 避免某些窗口在下一局 betting 阶段还挂着上一局"XX 庄家赢，喝X杯"的结算记录
       setResultDetails([]);
       resultDetailsRef.current = [];
+      setResult(""); // 🔧 2026-08-08：转盘结束即结算完毕，旧结算总结文字一并清掉，避免下一局开场又弹出上轮总结
       // 🔧 2026-08-02：本轮统计清零，新的一轮重新累计
       setRoundDrinkTotals({});
       roundDrinkTotalsRef.current = {};
