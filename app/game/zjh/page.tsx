@@ -846,6 +846,11 @@ export default function ZhaJinHuaPage() {
         } else if (newPhase === "betting" && prevPhase === "reveal") {
           // 特例：开牌结算后重发牌回到压酒（合法倒退），仍接受
           effectivePhase = newPhase;
+        } else if (prevPhase === "wheel" && (newPhase === "dealing" || newPhase === "betting")) {
+          // 🔧 2026-08-08 特例：抽庄(wheel)是本轮终点，抽庄结束开新一局必然从终点跳回发牌/压酒（合法倒退）。
+          // 只对依赖广播同步的观战者/新玩家放行，让他们顺利进新一局（否则永远卡"抽庄中"、按钮出不来）。
+          // 注意：只放行 dealing/betting，且必须当前停在 wheel——迟到的旧"等待"不在范围，旧 bug 不复活。
+          effectivePhase = newPhase;
         } else if (prevIdx >= 0 && newIdx >= 0 && newIdx >= prevIdx) {
           // 正常前进或同阶段：接受（含 waiting→betting 推进，修复新玩家卡"半准备"）
           effectivePhase = newPhase;
